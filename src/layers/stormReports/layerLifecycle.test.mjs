@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createStormReportsLayer } from './index.js';
+import {
+  HAIL_FLOOR_IN,
+  STORM_REPORTS_DEFAULTS,
+  createStormReportsLayer,
+} from './index.js';
 
 let reportSeq = 0;
 /** Each row gets its own time and position, as distinct reports would. */
@@ -41,6 +45,13 @@ function stubViewer() {
       add() {},
       removeAll() {},
       values: [],
+    },
+    camera: {
+      __flownTo: null,
+      flyTo(options) {
+        this.__flownTo = options;
+        return options;
+      },
     },
     __sources: sources,
   };
@@ -212,7 +223,11 @@ test('lowering the threshold draws more', async () => {
   assert.equal(drawn(viewer).length, 1, 'at the default 1 inch threshold');
   layer.setParams({ minHailTenths: 5 });
   await layer.update();
-  assert.equal(drawn(viewer).length, 2, '0.5 inch now clears the 0.5 inch bar');
+  assert.equal(
+    drawn(viewer).length,
+    1,
+    'a shared half-inch threshold is floored, not obeyed',
+  );
 });
 
 test('a report with no magnitude is never drawn as a small one', async () => {
@@ -408,20 +423,150 @@ test('clicking a day chip repaints without waiting for update()', async () => {
 
 test('the hail threshold chip repaints too', async () => {
   const viewer = stubViewer();
-  const rows = [REPORT(1.75), REPORT(0.75)];
+  const rows = [REPORT(3), REPORT(1.75)];
   const { layer } = makeLayer(rows);
   layer.init(viewer);
   layer.enable();
   await layer.update();
+  assert.equal(drawn(viewer).length, 2, 'both clear the 1 inch default');
+  layer
+    .getRowControls()
+    .chips.find((c) => c.id === 'storm-reports-hail-2')
+    .onClick();
   assert.equal(
     drawn(viewer).length,
     1,
-    '0.75 inch is below the 1 inch default',
+    'the 1.75 inch report dropped at once, with no update() call',
   );
+});
 
-  layer
+const chipById = (layer, id) =>
+  layer.getRowControls().chips.find((c) => c.id === id);
+
+test('the hail thresholds start at an inch and go up', () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  const labels = layer
     .getRowControls()
-    .chips.find((c) => c.id === 'storm-reports-hail-075')
-    .onClick();
-  assert.equal(drawn(viewer).length, 2, 'the smaller report appeared at once');
+    .chips.filter(
+      (c) =>
+        c.id.startsWith('storm-reports-hail-') && c.id !== 'storm-reports-hail',
+    )
+    .map((c) => c.label);
+  assert.deepEqual(labels, ['1″', '1.5″', '2″', '2.5″', '3″']);
+  assert.ok(!labels.includes('0.75″'), 'sub-inch hail is not offered');
+});
+
+test('a shared link cannot sneak a sub-inch threshold past the floor', () => {
+  // The codec only knows the value is a positive integer. The floor is a claim
+  // this layer makes, so the layer has to be the one to hold it.
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.init(stubViewer());
+  layer.enable();
+  layer.setParams({ minHailTenths: 5 });
+  return layer.update().then(() => {
+    assert.equal(layer.getParams().minHailIn, HAIL_FLOOR_IN);
+  });
+});
+
+test('setting a threshold below an inch is floored', () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.setMinHailIn(0.25);
+  assert.equal(layer.getParams().minHailIn, HAIL_FLOOR_IN);
+});
+
+test('a sub-inch report is never shown, whatever the threshold claims', async () => {
+  const viewer = stubViewer();
+  const rows = [REPORT(2), REPORT(0.5)];
+  const { layer } = makeLayer(rows);
+  layer.init(viewer);
+  layer.enable();
+  layer.setMinHailIn(0.25);
+  await layer.update();
+  assert.equal(drawn(viewer).length, 1, 'the half-inch report stays hidden');
+});
+
+test('the date field commits a typed date and repaints', async () => {
+  const viewer = stubViewer();
+  const other = REPORT(2);
+  other[0] = '2026-08-04';
+  const { layer } = makeLayer([REPORT(2), other]);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(drawn(viewer).length, 2);
+
+  const field = layer.getRowControls().field;
+  assert.ok(field, 'the row offers a typed field');
+  // US order: 8 is the month, so this is 4 August.
+  assert.equal(field.onCommit('8/4/2026'), true, 'a US date is accepted');
+  assert.equal(layer.getDateRange().from, '2026-08-04');
+  assert.equal(drawn(viewer).length, 1, 'and the map followed');
+});
+
+test('a date that is not a date is refused, and says so', () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.init(stubViewer());
+  layer.enable();
+  const field = layer.getRowControls().field;
+  assert.equal(field.onCommit('next tuesday'), false);
+  assert.equal(layer.getDateRange().from, null, 'the selection is untouched');
+  assert.match(layer.getRowControls().info, /Could not read/);
+});
+
+test('a rejected date is cleared by the next real one', () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.init(stubViewer());
+  layer.enable();
+  const field = layer.getRowControls().field;
+  field.onCommit('nonsense');
+  field.onCommit('2026-08-10');
+  assert.equal(layer.getDateRange().from, '2026-08-10');
+  assert.doesNotMatch(layer.getRowControls().info, /Could not read/);
+});
+
+test('GO is disabled until a single day is chosen', async () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  assert.equal(
+    chipById(layer, 'storm-reports-go').disabled,
+    true,
+    'nothing chosen yet',
+  );
+  layer.setDate('2026-08-10');
+  assert.equal(chipById(layer, 'storm-reports-go').disabled, false);
+  layer.clearDateRange();
+  assert.equal(
+    chipById(layer, 'storm-reports-go').disabled,
+    true,
+    'back to the whole record',
+  );
+});
+
+test('GO flies the camera to that day', async () => {
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(2), REPORT(1.5)]);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  assert.equal(layer.frameSelectedStorm(), true);
+  const flown = viewer.camera.__flownTo;
+  assert.ok(flown, 'the camera was moved');
+  assert.ok(flown.duration > 0, 'and it flew rather than snapped');
+  assert.equal(typeof flown.orientation.pitch, 'number');
+});
+
+test('GO does nothing when there is no day, or the day is empty', async () => {
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(layer.frameSelectedStorm(), false, 'no day selected');
+  viewer.camera.__flownTo = null;
+  layer.setDate('2026-01-01');
+  assert.equal(layer.frameSelectedStorm(), false, 'a day with no reports');
+  assert.equal(viewer.camera.__flownTo, null, 'and the camera stayed put');
 });

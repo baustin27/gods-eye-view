@@ -214,3 +214,230 @@ export function magnitudeLabel(report) {
 export function trimInches(value) {
   return String(Number(value.toFixed(2)));
 }
+
+/**
+ * Month names the typed date field accepts. Indexed from 1 so the parser can
+ * take a word straight to a number.
+ */
+const MONTHS = Object.freeze({
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+});
+
+/** Calendar days in a 1-indexed month, leap years included. */
+const MONTH_LENGTHS = Object.freeze([
+  31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+]);
+
+function isLeapYear(year) {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/** Real date, or null. Feb 30 is not a date and must not become Mar 2. */
+function buildDate(year, month, day) {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day)
+  )
+    return null;
+  if (year < 1900 || year > 2999) return null;
+  if (month < 1 || month > 12) return null;
+  const length =
+    month === 2 && isLeapYear(year) ? 29 : MONTH_LENGTHS[month - 1];
+  if (day < 1 || day > length) return null;
+  return { year, month, day };
+}
+
+const pad = (n) => String(n).padStart(2, '0');
+
+/** @param {{year:number,month:number,day:number}} parts */
+function formatDate(parts) {
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
+}
+
+/**
+ * Read a date the way someone would say or type it.
+ *
+ * Accepts `2026-08-11`, `8/11/2026`, `Aug 11 2026`, `11 Aug 2026` and `Aug 11`,
+ * with or without a trailing year. A bare `Aug 11` means the most recent one
+ * that has already happened, which is the reading a person checking last
+ * month's hail wants. Numeric forms are month/day/year, US convention —
+ * `8/11/2026` is 11 August, and `13/11/2026` is the 13th of November because no
+ * month is ever 13.
+ *
+ * Returns null rather than guessing when the text is not a date. Nothing is
+ * worse than a storm view silently showing the wrong day.
+ *
+ * @param {string} raw
+ * @param {{today?: string}} [options] `today` is 'YYYY-MM-DD', defaults to now.
+ * @returns {string|null} 'YYYY-MM-DD'
+ */
+export function parseStormDate(raw, options = {}) {
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim().toLowerCase().replace(/,/g, ' ');
+  if (!text) return null;
+
+  const today = parseIsoToday(options.today);
+  if (!today) return null;
+
+  let parts = parseIsoForm(text);
+  if (!parts) parts = parseNumericForm(text);
+  if (!parts) parts = parseWordForm(text);
+  if (!parts) return null;
+
+  // "Aug 11" with no year: the most recent one that has already happened.
+  // Only this year and last are tried; a bare month/day cannot sensibly mean
+  // a date further back than that.
+  const todayIso = formatDate(today);
+  if (parts.year === null) {
+    for (let year = today.year; year >= today.year - 1; year--) {
+      const candidate = buildDate(year, parts.month, parts.day);
+      if (!candidate) continue;
+      const iso = formatDate(candidate);
+      if (iso <= todayIso) return iso;
+    }
+    return null;
+  }
+
+  const built = buildDate(parts.year, parts.month, parts.day);
+  return built ? formatDate(built) : null;
+}
+
+function parseIsoToday(value) {
+  const source = value ?? formatDateFromNow();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(source).trim());
+  if (!match) return null;
+  const parts = buildDate(+match[1], +match[2], +match[3]);
+  return parts ? { ...parts } : null;
+}
+
+function formatDateFromNow() {
+  const now = new Date();
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/** `2026-08-11` */
+function parseIsoForm(text) {
+  const match = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(text);
+  if (!match) return null;
+  return { year: +match[1], month: +match[2], day: +match[3] };
+}
+
+/** `8/11/2026`, `08-11-26` */
+function parseNumericForm(text) {
+  const match = /^(\d{1,2})[-/.](\d{1,2})(?:[-/.](\d{2,4}))?$/.exec(text);
+  if (!match) return null;
+  let first = +match[1];
+  let second = +match[2];
+  const rawYear = match[3];
+  // 13 cannot be a month, so the order has to be day/month.
+  if (first > 12 && second <= 12) [first, second] = [second, first];
+  const year =
+    rawYear === undefined ? null : +rawYear + (rawYear.length === 2 ? 2000 : 0);
+  return { year, month: first, day: second };
+}
+
+/** `aug 11 2026`, `11 aug 2026`, `august 11th` */
+function parseWordForm(text) {
+  const tokens = text.split(/[\s/]+/).filter(Boolean);
+  let month = null;
+  let day = null;
+  let year = null;
+  for (const token of tokens) {
+    const digits = /^(\d{1,2})(?:st|nd|rd|th)?$/.exec(token);
+    if (digits) {
+      if (day === null) day = +digits[1];
+      else if (year === null) year = +digits[1] + (digits[1] < 100 ? 2000 : 0);
+      continue;
+    }
+    const yearToken = /^(\d{4})$/.exec(token);
+    if (yearToken) {
+      year = +yearToken[1];
+      continue;
+    }
+    const named = MONTHS[token.replace(/\.$/, '')];
+    if (named !== undefined) month = named;
+  }
+  if (month === null || day === null) return null;
+  return { year, month, day };
+}
+
+/**
+ * Where to put the camera so a day's reports are all in view.
+ *
+ * Pure, so the arithmetic is testable without a viewer. Altitude is derived
+ * from the spread rather than fixed, because a hail cell covering forty miles
+ * and one covering four need very different altitudes - and a fixed altitude
+ * either crops the big ones or strands the viewer in the sky over a small one.
+ *
+ * @param {Array<{lat:number,lon:number}>} reports
+ * @returns {{lat:number, lon:number, altitudeM:number, radiusKm:number}|null}
+ */
+export function framingFor(reports) {
+  const points = (reports || []).filter(
+    (r) => Number.isFinite(r?.lat) && Number.isFinite(r?.lon),
+  );
+  if (!points.length) return null;
+  if (points.length === 1) {
+    return {
+      lat: points[0].lat,
+      lon: points[0].lon,
+      radiusKm: 0,
+      altitudeM: MIN_FRAME_ALTITUDE_M,
+    };
+  }
+  const lat = points.reduce((sum, r) => sum + r.lat, 0) / points.length;
+  const lon = points.reduce((sum, r) => sum + r.lon, 0) / points.length;
+  // Measure from the centre so the frame covers the whole spread, not just
+  // half of it: averaging two edges would halve the radius we need.
+  const radiusKm = Math.max(
+    ...points.map((r) => haversineKm(lat, lon, r.lat, r.lon)),
+  );
+  return {
+    lat,
+    lon,
+    radiusKm,
+    altitudeM: frameAltitude(radiusKm),
+  };
+}
+
+/** Closer than this loses the county context; higher and the reports are dots. */
+export const MIN_FRAME_ALTITUDE_M = 60_000;
+export const MAX_FRAME_ALTITUDE_M = 1_500_000;
+
+/**
+ * Altitude that frames a radius, clamped to something usable at both ends.
+ * @param {number} radiusKm
+ * @returns {number} metres
+ */
+export function frameAltitude(radiusKm) {
+  if (!Number.isFinite(radiusKm) || radiusKm <= 0) return MIN_FRAME_ALTITUDE_M;
+  const wanted = radiusKm * 1000 * 2.6;
+  return Math.min(
+    MAX_FRAME_ALTITUDE_M,
+    Math.max(MIN_FRAME_ALTITUDE_M, Math.round(wanted)),
+  );
+}

@@ -815,6 +815,37 @@
 /* Optional per-layer ordered list: the turn-by-turn directions under the
    Directions row. Kept short and scrollable so a 40-step drive cannot push the
    rest of the rail off screen. */
+/* Optional typed field, e.g. a layer that takes one exact date. Sits above the
+   chips: it is the answer, the chips are the shortcuts around it. */
+.data-toggle-field {
+  margin: 6px 0 4px;
+}
+
+.data-toggle-field[hidden] {
+  display: none;
+}
+
+.data-toggle-field-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  font: inherit;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 3px;
+}
+
+.data-toggle-field-input:focus {
+  outline: none;
+  border-color: var(--gev-accent, #6fd3e8);
+  box-shadow: 0 0 0 1px var(--gev-accent, #6fd3e8);
+}
+
+.data-toggle-field-input:disabled {
+  opacity: 0.45;
+}
+
 .data-row-list {
   list-style: none;
   margin: 4px 0 0;

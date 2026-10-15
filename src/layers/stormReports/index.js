@@ -16,7 +16,9 @@ import {
   hailBand,
   HAIL_BANDS,
   magnitudeLabel,
+  framingFor,
   matchesFilter,
+  parseStormDate,
   radiusMetres,
   windBand,
   worstFirst,
@@ -29,8 +31,21 @@ import { STORM_SOURCE_BADGE } from '../../data/stormAttribution.js';
 export const STORM_REPORTS_ID = 'storm-reports';
 
 /** Shareable options, all defaulted so an absent option means the default. */
+/**
+ * The smallest hail this layer will ever show.
+ *
+ * An inch is the point where hail stops being a curiosity and starts being
+ * damage, and this layer exists to answer "was there damage". A shared link
+ * carrying a lower value is clamped rather than honoured: the codec only knows
+ * the value is a positive integer, and the floor is a claim this layer makes.
+ */
+export const HAIL_FLOOR_IN = 1.0;
+
 /** How many report cards the overlay may show at once. */
 const OVERLAY_COHORT_LIMIT = 25;
+
+/** The hail threshold rungs offered, inches. */
+export const HAIL_THRESHOLDS_IN = Object.freeze([1, 1.5, 2, 2.5, 3]);
 
 /** Bands used for the panel legend. */
 const HAIL_LEGEND = [
@@ -107,6 +122,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
   let _loaded = false;
   let _optionsDirty = true;
   let _packed = null;
+  let _fieldMessage = null;
   let _previouslyEmpty = true;
 
   /**
@@ -124,9 +140,12 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     const next = { ..._options, ..._pendingParams };
     _options = {
       ...next,
-      minHailIn: Number.isFinite(next.minHailTenths)
-        ? next.minHailTenths / 10
-        : next.minHailIn,
+      // A shared link can carry any positive integer; the floor is ours to hold.
+      minHailIn: clampHailIn(
+        Number.isFinite(next.minHailTenths)
+          ? next.minHailTenths / 10
+          : next.minHailIn,
+      ),
     };
     _pendingParams = null;
   }
@@ -230,6 +249,17 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
    * @param {Array} row
    * @param {number} ordinal
    */
+  /**
+   * Hold a hail threshold to the floor. Sub-inch hail is not offered and cannot
+   * arrive from a shared link either.
+   * @param {number} inches
+   * @returns {number}
+   */
+  function clampHailIn(inches) {
+    if (!Number.isFinite(inches)) return HAIL_FLOOR_IN;
+    return Math.max(HAIL_FLOOR_IN, inches);
+  }
+
   function unpack(row, ordinal = 0) {
     const [
       date,
@@ -310,7 +340,9 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
    * which failed registration, and the only symptom was the manager's generic
    * "Could not enable the requested layer".
    */
-  function publish() {
+  function publish(message = null) {
+    // An explicit null clears a previous rejection; no argument leaves it.
+    if (message !== undefined) _fieldMessage = message;
     if (!_viewer) return;
     _lastUpdate = Date.now();
     const entries = _enabled
@@ -355,6 +387,9 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
 
   /** One line describing what is on screen right now. */
   function panelInfo() {
+    // A rejected date outranks everything: the person is still looking at the
+    // previous selection and needs to know their typing did not take.
+    if (_fieldMessage) return _fieldMessage;
     if (_lastError) return `Failed: ${_lastError.message}`;
     if (_loading) return 'Loading reports...';
     if (!_enabled) return '';
@@ -468,6 +503,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     setDateRange(from, to = from) {
       _options = { ..._options, fromDate: from || null, toDate: to || null };
       _pendingParams = null;
+      _fieldMessage = null;
       _optionsDirty = true;
       if (!repaintFromMemory()) {
         // Nothing in memory yet - the next update() picks this up.
@@ -492,6 +528,33 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     /** The window currently in force. */
     getDateRange() {
       return { from: _options.fromDate || null, to: _options.toDate || null };
+    },
+
+    /**
+     * Fly the camera to the selected day.
+     *
+     * Separate from setDate on purpose: filtering and moving are different
+     * intentions, and a person checking three storms in a row does not want the
+     * camera yanked away each time. GO is there when they do want to go.
+     *
+     * @returns {boolean} false when no single day is selected, or it has no reports
+     */
+    frameSelectedStorm() {
+      const day = _options.fromDate;
+      if (!day || _options.toDate !== day || !_viewer) return false;
+      const reports = _visible.filter((r) => r.date === day);
+      const frame = framingFor(reports);
+      if (!frame) return false;
+      _viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(
+          frame.lon,
+          frame.lat,
+          frame.altitudeM,
+        ),
+        orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+        duration: 2,
+      });
+      return true;
     },
 
     /** Storm days in the snapshot, newest first, for a date picker. */
@@ -521,6 +584,15 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       const ready = Boolean(_snapshot);
       const selected = _options.fromDate;
       const chips = [
+        // GO leads: it is the action the rest of the row serves.
+        {
+          id: 'storm-reports-go',
+          label: 'GO',
+          title: 'Fly the camera to the selected day',
+          disabled: !ready || !selected || _options.toDate !== selected,
+          active: false,
+          onClick: () => self().frameSelectedStorm(),
+        },
         {
           id: 'storm-reports-all',
           label: 'ALL DATES',
@@ -539,32 +611,39 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
           onClick: () => self().setDate(day.date),
         })),
         {
-          id: 'storm-reports-hail-075',
-          label: '0.75\u2033',
-          title: 'Include hail down to three-quarter inch',
-          active: _options.minHailIn <= 0.75,
-          onClick: () => self().setMinHailIn(0.75),
-        },
-        {
           id: 'storm-reports-hail-1',
           label: '1\u2033',
-          title: 'Only hail an inch or larger',
-          active: _options.minHailIn === 1,
+          title: 'Hail an inch or larger',
+          active: _options.minHailIn <= 1,
           onClick: () => self().setMinHailIn(1),
         },
         {
           id: 'storm-reports-hail-15',
           label: '1.5\u2033',
-          title: 'Only hail likely to damage a shingle',
+          title: 'Hail likely to damage a shingle',
           active: _options.minHailIn === 1.5,
           onClick: () => self().setMinHailIn(1.5),
         },
         {
           id: 'storm-reports-hail-2',
-          label: '2\u2033+',
-          title: 'Only hail of two inches or more',
-          active: _options.minHailIn >= 2,
+          label: '2\u2033',
+          title: 'Hail of two inches or more',
+          active: _options.minHailIn === 2,
           onClick: () => self().setMinHailIn(2),
+        },
+        {
+          id: 'storm-reports-hail-25',
+          label: '2.5\u2033',
+          title: 'Hail of two and a half inches or more',
+          active: _options.minHailIn === 2.5,
+          onClick: () => self().setMinHailIn(2.5),
+        },
+        {
+          id: 'storm-reports-hail-3',
+          label: '3\u2033',
+          title: 'Hail of three inches or more - severe',
+          active: _options.minHailIn >= 3,
+          onClick: () => self().setMinHailIn(3),
         },
         {
           id: 'storm-reports-hail',
@@ -584,6 +663,26 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       return {
         readout: false,
         chips,
+        field: {
+          id: 'storm-reports-date',
+          value: _options.fromDate || '',
+          placeholder: 'Type a date - 2026-08-11',
+          ariaLabel: 'Filter the map to one storm date',
+          onCommit(raw) {
+            const parsed = parseStormDate(raw);
+            if (!parsed) {
+              // Nothing is worse than a storm view showing the wrong day. Say so
+              // and leave the current selection alone.
+              publish(`Could not read "${String(raw).trim()}" as a date`);
+              return false;
+            }
+            self().setDate(parsed);
+            return true;
+          },
+          onCancel() {
+            publish();
+          },
+        },
         legend: HAIL_LEGEND.map((band) => ({
           label: band.label,
           color: band.color,
@@ -595,10 +694,11 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
 
     /** Threshold in inches. Persisted in tenths so the codec stays integral. */
     setMinHailIn(inches) {
-      _options = { ..._options, minHailIn: inches };
+      const floorred = clampHailIn(inches);
+      _options = { ..._options, minHailIn: floorred };
       _pendingParams = {
         ...(_pendingParams || {}),
-        minHailTenths: Math.round(inches * 10),
+        minHailTenths: Math.round(floorred * 10),
       };
       _optionsDirty = true;
       repaintFromMemory();

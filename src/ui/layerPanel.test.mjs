@@ -258,3 +258,151 @@ test('an omitted source is visibly unavailable and cannot be toggled on', async 
     'an active layer can always be switched off',
   );
 });
+
+/**
+ * Build a panel over the rail fixture with one ordinary layer whose row
+ * controls may include the optional typed `field`. Returns the fixture too:
+ * the test DOM answers class selectors on elements, not on the document.
+ */
+async function panelWithField({ withField = true, reject = false } = {}) {
+  const { LayerPanel } = await import('./layerPanel.js');
+  const { railFixture } = await import('./railTestFixture.mjs');
+  const f = railFixture();
+  const previousDocument = globalThis.document;
+  globalThis.document = f.document;
+  const layer = {
+    id: 'storm',
+    name: 'Storm',
+    icon: '*',
+    source: 'S',
+    enabled: true,
+    showInTogglePanel: true,
+    stats: {},
+  };
+  const committed = [];
+  const cancelled = [];
+  const controls = {
+    readout: false,
+    chips: [{ id: 'a', label: 'A' }],
+    legend: [],
+    info: 'info line',
+  };
+  if (withField) {
+    controls.field = {
+      id: 'storm-date',
+      value: '2026-08-10',
+      placeholder: 'Type a date',
+      ariaLabel: 'One storm date',
+      onCommit: (raw) => {
+        committed.push(raw);
+        // A rejected value leaves the field value alone, as the layer would.
+        if (reject) return false;
+        controls.field.value = raw;
+        return true;
+      },
+      onCancel: () => cancelled.push(true),
+    };
+  }
+  const panel = new LayerPanel({
+    getLayers: () => [layer],
+    isEnabled: () => true,
+    setEnabled: () => {},
+    setLayerParams: () => {},
+    hasRowControls: () => true,
+    subscribeRowControls: () => () => {},
+    getRowControls: () => controls,
+  });
+  const row = () => f.find((n) => n.dataset.layerId === 'storm');
+  try {
+    panel.mount(f.container);
+  } catch (error) {
+    panel.destroy();
+    globalThis.document = previousDocument;
+    throw error;
+  }
+  return {
+    panel,
+    committed,
+    cancelled,
+    row,
+    input: () => row().querySelector('.data-toggle-field')._rowFieldInput,
+    close() {
+      panel.destroy();
+      globalThis.document = previousDocument;
+    },
+  };
+}
+
+/** A keydown on the field container, in the fixture's event idiom. */
+function key(node, name) {
+  const event = new Event('keydown');
+  Object.defineProperty(event, 'key', { value: name });
+  Object.defineProperty(event, 'target', { value: node });
+  node.dispatchEvent(event);
+  return event;
+}
+
+test('a layer that offers a field gets a real input in its row', async () => {
+  const h = await panelWithField();
+  const box = h.row().querySelector('.data-toggle-field');
+  assert.ok(box, 'the field container is rendered');
+  assert.equal(box.hidden, false);
+  const input = h.input();
+  assert.ok(input, 'and it holds an input');
+  assert.equal(input.type, 'text');
+  assert.equal(input.value, '2026-08-10', 'seeded from the layer');
+  assert.equal(input.placeholder, 'Type a date');
+  assert.equal(input.getAttribute('aria-label'), 'One storm date');
+  h.close();
+});
+
+test('Enter commits the typed value to the layer', async () => {
+  const h = await panelWithField();
+  const input = h.input();
+  input.value = '2026-08-11';
+  key(h.row().querySelector('.data-toggle-field'), 'Enter');
+  assert.deepEqual(h.committed, ['2026-08-11']);
+  h.close();
+});
+
+test('Escape abandons the edit and restores the layer value', async () => {
+  const h = await panelWithField();
+  const input = h.input();
+  input.value = 'half typed';
+  key(h.row().querySelector('.data-toggle-field'), 'Escape');
+  assert.deepEqual(h.committed, [], 'nothing was committed');
+  assert.deepEqual(h.cancelled, [true]);
+  assert.equal(input.value, '2026-08-10', 'and the field went back');
+  h.close();
+});
+
+test('a rejected value stays in the field so it can be corrected', async () => {
+  const h = await panelWithField({ reject: true });
+  const input = h.input();
+  input.value = 'next tuesday';
+  key(h.row().querySelector('.data-toggle-field'), 'Enter');
+  assert.deepEqual(h.committed, ['next tuesday'], 'the layer did see it');
+  assert.equal(
+    input.value,
+    'next tuesday',
+    'and rejected it without being reset',
+  );
+  h.close();
+});
+
+test('a layer with no field renders exactly as before', async () => {
+  const h = await panelWithField({ withField: false });
+  const box = h.row().querySelector('.data-toggle-field');
+  assert.ok(box, 'the container still exists');
+  assert.equal(box.hidden, true, 'and is hidden');
+  assert.equal(box._rowFieldInput, null, 'with no input in it');
+  assert.ok(
+    h.row().querySelector('.data-toggle-chip'),
+    'the chips are unaffected',
+  );
+  assert.equal(
+    h.row().querySelector('.data-toggle-controls-info').textContent,
+    'info line',
+  );
+  h.close();
+});

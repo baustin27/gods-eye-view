@@ -3,12 +3,17 @@ import test from 'node:test';
 
 import {
   HAIL_BANDS,
+  MAX_FRAME_ALTITUDE_M,
+  MIN_FRAME_ALTITUDE_M,
   WIND_BANDS,
   bandFor,
+  frameAltitude,
+  framingFor,
   hailBand,
   haversineKm,
   magnitudeLabel,
   matchesFilter,
+  parseStormDate,
   radiusMetres,
   windBand,
   worstFirst,
@@ -165,4 +170,80 @@ test('bands are contiguous with no gap a size could fall through', () => {
 test('distance is sane enough to gate on', () => {
   assert.ok(haversineKm(35.1, -97.4, 35.1, -97.4) < 0.01);
   assert.ok(haversineKm(39.74, -104.99, 40.015, -105.27) > 35);
+});
+
+const TODAY = '2026-10-15';
+const at = (day, month, year) => parseStormDate(day, { today: TODAY });
+
+test('reads an ISO date', () => {
+  assert.equal(at('2026-08-11'), '2026-08-11');
+  assert.equal(at('  2026-08-11  '), '2026-08-11');
+});
+
+test('reads a US numeric date', () => {
+  assert.equal(at('8/11/2026'), '2026-08-11');
+  assert.equal(at('08/11/2026'), '2026-08-11');
+  assert.equal(at('8-11-26'), '2026-08-11');
+});
+
+test('a number too big for a month means day/month', () => {
+  // 13 cannot be a month, so this can only be 13 November.
+  assert.equal(at('13/11/2026'), '2026-11-13');
+});
+
+test('reads a month name, in either order', () => {
+  assert.equal(at('Aug 11 2026'), '2026-08-11');
+  assert.equal(at('August 11, 2026'), '2026-08-11');
+  assert.equal(at('11 aug 2026'), '2026-08-11');
+  assert.equal(at('Sept 6 2026'), '2026-09-06');
+  assert.equal(at('Aug 11th 2026'), '2026-08-11');
+});
+
+test('a bare month and day means the most recent one already past', () => {
+  assert.equal(at('Aug 11'), '2026-08-11', 'August has passed this year');
+  assert.equal(at('Sep 30'), '2026-09-30');
+  // December has not happened yet, so it means last December.
+  assert.equal(at('Dec 3'), '2025-12-03');
+});
+
+test('refuses anything that is not a real date', () => {
+  assert.equal(at('2026-02-30'), null, 'February has no 30th');
+  assert.equal(at('2025-02-29'), null, '2025 is not a leap year');
+  assert.equal(at('2024-02-29'), '2024-02-29', '2024 is');
+  assert.equal(at('2026-13-01'), null);
+  assert.equal(at('tomorrow'), null);
+  assert.equal(at(''), null);
+  assert.equal(at('   '), null);
+  assert.equal(parseStormDate(null), null);
+  assert.equal(parseStormDate(20260811), null, 'not a string');
+});
+
+test('framing a single report stays close', () => {
+  const frame = framingFor([{ lat: 39.05, lon: -105.4 }]);
+  assert.equal(frame.lat, 39.05);
+  assert.equal(frame.lon, -105.4);
+  assert.equal(frame.radiusKm, 0);
+  assert.equal(frame.altitudeM, MIN_FRAME_ALTITUDE_M);
+});
+
+test('framing a spread centres it and backs off', () => {
+  const frame = framingFor([
+    { lat: 39.0, lon: -105.0 },
+    { lat: 40.0, lon: -105.0 },
+  ]);
+  assert.ok(Math.abs(frame.lat - 39.5) < 0.001, 'centred between them');
+  assert.ok(frame.radiusKm > 50, 'covers the whole spread, not half');
+  assert.ok(frame.altitudeM > MIN_FRAME_ALTITUDE_M);
+});
+
+test('altitude is clamped at both ends', () => {
+  assert.equal(frameAltitude(0), MIN_FRAME_ALTITUDE_M);
+  assert.equal(frameAltitude(0.001), MIN_FRAME_ALTITUDE_M);
+  assert.equal(frameAltitude(99999), MAX_FRAME_ALTITUDE_M);
+});
+
+test('framing nothing is null, not a zero-height camera', () => {
+  assert.equal(framingFor([]), null);
+  assert.equal(framingFor(null), null);
+  assert.equal(framingFor([{ lat: NaN, lon: -105 }]), null);
 });

@@ -345,7 +345,31 @@ export class LayerPanel {
               this.setLayerParams(layer.id, item.params, { origin: 'user' });
           });
           row.appendChild(list);
-          this._syncRowControls(controls, layer, list);
+          // An optional typed field. Its own container and its own listeners,
+          // because syncChipGroup reconciles the chip container by rewriting
+          // textContent - anything nested inside a chip is destroyed on the next
+          // panel refresh, which is what the user's own commit triggers.
+          const field = document.createElement('div');
+          field.className = 'data-toggle-field';
+          field.hidden = true;
+          this._bind(field, 'keydown', (event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              this._commitRowField(field, layer.id);
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              this._cancelRowField(field, layer.id);
+            }
+          });
+          // Committing on blur is what makes a field feel ordinary. Guarded so
+          // moving from the field onto a chip does not fire twice.
+          this._bind(field, 'focusout', (event) => {
+            if (event.relatedTarget && field.contains(event.relatedTarget))
+              return;
+            this._commitRowField(field, layer.id);
+          });
+          row.appendChild(field);
+          this._syncRowControls(controls, layer, list, field);
         }
       }
 
@@ -420,14 +444,21 @@ export class LayerPanel {
    * @param {object} layer Registered layer entry.
    * @param {HTMLElement|null} [listContainer] The row's `.data-row-list` node.
    */
-  _syncRowControls(container, layer, listContainer = null) {
+  _syncRowControls(
+    container,
+    layer,
+    listContainer = null,
+    fieldContainer = null,
+  ) {
     if (!container) return;
     const controls = layer.enabled ? this._rowControlsFor(layer.id) : null;
     if (controls?.readout) {
       container.remove();
       listContainer?.remove();
+      fieldContainer?.remove();
       return;
     }
+    this._syncRowField(fieldContainer, controls?.field || null);
     const chips = controls?.chips || [];
     const legend = controls?.legend || [];
     const infoText = controls?.info;
@@ -497,6 +528,97 @@ export class LayerPanel {
    * @param {HTMLElement|null} container The row's `.data-row-list` node.
    * @param {{ariaLabel?: string, items?: Array<object>}|null} list Descriptor.
    */
+  /**
+   * Reconcile the row's optional typed field.
+   *
+   * The input node is kept across refreshes and only its value is touched, so
+   * a refresh triggered while someone is mid-word does not steal focus or
+   * discard a half-typed date. While the field has focus nothing is written to
+   * it at all - the panel refreshes on a timer, and that timer must not be able
+   * to interrupt typing.
+   *
+   * @param {HTMLElement|null} container The row's `.data-toggle-field` node.
+   * @param {object|null} descriptor Row-controls `field`, or null to hide it.
+   */
+  _syncRowField(container, descriptor) {
+    if (!container) return;
+    if (!descriptor || this.destroyed) {
+      container.hidden = true;
+      container._rowFieldInput?.remove();
+      container._rowFieldInput = null;
+      return;
+    }
+    container.hidden = false;
+    container.dataset.fieldId = descriptor.id || '';
+    // Tracked on the container rather than looked up: the fixture DOM used by
+    // the panel tests answers class selectors only, and a retained node is
+    // what keeps focus alive across a refresh anyway.
+    let input = container._rowFieldInput;
+    if (!input) {
+      const document = container.ownerDocument ?? globalThis.document;
+      input = document.createElement('input');
+      input.className = 'data-toggle-field-input';
+      input.type = 'text';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.setAttribute('inputmode', 'text');
+      container.appendChild(input);
+      container._rowFieldInput = input;
+    }
+    if (descriptor.ariaLabel)
+      input.setAttribute('aria-label', descriptor.ariaLabel);
+    else input.removeAttribute('aria-label');
+    if (descriptor.placeholder) input.placeholder = descriptor.placeholder;
+    else input.removeAttribute('placeholder');
+    if (descriptor.disabled) input.disabled = true;
+    else input.disabled = false;
+    const active = container.ownerDocument?.activeElement === input;
+    if (!active && input.value !== String(descriptor.value ?? ''))
+      input.value = String(descriptor.value ?? '');
+  }
+
+  /**
+   * Hand the typed value to the layer and report whether it took.
+   *
+   * The layer decides what its text means; a rejected value leaves the input
+   * showing what was typed so it can be corrected rather than silently
+   * reverted to a date nobody asked for.
+   *
+   * @param {HTMLElement} container The row's `.data-toggle-field` node.
+   * @param {string} layerId
+   * @returns {boolean}
+   */
+  _commitRowField(container, layerId) {
+    const input = container?._rowFieldInput;
+    if (!input || input.disabled) return false;
+    const field = this._rowControlsFor(layerId)?.field;
+    if (!field) return false;
+    let accepted = true;
+    if (typeof field.onCommit === 'function')
+      accepted = field.onCommit(input.value) !== false;
+    if (accepted)
+      input.value = String(this._rowControlsFor(layerId)?.field?.value ?? '');
+    return accepted;
+  }
+
+  /**
+   * Abandon the edit and put the field back to the layer's current value.
+   * @param {HTMLElement} container
+   * @param {string} layerId
+   */
+  _cancelRowField(container, layerId) {
+    const input = container?._rowFieldInput;
+    if (!input) return;
+    const field = this._rowControlsFor(layerId)?.field;
+    input.value = String(field?.value ?? '');
+    if (typeof field?.onCancel === 'function') field.onCancel();
+    // Blurring fires focusout, which would commit the value we just restored.
+    // Without this the cancel is immediately undone by the very next tick.
+    container._rowFieldCancelling = true;
+    input.blur?.();
+    container._rowFieldCancelling = false;
+  }
+
   _syncRowList(container, list) {
     syncRowList(container, list);
   }
