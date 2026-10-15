@@ -28,9 +28,12 @@ export { createReferenceSources as createStandaloneReferenceSources } from '../s
 export function createStandaloneLayerSources(overrides = {}) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides))
     throw new TypeError('Source overrides must be an object');
-  // Data-scope reader, threaded in rather than imported so this module holds
-  // no scope state. Sources that cannot honour a scope simply ignore it.
-  const { getScope = null } = overrides;
+  // `getScope` is the data-scope controller's snapshot reader, threaded in rather
+  // than imported so this module holds no scope state. It is a dependency, not a
+  // source override, so it is taken out of the map before that map is validated
+  // and merged — otherwise it reads as an unknown source and poisons the result.
+  // Sources that cannot honour a scope simply ignore it.
+  const { getScope = null, ...sourceOverrides } = overrides;
   const mapTiles = createOpenFreeMapSource();
   const defaults = {
     ...createReferenceSources(),
@@ -62,9 +65,9 @@ export function createStandaloneLayerSources(overrides = {}) {
       token: import.meta.env?.MAPILLARY_CLIENT_TOKEN || '',
     }),
   };
-  for (const name of Object.keys(overrides)) {
+  for (const name of Object.keys(sourceOverrides)) {
     if (!Object.hasOwn(defaults, name))
       throw new TypeError(`Unknown source: ${name}`);
   }
-  return { ...defaults, ...overrides };
+  return { ...defaults, ...sourceOverrides };
 }
