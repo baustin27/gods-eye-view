@@ -51,6 +51,12 @@ import {
   indexNceiEvents,
   joinNcei,
 } from './lib/storm-ncei-join.mjs';
+import {
+  DEFAULT_MAX_GAP_MINUTES,
+  DEFAULT_MAX_SPAN_KM,
+  clusterReports,
+  summarizeCluster,
+} from './lib/storm-cluster.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -385,6 +391,26 @@ async function main() {
         : 0,
     };
     stormEvents = storms;
+
+    // Whatever NCEI has not published yet still gets grouped, so the newest
+    // storms read as storms rather than as loose dots. These carry
+    // `identitySource: 'clustered'` and are never presented as observed.
+    const orphans = reports.filter((r) => !r.episodeId);
+    if (orphans.length) {
+      const { clusters, stats } = clusterReports(orphans, {
+        maxSpanKm: DEFAULT_MAX_SPAN_KM,
+        maxGapMinutes: DEFAULT_MAX_GAP_MINUTES,
+      });
+      const inferred = clusters
+        .filter((c) => c.length > 1)
+        .map((c) => summarizeCluster(c, 'cl'));
+      process.stdout.write(
+        `    clustered ${orphans.length.toLocaleString()} unattributed reports into ` +
+          `${inferred.length.toLocaleString()} inferred storms ` +
+          `(largest ${stats.largest}), ${stats.singleton.toLocaleString()} left alone\n`,
+      );
+      stormEvents = [...stormEvents, ...inferred];
+    }
   }
 
   process.stdout.write(
