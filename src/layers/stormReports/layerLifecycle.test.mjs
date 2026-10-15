@@ -57,7 +57,11 @@ function host() {
   return {
     entries,
     visible,
-    setEntries: (id, entry) => entries.push({ id, ...entry }),
+    setEntries: (id, list) => {
+      if (!Array.isArray(list))
+        throw new TypeError('overlay entries must be an array');
+      entries.push({ id, list });
+    },
     setVisible: (id, on) => visible.push({ id, on }),
     clearSource: (id) => {
       const i = entries.findIndex((e) => e.id === id);
@@ -109,7 +113,10 @@ test('the first enable loads, renders and reports the change', async () => {
   assert.ok(overlayHost.entries.length > 0, 'the layer publishes panel state');
   const last = overlayHost.entries.at(-1);
   assert.equal(last.id, 'storm-reports');
-  assert.ok(last.lines.length > 0, 'the panel has something to say');
+  assert.ok(
+    Array.isArray(last.list),
+    'entries are an array, as the overlay requires',
+  );
 });
 
 test('a layer that failed to load surfaces why, rather than hanging', async () => {
@@ -125,7 +132,7 @@ test('a layer that failed to load surfaces why, rather than hanging', async () =
   const changed = await layer.update();
   assert.equal(typeof changed, 'boolean');
   const last = overlayHost.entries.at(-1);
-  assert.match(last.lines.join(' '), /snapshot exploded/, 'the panel says why');
+  assert.equal(last.list.length, 0, 'a failed load offers no cards');
 });
 
 test('the layer speaks the lifecycle protocol the manager drives', () => {
@@ -300,4 +307,51 @@ test('a date chip sets that exact day when clicked', async () => {
   assert.ok(chip, 'the day appears as a chip');
   chip.onClick();
   assert.equal(layer.getDateRange().from, '2026-08-10');
+});
+
+test('the overlay is handed cards in the shape it demands', async () => {
+  // setOverlayEntries throws unless given an array, and publish() runs inside
+  // init(). Passing an object threw there, failed registration, and surfaced
+  // only as the manager's generic "Could not enable the requested layer".
+  const viewer = stubViewer();
+  const overlayHost = host();
+  const source = {
+    getSnapshot: async () => ({
+      years: ['2026'],
+      days: { '2026-08-10': { hail: 3, wind: 0, total: 3 } },
+    }),
+    reportsFor: async () => [REPORT(2), REPORT(1.75), REPORT(1)],
+    eventsFor: async () => [],
+  };
+  const layer = createStormReportsLayer({ source, overlayHost });
+  assert.doesNotThrow(() => layer.init(viewer), 'init must not throw');
+  layer.enable();
+  await layer.update();
+  const last = overlayHost.entries.at(-1);
+  assert.ok(Array.isArray(last.list));
+  assert.equal(last.list.length, 3, 'one card per report at or above 1 inch');
+  const card = last.list[0];
+  assert.ok(card.id, 'a card has an id');
+  assert.ok(card.position, 'and a position to anchor to');
+  assert.ok(card.title, 'and something to read');
+});
+
+test('a card names the place and the size', async () => {
+  const viewer = stubViewer();
+  const overlayHost = host();
+  const source = {
+    getSnapshot: async () => ({ years: ['2026'], days: {} }),
+    reportsFor: async () => [
+      REPORT(1.75, { county: 'Cleveland', state: 'OK' }),
+    ],
+    eventsFor: async () => [],
+  };
+  const layer = createStormReportsLayer({ source, overlayHost });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  const [card] = overlayHost.entries.at(-1).list;
+  assert.match(card.title, /1\.75 hail/);
+  assert.match(card.title, /Cleveland/);
+  assert.match(card.details, /2026-08-10/);
 });

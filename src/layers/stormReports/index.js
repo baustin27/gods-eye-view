@@ -28,6 +28,9 @@ import { STORM_SOURCE_BADGE } from '../../data/stormAttribution.js';
 export const STORM_REPORTS_ID = 'storm-reports';
 
 /** Shareable options, all defaulted so an absent option means the default. */
+/** How many report cards the overlay may show at once. */
+const OVERLAY_COHORT_LIMIT = 25;
+
 export const STORM_REPORTS_DEFAULTS = Object.freeze({
   minHailIn: 1.0,
   minWindKt: 50,
@@ -225,29 +228,55 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     }
   }
 
+  /**
+   * Hand the worst reports to the world overlay as clickable cards.
+   *
+   * `setOverlayEntries` throws unless given an array of entries in its own
+   * shape, and this call runs inside `init()`. Passing an object threw there,
+   * which failed registration, and the only symptom was the manager's generic
+   * "Could not enable the requested layer".
+   */
   function publish() {
     if (!_viewer) return;
     _lastUpdate = Date.now();
-    // The same channel the aggregate storm layers use, so the panel picks these
-    // up with no extra wiring.
-    overlayHost.setEntries(STORM_REPORTS_ID, {
-      title: 'Storm Reports',
-      lines: panelLines(),
+    const entries = _enabled
+      ? worstFirst(_visible, _options.hazard, OVERLAY_COHORT_LIMIT).map(
+          (report) => {
+            const band =
+              report.hazard === 'hail'
+                ? hailBand(report.size)
+                : windBand(report.size);
+            const position = Cesium.Cartesian3.fromDegrees(
+              report.lon,
+              report.lat,
+            );
+            return {
+              id: `storm-report:${report.date}:${report.lat}:${report.lon}`,
+              position,
+              cullPosition: position,
+              color: band?.color || '#cccccc',
+              title: `${magnitudeLabel(report)} — ${report.county || report.state || 'unknown place'}`,
+              details: [
+                report.county
+                  ? `${report.county}, ${report.state}`
+                  : report.state || '',
+                report.date,
+              ]
+                .filter(Boolean)
+                .join(' · '),
+              caveat: band
+                ? undefined
+                : 'No measured magnitude on this report.',
+            };
+          },
+        )
+      : [];
+    overlayHost.setEntries(STORM_REPORTS_ID, entries, {
+      cohortLimit: OVERLAY_COHORT_LIMIT,
+      collisionCapacity: 64,
+      moving: false,
     });
-  }
-
-  function panelLines() {
-    if (_lastError) return [`Failed: ${_lastError.message}`];
-    if (_loading) return ['Loading reports...'];
-    if (!_enabled) return [];
-    const count = _visible.length.toLocaleString();
-    const lines = [`${count} report${_visible.length === 1 ? '' : 's'}`];
-    const worst = _stats?.worst;
-    if (worst?.size != null) lines.push(`Largest: ${magnitudeLabel(worst)}`);
-    if (_stats?.storms) {
-      lines.push(`${_stats.storms.toLocaleString()} storms in window`);
-    }
-    return lines;
+    _stats = { ...(_stats || {}), visibleCount: _visible.length };
   }
 
   return {
