@@ -327,3 +327,96 @@ export function unpackReport(packed) {
     comment: comment || null,
   };
 }
+
+/**
+ * Build a county-name lookup from the bundled county polygons.
+ *
+ * The per-day SPC files carry a county *name* and a state abbreviation, never
+ * a FIPS code, so 2026 reports arrive with no county code at all. The bulk
+ * archive does carry one. This recovers it for the daily rows.
+ *
+ * Keys are `STATE|NORMALISED_NAME` with every non-alphanumeric character
+ * removed, because the sources disagree about spacing and punctuation: the
+ * daily files write `LA PORTE` and `DE KALB` where the county file writes
+ * `La Porte` and `De Kalb`.
+ *
+ * @param {Array<{properties: {fips?: string, name?: string, st?: string}}>} counties
+ * @returns {Map<string, string>} Lookup key -> five-digit FIPS.
+ */
+export function buildCountyFipsIndex(counties) {
+  const index = new Map();
+  for (const feature of counties) {
+    const p = feature?.properties;
+    const fips = String(p?.fips ?? '').trim();
+    const name = String(p?.name ?? '').trim();
+    const state = String(p?.st ?? '').trim();
+    if (!/^\d{5}$/.test(fips) || !name || !state) continue;
+    index.set(countyLookupKey(state, name), fips);
+  }
+  return index;
+}
+
+/**
+ * The one spelling both sources agree on: state, a pipe, then the name with
+ * everything non-alphanumeric stripped.
+ * @param {string} state
+ * @param {string} name
+ * @returns {string}
+ */
+export function countyLookupKey(state, name) {
+  const bare = (v) =>
+    String(v ?? '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+  return `${bare(state)}|${bare(name)}`;
+}
+
+/**
+ * An NWS zone code such as `GMZ635` or `PZZ655` spans several counties, so it
+ * has no single correct FIPS. Recognising them keeps the resolver from
+ * inventing one: the zone stays readable in `county`, the code stays null.
+ * @param {string} value
+ * @returns {boolean}
+ */
+export function isNwsZoneCode(value) {
+  return /^[A-Z]{3}\d{3}$/.test(
+    String(value ?? '')
+      .trim()
+      .toUpperCase(),
+  );
+}
+
+/**
+ * Fill in `countyFips` on reports that only have a county name, leaving the
+ * ones that already carry a code untouched and the unresolvable ones null.
+ *
+ * Mutates in place and returns the same array, because a report list is large
+ * enough that copying it per pass is worth avoiding.
+ * @param {StormReport[]} reports
+ * @param {Map<string, string>} index From {@link buildCountyFipsIndex}.
+ * @returns {{resolved: number, unresolvable: number, zones: number}}
+ */
+export function applyCountyFips(reports, index) {
+  let resolved = 0;
+  let unresolvable = 0;
+  let zones = 0;
+  for (const report of reports) {
+    if (report.countyFips) continue;
+    if (!report.county || !report.state) {
+      unresolvable += 1;
+      continue;
+    }
+    if (isNwsZoneCode(report.county)) {
+      zones += 1;
+      continue;
+    }
+    const fips = index.get(countyLookupKey(report.state, report.county));
+    if (fips) {
+      report.countyFips = fips;
+      resolved += 1;
+    } else {
+      unresolvable += 1;
+    }
+  }
+  return { resolved, unresolvable, zones };
+}

@@ -3,8 +3,11 @@ import test from 'node:test';
 
 import {
   MAGNITUDE_UNITS,
+  applyCountyFips,
+  buildCountyFipsIndex,
   STORM_HAZARDS,
   countyFipsFromSpc,
+  isNwsZoneCode,
   isPlottable,
   normalizeSpcBulkRow,
   normalizeSpcDailyRow,
@@ -365,4 +368,63 @@ test('packing keeps an absent magnitude as absent rather than as zero inches', (
   assert.equal(unpackReport(packed).size, null);
   assert.equal(unpackReport(packed).minute, null);
   assert.equal(unpackReport(packed).trace, true);
+});
+
+test('the county resolver ignores spacing, because the sources disagree about it', () => {
+  const index = buildCountyFipsIndex([
+    { properties: { fips: '21021', name: 'La Porte', st: 'KY' } },
+    { properties: { fips: '06085', name: 'Santa Clara', st: 'CA' } },
+  ]);
+  assert.equal(index.get('KY|LAPORTE'), '21021');
+  assert.equal(index.get('CA|SANTACLARA'), '06085');
+
+  const reports = [
+    { countyFips: null, county: 'LA PORTE', state: 'KY' },
+    { countyFips: null, county: 'De Kalb', state: 'KY' },
+    { countyFips: null, county: 'Santa Clara', state: 'CA' },
+  ];
+  const result = applyCountyFips(reports, index);
+  assert.equal(reports[0].countyFips, '21021');
+  assert.equal(reports[1].countyFips, null, 'an unknown county stays null');
+  assert.equal(reports[2].countyFips, '06085');
+  assert.deepEqual(result, { resolved: 2, unresolvable: 1, zones: 0 });
+});
+
+test('a county code already on the report is never overwritten', () => {
+  const index = buildCountyFipsIndex([
+    { properties: { fips: '21021', name: 'La Porte', st: 'KY' } },
+  ]);
+  const reports = [{ countyFips: '99001', county: 'LA PORTE', state: 'KY' }];
+  applyCountyFips(reports, index);
+  assert.equal(reports[0].countyFips, '99001', 'the archive code wins');
+});
+
+test('an NWS zone code spans counties, so it is left null rather than guessed', () => {
+  const index = buildCountyFipsIndex([]);
+  const reports = [
+    { countyFips: null, county: 'GMZ635', state: 'FL' },
+    { countyFips: null, county: 'PZZ655', state: 'CA' },
+    { countyFips: null, county: null, state: 'FL' },
+  ];
+  const result = applyCountyFips(reports, index);
+  assert.equal(reports[0].countyFips, null, 'no invented code');
+  assert.equal(
+    reports[0].county,
+    'GMZ635',
+    'the zone stays readable for display',
+  );
+  assert.equal(reports[2].countyFips, null);
+  assert.deepEqual(result, { resolved: 0, unresolvable: 1, zones: 2 });
+});
+
+test('the county index skips features that are not usable counties', () => {
+  const index = buildCountyFipsIndex([
+    { properties: { fips: '', name: 'Nowhere', st: 'KY' } },
+    { properties: { fips: '21021', name: '', st: 'KY' } },
+    { properties: { fips: '21021', name: 'La Porte', st: '' } },
+    null,
+    {},
+    { properties: { fips: '21021', name: 'La Porte', st: 'KY' } },
+  ]);
+  assert.equal(index.size, 1, 'only the one well-formed county survives');
 });

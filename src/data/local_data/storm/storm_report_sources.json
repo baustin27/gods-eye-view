@@ -1,0 +1,66 @@
+{
+  "builtAt": "2026-10-15T15:50:24.875Z",
+  "hazards": [
+    "hail",
+    "wind"
+  ],
+  "units": {
+    "hail": "in",
+    "wind": "kt"
+  },
+  "sources": {
+    "spc-bulk-hail": {
+      "url": "https://www.spc.noaa.gov/wcm/data/1955-2025_hail.csv.zip",
+      "rows": 414481,
+      "kept": 43582,
+      "window": [
+        2021,
+        2025
+      ]
+    },
+    "spc-bulk-wind": {
+      "url": "https://www.spc.noaa.gov/wcm/data/1955-2025_wind.csv.zip",
+      "rows": 562088,
+      "kept": 96752,
+      "window": [
+        2021,
+        2025
+      ]
+    },
+    "spc-daily": {
+      "base": "https://www.spc.noaa.gov/climo/reports",
+      "days": 287,
+      "kept": 15403,
+      "window": [
+        "2026-01-01",
+        "2026-10-14"
+      ]
+    }
+  },
+  "complete": {
+    "2021": {
+      "hail": 6266,
+      "wind": 15523
+    },
+    "2022": {
+      "hail": 7179,
+      "wind": 17590
+    },
+    "2023": {
+      "hail": 11760,
+      "wind": 21207
+    },
+    "2024": {
+      "hail": 9010,
+      "wind": 20099
+    },
+    "2025": {
+      "hail": 9367,
+      "wind": 22333
+    },
+    "2026": {
+      "hail": 8281,
+      "wind": 7122
+    }
+  }
+}
