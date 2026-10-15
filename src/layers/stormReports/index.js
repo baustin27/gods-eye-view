@@ -20,6 +20,8 @@ import {
   windBand,
   worstFirst,
 } from './model.js';
+import * as Cesium from 'cesium';
+import { stormDays } from '../../data/stormReports.js';
 import { STORM_SOURCE_BADGE } from '../../data/stormAttribution.js';
 
 /** The layer id, and the token reserved for it in the layer-state ledger. */
@@ -65,10 +67,21 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
    * Durable option intent from the manager, replayed once data lands. The
    * manager applies params before the first load, when there is nothing to
    * filter yet, so they have to be remembered rather than applied.
+   *
+   * The shareable option is `minHailTenths`, because the layer-state codec
+   * carries integer options only and 1.75 inches has to survive a round trip.
+   * It is translated here rather than in the filter, so nothing downstream ever
+   * sees tenths.
    */
   function applyPendingParams() {
     if (!_pendingParams || !_snapshot) return;
-    _options = { ..._options, ..._pendingParams };
+    const next = { ..._options, ..._pendingParams };
+    _options = {
+      ...next,
+      minHailIn: Number.isFinite(next.minHailTenths)
+        ? next.minHailTenths / 10
+        : next.minHailIn,
+    };
     _pendingParams = null;
   }
 
@@ -178,31 +191,34 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
 
   /** Paint the visible reports. */
   function render() {
-    if (!_viewer) return;
-    const host = overlayHost.entityCollection?.() || _viewer.entities;
-    host.removeAll();
+    if (!_dataSource) return;
+    _dataSource.entities.removeAll();
     for (const report of _visible) {
       const band =
         report.hazard === 'hail'
           ? hailBand(report.size)
           : windBand(report.size);
       if (!band) continue;
-      host.add({
-        id: `storm-report-${report.date}-${report.lat}-${report.lon}`,
-        position: {
-          longitude: report.lon,
-          latitude: report.lat,
-          height: 0,
-        },
+      _dataSource.entities.add({
+        // Size and time in the id: two reports at the same place on the same
+        // day are separate observations, and a data source keys on this.
+        id: `storm-report-${report.date}-${report.minute}-${report.lat}-${report.lon}-${report.hazard}-${report.size}`,
+        position: Cesium.Cartesian3.fromDegrees(report.lon, report.lat),
         point: {
+          // Magnitude-scaled, then clamped in pixels: at 155,737 reports an
+          // unclamped radius turns a national view into a solid sheet.
           pixelSize: Math.max(
             4,
-            Math.round(radiusMetres(report.size, report.hazard) / 220),
+            Math.min(
+              20,
+              Math.round(radiusMetres(report.size, report.hazard) / 320),
+            ),
           ),
-          color: band.color,
-          outlineColor: '#000000',
+          color: Cesium.Color.fromCssColorString(band.color),
+          outlineColor: Cesium.Color.BLACK,
           outlineWidth: 1,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          scaleByDistance: new Cesium.NearFarScalar(2.0e5, 1.0, 4.0e7, 0.35),
         },
         properties: report,
       });
@@ -211,16 +227,27 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
 
   function publish() {
     if (!_viewer) return;
-    overlayHost.publish?.({
-      id: STORM_REPORTS_ID,
-      enabled: _enabled,
-      loading: _loading,
-      error: _lastError,
-      update: _lastUpdate,
-      stats: _stats,
-      options: { ..._options },
-      visibleCount: _visible.length,
+    _lastUpdate = Date.now();
+    // The same channel the aggregate storm layers use, so the panel picks these
+    // up with no extra wiring.
+    overlayHost.setEntries(STORM_REPORTS_ID, {
+      title: 'Storm Reports',
+      lines: panelLines(),
     });
+  }
+
+  function panelLines() {
+    if (_lastError) return [`Failed: ${_lastError.message}`];
+    if (_loading) return ['Loading reports...'];
+    if (!_enabled) return [];
+    const count = _visible.length.toLocaleString();
+    const lines = [`${count} report${_visible.length === 1 ? '' : 's'}`];
+    const worst = _stats?.worst;
+    if (worst?.size != null) lines.push(`Largest: ${magnitudeLabel(worst)}`);
+    if (_stats?.storms) {
+      lines.push(`${_stats.storms.toLocaleString()} storms in window`);
+    }
+    return lines;
   }
 
   return {
@@ -233,8 +260,16 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     updateInterval: 0,
 
     init(viewer) {
+      if (_viewer)
+        throw new Error('Storm Reports layer is already initialized');
       _viewer = viewer;
-      render();
+      // Its own CustomDataSource, like every other layer. Writing into the
+      // shared viewer.entities would have every entity cleared by whichever
+      // layer rendered last.
+      _dataSource = new Cesium.CustomDataSource(STORM_REPORTS_ID);
+      _dataSource.show = false;
+      viewer.dataSources.add(_dataSource);
+      overlayHost.setVisible(STORM_REPORTS_ID, false);
       publish();
     },
 
@@ -248,6 +283,8 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       if (_enabled) return;
       _enabled = true;
       _request = new AbortController();
+      if (_dataSource) _dataSource.show = true;
+      overlayHost.setVisible(STORM_REPORTS_ID, true);
       publish();
     },
 
@@ -258,7 +295,13 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       _request = null;
       _visible = [];
       _loaded = false;
-      overlayHost.entityCollection?.()?.removeAll?.();
+      _optionsDirty = true;
+      if (_dataSource) {
+        _dataSource.show = false;
+        _dataSource.entities.removeAll();
+      }
+      overlayHost.clearSource(STORM_REPORTS_ID);
+      overlayHost.setVisible(STORM_REPORTS_ID, false);
       publish();
     },
 
@@ -294,6 +337,144 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
         ..._options,
         ...(_pendingParams || {}),
       };
+    },
+
+    /**
+     * Set the exact window. A single day is `setDate('2026-08-10')`; the layer
+     * compares the ISO string, so day granularity needs no separate code path.
+     * @param {string|null} from `YYYY-MM-DD`, or null for the whole record.
+     * @param {string|null} [to]
+     */
+    setDateRange(from, to = from) {
+      _options = { ..._options, fromDate: from || null, toDate: to || null };
+      _pendingParams = null;
+      _optionsDirty = true;
+      _loaded = false;
+      publish();
+    },
+
+    /** One exact day. */
+    setDate(day) {
+      this.setDateRange(day || null, day || null);
+    },
+
+    /** Clear the window back to the whole record. */
+    clearDateRange() {
+      _options = { ..._options, fromDate: null, toDate: null };
+      _optionsDirty = true;
+      _loaded = false;
+      publish();
+    },
+
+    /** The window currently in force. */
+    getDateRange() {
+      return { from: _options.fromDate || null, to: _options.toDate || null };
+    },
+
+    /** Storm days in the snapshot, newest first, for a date picker. */
+    getStormDays(limit = 400) {
+      const days = stormDays(_snapshot || { days: {} });
+      return limit ? days.slice(0, limit) : days;
+    },
+
+    /**
+     * Layer-panel controls: the exact-date picker, the size threshold and the
+     * hazard switch.
+     *
+     * The date chips are the point of this layer. The aggregate layer can only
+     * offer decades, because a decade is what it has; this one has a day, and a
+     * control that stops at "2010 onward" would hide the one thing it can do
+     * that the other cannot.
+     */
+    getRowControls() {
+      const days = stormDays(_snapshot || { days: {} });
+      const ready = Boolean(_snapshot);
+      const selected = _options.fromDate;
+      return [
+        {
+          group: 'Date',
+          id: 'storm-reports-all',
+          label: 'ALL DATES',
+          title: 'Every storm day in the record',
+          disabled: !ready,
+          active: !selected,
+          onClick: () => this.clearDateRange(),
+        },
+        // The most recent days, which is what a canvasser works from.
+        ...days.slice(0, 12).map((day) => ({
+          group: 'Date',
+          id: `storm-reports-${day.date}`,
+          label: day.date,
+          title: `${day.hail} hail, ${day.wind} wind reports`,
+          disabled: !ready,
+          active: selected === day.date,
+          onClick: () => this.setDate(day.date),
+        })),
+        {
+          group: 'Hail size',
+          id: 'storm-reports-hail-075',
+          label: '0.75\u2033',
+          title: 'Include hail down to three-quarter inch',
+          active: _options.minHailIn <= 0.75,
+          onClick: () => this.setMinHailIn(0.75),
+        },
+        {
+          group: 'Hail size',
+          id: 'storm-reports-hail-1',
+          label: '1\u2033',
+          title: 'Only hail an inch or larger',
+          active: _options.minHailIn === 1,
+          onClick: () => this.setMinHailIn(1),
+        },
+        {
+          group: 'Hail size',
+          id: 'storm-reports-hail-15',
+          label: '1.5\u2033',
+          title: 'Only hail likely to damage a shingle',
+          active: _options.minHailIn === 1.5,
+          onClick: () => this.setMinHailIn(1.5),
+        },
+        {
+          group: 'Hail size',
+          id: 'storm-reports-hail-2',
+          label: '2\u2033+',
+          title: 'Only hail of two inches or more',
+          active: _options.minHailIn >= 2,
+          onClick: () => this.setMinHailIn(2),
+        },
+        {
+          group: 'Show',
+          id: 'storm-reports-hail',
+          label: 'HAIL',
+          active: _options.hazard === 'hail',
+          onClick: () => this.setHazard('hail'),
+        },
+        {
+          group: 'Show',
+          id: 'storm-reports-wind',
+          label: 'WIND',
+          active: _options.hazard === 'wind',
+          onClick: () => this.setHazard('wind'),
+        },
+      ];
+    },
+
+    /** Threshold in inches. Persisted in tenths so the codec stays integral. */
+    setMinHailIn(inches) {
+      _options = { ..._options, minHailIn: inches };
+      _pendingParams = {
+        ...(_pendingParams || {}),
+        minHailTenths: Math.round(inches * 10),
+      };
+      _optionsDirty = true;
+      publish();
+    },
+
+    /** Switch which hazard the layer is showing. */
+    setHazard(hazard) {
+      _options = { ..._options, hazard: hazard === 'wind' ? 'wind' : 'hail' };
+      _optionsDirty = true;
+      publish();
     },
 
     /** Every storm in the current window, for a picker. */
@@ -335,7 +516,9 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
 
     destroy() {
       _request?.abort();
-      overlayHost.entityCollection?.()?.removeAll?.();
+      overlayHost.clearSource(STORM_REPORTS_ID);
+      if (_dataSource && _viewer) _viewer.dataSources.remove(_dataSource);
+      _dataSource = null;
       _viewer = null;
     },
   };

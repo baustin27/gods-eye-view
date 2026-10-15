@@ -3,45 +3,66 @@ import test from 'node:test';
 
 import { createStormReportsLayer } from './index.js';
 
-const REPORT = (size, over = {}) => [
-  '2026-08-10',
-  600,
-  0,
-  size,
-  35.1,
-  -97.4,
-  over.fips || '40027',
-  over.state || 'OK',
-  over.county || 'Cleveland',
-  over.loss || 0,
-  over.comment || '',
-  'spc-bulk,ncei',
-  0,
-];
-
+let reportSeq = 0;
+/** Each row gets its own time and position, as distinct reports would. */
+const REPORT = (size, over = {}) => {
+  const seq = reportSeq++;
+  return [
+    '2026-08-10',
+    600 + seq * 5,
+    0,
+    size,
+    35.1 + seq * 0.02,
+    -97.4,
+    over.fips || '40027',
+    over.state || 'OK',
+    over.county || 'Cleveland',
+    over.loss || 0,
+    over.comment || '',
+    'spc-bulk,ncei',
+    0,
+  ];
+};
 function stubViewer() {
-  const entities = [];
+  const sources = [];
   return {
-    entities: {
-      add(spec) {
-        entities.push(spec);
-        return spec;
+    dataSources: {
+      add(source) {
+        sources.push(source);
+        return source;
       },
-      removeAll() {
-        entities.length = 0;
+      remove(source) {
+        const i = sources.indexOf(source);
+        if (i >= 0) sources.splice(i, 1);
+        return true;
       },
-      values: entities,
     },
-    __entities: entities,
+    entities: {
+      add() {},
+      removeAll() {},
+      values: [],
+    },
+    __sources: sources,
   };
 }
 
+/** Entities the layer currently holds on its own data source. */
+function drawn(viewer) {
+  return viewer.__sources.flatMap((s) => s.entities.values ?? []);
+}
+
 function host() {
-  const published = [];
+  const entries = [];
+  const visible = [];
   return {
-    published,
-    entityCollection: () => ({ add: (s) => s, removeAll() {} }),
-    publish: (msg) => published.push(msg),
+    entries,
+    visible,
+    setEntries: (id, entry) => entries.push({ id, ...entry }),
+    setVisible: (id, on) => visible.push({ id, on }),
+    clearSource: (id) => {
+      const i = entries.findIndex((e) => e.id === id);
+      if (i >= 0) entries.splice(i, 1);
+    },
   };
 }
 
@@ -85,10 +106,10 @@ test('the first enable loads, renders and reports the change', async () => {
     true,
     'the manager rejects a false return while enabling',
   );
-  assert.ok(overlayHost.published.length > 0, 'the layer publishes its state');
-  const last = overlayHost.published.at(-1);
+  assert.ok(overlayHost.entries.length > 0, 'the layer publishes panel state');
+  const last = overlayHost.entries.at(-1);
   assert.equal(last.id, 'storm-reports');
-  assert.equal(typeof last.error === 'object' || last.error === null, true);
+  assert.ok(last.lines.length > 0, 'the panel has something to say');
 });
 
 test('a layer that failed to load surfaces why, rather than hanging', async () => {
@@ -103,9 +124,8 @@ test('a layer that failed to load surfaces why, rather than hanging', async () =
   layer.enable();
   const changed = await layer.update();
   assert.equal(typeof changed, 'boolean');
-  const last = overlayHost.published.at(-1);
-  assert.ok(last.error, 'the error reaches the overlay');
-  assert.match(String(last.error.message), /snapshot exploded/);
+  const last = overlayHost.entries.at(-1);
+  assert.match(last.lines.join(' '), /snapshot exploded/, 'the panel says why');
 });
 
 test('the layer speaks the lifecycle protocol the manager drives', () => {
@@ -151,4 +171,133 @@ test('disabling clears the map and makes the next enable re-read', async () => {
   assert.equal(await layer.update(), false, 'a disabled layer does nothing');
   layer.enable();
   assert.equal(await layer.update(), true, 're-enabling loads again');
+});
+
+test('reports are drawn onto the layer data source, not shared entities', async () => {
+  // Writing into viewer.entities would have every entity cleared by whichever
+  // layer rendered last, and the aggregate storm layers already established
+  // the CustomDataSource pattern this now follows.
+  const viewer = stubViewer();
+  const { layer } = makeLayer([
+    REPORT(2),
+    REPORT(1.75),
+    REPORT(1),
+    REPORT(0.5),
+  ]);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(viewer.__sources.length, 1, 'one data source, added on init');
+  // The default threshold is 1.0 inch, so the 0.5 report is filtered out.
+  assert.equal(
+    drawn(viewer).length,
+    3,
+    'only reports at or above 1 inch are drawn',
+  );
+});
+
+test('lowering the threshold draws more', async () => {
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(2), REPORT(0.5)]);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(drawn(viewer).length, 1, 'at the default 1 inch threshold');
+  layer.setParams({ minHailTenths: 5 });
+  await layer.update();
+  assert.equal(drawn(viewer).length, 2, '0.5 inch now clears the 0.5 inch bar');
+});
+
+test('a report with no magnitude is never drawn as a small one', async () => {
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(0), REPORT(2)]);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(drawn(viewer).length, 1, 'the zero-size row is filtered out');
+});
+
+test('an exact day narrows the view to that day alone', async () => {
+  const viewer = stubViewer();
+  // A second day proves the filter bites rather than passing everything through.
+  const other = REPORT(2);
+  other[0] = '2026-07-04';
+  const rows = [REPORT(2), other];
+  const { layer } = makeLayer(rows);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  const before = drawn(viewer).length;
+  assert.ok(before > 0);
+
+  layer.setDate('2026-08-10');
+  assert.deepEqual(layer.getDateRange(), {
+    from: '2026-08-10',
+    to: '2026-08-10',
+  });
+  await layer.update();
+  const onDay = drawn(viewer);
+  assert.ok(onDay.length > 0, 'the day still shows its own reports');
+  // Cesium wraps entity properties in ConstantProperty; the value is reached
+  // with getValue(), not by reading the field.
+  assert.ok(
+    onDay.every((e) => e.properties.date.getValue() === '2026-08-10'),
+    'and nothing from another day',
+  );
+});
+
+test('the window can be cleared back to the whole record', async () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  assert.equal(layer.getDateRange().from, '2026-08-10');
+  layer.clearDateRange();
+  assert.deepEqual(layer.getDateRange(), { from: null, to: null });
+});
+
+test('the threshold is stored in tenths so the codec can carry it', () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.setMinHailIn(1);
+  assert.equal(layer.getParams().minHailTenths, 10, 'one inch is ten tenths');
+  layer.setMinHailIn(2.5);
+  assert.equal(
+    layer.getParams().minHailTenths,
+    25,
+    'two and a half inches is twenty-five',
+  );
+});
+
+test('the panel offers exact days, not decades', async () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  const controls = layer.getRowControls();
+  const dates = controls.filter((c) => c.group === 'Date');
+  assert.ok(dates.length >= 2, 'a date group exists');
+  assert.ok(
+    dates.some((c) => c.label === 'ALL DATES'),
+    'and a way back to the whole record',
+  );
+  const sizes = controls.filter((c) => c.group === 'Hail size');
+  assert.ok(sizes.length >= 3, 'several size thresholds');
+  assert.ok(
+    controls.some((c) => c.id === 'storm-reports-wind'),
+    'hazard switch',
+  );
+});
+
+test('a date chip sets that exact day when clicked', async () => {
+  const { layer } = makeLayer([REPORT(2)]);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  const chip = layer
+    .getRowControls()
+    .find((c) => c.group === 'Date' && c.label === '2026-08-10');
+  assert.ok(chip, 'the day appears as a chip');
+  chip.onClick();
+  assert.equal(layer.getDateRange().from, '2026-08-10');
 });
