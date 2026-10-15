@@ -192,6 +192,33 @@ const layers = [
     },
   },
   {
+    id: 'storm-reports',
+    aliases: [
+      'storm reports',
+      'damage reports',
+      'hail size',
+      'individual hail',
+    ],
+    context: true,
+    query: {
+      fields: {
+        size: ['n'],
+        maxHailIn: ['n', 'in'],
+        maxWindKt: ['n', 'kt'],
+        reportCount: ['n'],
+        damage: ['n', 'USD'],
+        county: ['t'],
+        state: ['t'],
+        narrative: ['t'],
+        date: ['d'],
+        hazard: ['t'],
+        identitySource: ['t'],
+      },
+      timeField: 'date',
+      window: 'selected window',
+    },
+  },
+  {
     // The expected layer answers county-level questions, so it carries the
     // NRI rating and loss fields instead of the cell damage fields.
     id: 'storm-expected',

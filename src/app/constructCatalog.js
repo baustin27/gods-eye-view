@@ -26,6 +26,7 @@ import { createApplicationFirms } from './layers/firms.js';
 import { createApplicationEarthquakes } from './layers/earthquakes.js';
 import { createApplicationFirePerimeters } from './layers/perimeters.js';
 import { createApplicationStormLayers } from './layers/stormHailWind.js';
+import { createApplicationStormReports } from './layers/stormReports.js';
 import { createApplicationCables } from './layers/submarineCables.js';
 import { createApplicationStreetLevel } from './layers/streetLevel.js';
 import { createInfrastructureLayers } from '../data/infrastructure.js';
@@ -124,6 +125,11 @@ export function createApplicationCatalog({
         ...Object.values(
           createApplicationStormLayers({ source: sources.storm }),
         ),
+        // Constructed unconditionally, like every other layer: when the source
+        // is absent, resolveCatalogSources substitutes a stub that throws, and
+        // the layer reports unavailable rather than vanishing from a catalog
+        // whose metadata already declares it.
+        createApplicationStormReports({ source: sources['storm-reports'] }),
         createApplicationAlpr({ surface, source: sources.alpr }),
         createApplicationStreetLevel({
           surface,

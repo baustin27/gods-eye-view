@@ -37,10 +37,10 @@ test('the complete Realtime tool payload pins the manifest-generated layer relea
     // omit top-level anyOf (OpenAI rejects it). Contacts list routing preserves
     // requested radius and center authority in descriptions only.
     // Street Level adds its toggle enum values and generated alias hint.
-    // Re-derived for the Storm hail & wind layer: storm-observed and
-    // storm-expected add their generated analyst_query enums, aliases and
+    // Re-derived for the Storm layers: storm-observed, storm-expected and
+    // storm-reports add their generated analyst_query enums, aliases and
     // field lists to the manifest, which is what this digest covers.
-    '016378138536e9031005a3d75076b96d6fd033afde81854e55bb213c5c73de1e',
+    '45fcec3d2f80f4b7ac5e3737eab695fc3ecc4ddfd8eddf212caaad8f3e1d26a4',
   );
 });
 

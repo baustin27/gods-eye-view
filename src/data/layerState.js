@@ -448,6 +448,18 @@ const OPTION_GROUPS = Object.freeze({
       { damage: 'd', 'radar-gap': 'g', 'vs-expected': 'v' },
     ),
   ]),
+  'storm-reports': Object.freeze([
+    // Shareable because the layer's whole claim is which size it is asserting:
+    // a link showing "1 inch and up" is a different statement from one showing
+    // the whole record. Hail is held in tenths of an inch, because the codec
+    // has integer options only and 1.75 must survive a round trip.
+    integerOption('minHailTenths', 'm', 10),
+    integerOption('minWindKt', 'w', 50),
+    enumOption('hazard', 'z', 'hail', ['hail', 'wind'], {
+      hail: 'h',
+      wind: 'd',
+    }),
+  ]),
   radio: Object.freeze([
     Object.freeze({
       key: 'filter',
@@ -690,6 +702,12 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
     token: '3',
     disposition: 'enabled+options',
     optionOwner: 'storm-observed',
+  }),
+  Object.freeze({
+    id: 'storm-reports',
+    token: '5',
+    disposition: 'enabled+options',
+    optionOwner: 'storm-reports',
   }),
   Object.freeze({
     id: 'street-level',

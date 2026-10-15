@@ -994,12 +994,12 @@ test('the voice TOOL SCHEMA matches the pinned contract — the mission mapping 
   // schema, which may not carry top-level anyOf), and Contacts requested-radius
   // list descriptions; the missions still ride existing tools.
   // Street Level adds toggle enum values and the generated alias hint.
-  // The Storm hail & wind layer then added its two generated analyst_query
-  // enums, aliases and field hints, which lengthen every layer listing.
-  assert.equal(block.length, 30380, 'serialized tool schema length drifted');
+  // The Storm layers then added their three generated analyst_query enums,
+  // aliases and field hints, which lengthen every layer listing.
+  assert.equal(block.length, 30607, 'serialized tool schema length drifted');
   assert.equal(
     crypto.createHash('sha256').update(block).digest('hex'),
-    '5fc8fb1684833017c641adbff5d58df439343d1197b0688fd81caefdf99d68a7',
+    '07fca38aaddb196a312116d5aa48c358ea41d05256ad4716d17ef91b5580f88e',
     'the first-run missions must ride EXISTING tools: no schema edit, no cache bust',
   );
   const instructions = fs.readFileSync(
