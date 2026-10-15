@@ -155,3 +155,38 @@ test('absent military acquisition does not poll, suppress flights, or erase supp
   assert.equal(registry.isMilitaryLayerActive(), false);
   assert.equal(fetches, 0);
 });
+
+test('the data-scope reader is a dependency, not a source override', async (t) => {
+  // Regression: catalog.js passes `{ ...sources, getScope }` into this factory,
+  // and the factory once validated its whole argument as a map of sources. The
+  // reader then read as an unknown source and the application died at startup
+  // with `Error: Unknown source: getScope` — after 6,696 tests had passed,
+  // because every other fixture supplied no overrides at all.
+  const getScope = () => ({ kind: 'global' });
+  const sources = createStandaloneLayerSources({ getScope });
+
+  assert.ok(
+    !Object.hasOwn(sources, 'getScope'),
+    'the reader must not survive into the source map',
+  );
+  assert.ok(sources.firms, 'real sources are still built');
+  assert.equal(typeof sources.firms.getSnapshot, 'function');
+  assert.equal(
+    typeof sources.earthquakes?.getSnapshot,
+    'function',
+    'the scoped USGS source is still wired',
+  );
+
+  // And the whole point: the catalog actually builds from that argument shape.
+  const actual = catalog(sources, t);
+  assert.ok(actual.get('storm-observed'), 'the storm surface is registered');
+  assert.equal(actual.getSourceAvailability('storm-observed').available, true);
+});
+
+test('an unknown key alongside the reader still fails loudly', () => {
+  assert.throws(
+    () => createStandaloneLayerSources({ getScope: () => {}, notASource: 1 }),
+    /Unknown source: notASource/,
+    'separating the reader must not disable validation of everything else',
+  );
+});

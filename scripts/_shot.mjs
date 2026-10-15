@@ -1,0 +1,22 @@
+import WebSocket from 'ws'; import {writeFileSync} from 'node:fs';
+const page=(await (await fetch('http://127.0.0.1:9333/json/list')).json()).find(t=>t.type==='page');
+const ws=new WebSocket(page.webSocketDebuggerUrl);
+let id=0;const pend=new Map();
+const send=(m,p={},s)=>new Promise(r=>{const i=++id;pend.set(i,r);ws.send(JSON.stringify({id:i,method:m,params:p,...(s?{sessionId:s}:{})}))});
+ws.on('message',m=>{const d=JSON.parse(m);if(d.id&&pend.has(d.id)){pend.get(d.id)(d);pend.delete(d.id)}});
+await new Promise(r=>ws.on('open',r));
+await send('Runtime.enable');
+const t=await send('Target.getTargets');
+const oopif=(t.result?.targetInfos||[]).find(x=>x.url.includes('42003'));
+const att=await send('Target.attachToTarget',{targetId:oopif.targetId,flatten:true});
+const sid=att.result?.sessionId||att.sessionId;
+const ev=async(e)=>{const r=await send('Runtime.evaluate',{expression:e,returnByValue:true,awaitPromise:true},sid);
+  return r.result?.result?.value ?? String(r.result?.exceptionDetails?.exception?.description||'(none)');};
+await new Promise(r=>setTimeout(r,6000));
+console.log('  camera:', await ev("(()=>{const c=window.__godsEyeView.viewer.camera;const p=c.positionCartographic;return `${(p.longitude*180/Math.PI).toFixed(2)}, ${(p.latitude*180/Math.PI).toFixed(2)} @${Math.round(p.height)}m`})()"));
+console.log('  scene entities:', await ev("window.__godsEyeView.viewer.scene.primitives.length"));
+console.log('  entities rendered:', await ev("(()=>{const s=window.__godsEyeView.viewer.scene;return s.requestRender?'renderRequested':'?'})()"));
+const shot=await send('Page.captureScreenshot',{format:'png'},sid);
+if(shot.result?.data){writeFileSync('/tmp/gev.png',Buffer.from(shot.result.data,'base64'));console.log('  screenshot: /tmp/gev.png');}
+else console.log('  (screenshot unavailable)');
+ws.close();
