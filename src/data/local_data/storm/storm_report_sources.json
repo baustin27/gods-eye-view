@@ -1,5 +1,5 @@
 {
-  "builtAt": "2026-10-15T15:50:24.875Z",
+  "builtAt": "2026-10-15T15:52:45.504Z",
   "hazards": [
     "hail",
     "wind"
@@ -36,6 +36,14 @@
         "2026-10-14"
       ]
     }
+  },
+  "ncei": {
+    "through": 2026,
+    "events": 162244,
+    "joined": 137537,
+    "unmatched": 18200,
+    "storms": 18617,
+    "narrativeCoverage": 100
   },
   "complete": {
     "2021": {

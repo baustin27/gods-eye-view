@@ -46,6 +46,11 @@ import {
   packReport,
   sortReports,
 } from './lib/storm-report-normalize.mjs';
+import {
+  buildStormEvents,
+  indexNceiEvents,
+  joinNcei,
+} from './lib/storm-ncei-join.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +58,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SPC_BULK_BASE = 'https://www.spc.noaa.gov/wcm/data';
 /** Per-day files exist from 2015 and are the current-year path. */
 const SPC_DAILY_BASE = 'https://www.spc.noaa.gov/climo/reports';
+/** NCEI Storm Events: one gzipped details file per year. */
+const NCEI_BASE =
+  'https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles';
+const NCEI_LISTING = `${NCEI_BASE}/`;
 
 /** Days before today are guaranteed published; today may not be. */
 const DAILY_LAG_DAYS = 1;
@@ -74,6 +83,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--from') args.from = Number(argv[++i]);
     else if (argv[i] === '--to') args.to = Number(argv[++i]);
     else if (argv[i] === '--dry-run') args.dryRun = true;
+    else if (argv[i] === '--no-ncei') args.noNcei = true;
   }
   return args;
 }
@@ -284,6 +294,7 @@ async function main() {
   );
 
   const reports = [];
+  let stormEvents = [];
   const provenance = {
     builtAt: now.toISOString(),
     hazards: STORM_HAZARDS,
@@ -333,6 +344,49 @@ async function main() {
     );
   }
 
+  // NCEI carries what SPC cannot: a real episode id, a written narrative on
+  // every event, and actual dollar damage. It lags roughly a quarter, so the
+  // newest reports stay unattributed until the next quarterly rebuild.
+  let nceiSummary = null;
+  if (!args.noNcei) {
+    const nceiEnd = await discoverNceiEndYear();
+    process.stdout.write(`  NCEI storm events: ${fromYear}-${nceiEnd}\n`);
+    const allEvents = [];
+    const allEpisodes = new Map();
+    for (let year = fromYear; year <= nceiEnd; year += 1) {
+      const { rows, bytes } = await fetchNceiYear(year);
+      const { episodes, events } = indexNceiEvents(rows);
+      for (const [id, episode] of episodes) allEpisodes.set(id, episode);
+      allEvents.push(...events);
+      process.stdout.write(
+        `    ${year}: ${events.length.toLocaleString()} events, ${(bytes / 1048576).toFixed(0)} MB\n`,
+      );
+    }
+    const joined = joinNcei(reports, allEvents);
+    const storms = buildStormEvents(reports, allEpisodes);
+    process.stdout.write(
+      `    joined ${joined.matched.toLocaleString()} reports to ` +
+        `${joined.episodesUsed.toLocaleString()} episodes, ` +
+        `${joined.unmatched.toLocaleString()} unmatched\n`,
+    );
+    nceiSummary = {
+      through: nceiEnd,
+      events: allEvents.length,
+      joined: joined.matched,
+      unmatched: joined.unmatched,
+      storms: storms.length,
+      narrativeCoverage: storms.length
+        ? Number(
+            (
+              (storms.filter((s) => s.narrative).length / storms.length) *
+              100
+            ).toFixed(1),
+          )
+        : 0,
+    };
+    stormEvents = storms;
+  }
+
   process.stdout.write(
     `  assembling ${reports.length.toLocaleString()} reports\n`,
   );
@@ -365,6 +419,24 @@ async function main() {
     `    ${path.basename(indexFile)}  ${Object.keys(index).length} days  ${(indexBytes / 1024).toFixed(0)} KB\n`,
   );
 
+  const storms = stormEvents;
+  if (storms.length) {
+    const byYear = new Map();
+    for (const storm of storms) {
+      const year = storm.date.slice(0, 4);
+      if (!byYear.has(year)) byYear.set(year, []);
+      byYear.get(year).push(storm);
+    }
+    for (const [year, list] of [...byYear].sort()) {
+      const file = path.join(args.out, `storm_events_${year}.json.gz`);
+      const bytes = writeJson(file, { events: list, count: list.length });
+      process.stdout.write(
+        `    ${path.basename(file)}  ${list.length.toLocaleString()} storms  ${(bytes / 1024).toFixed(0)} KB\n`,
+      );
+    }
+    if (nceiSummary) provenance.ncei = nceiSummary;
+  }
+
   provenance.complete = Object.fromEntries(
     [...years].map(([y, d]) => [y, d.hazards]),
   );
@@ -380,4 +452,39 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.stderr.write(`  build failed: ${error?.stack || error}\n`);
     process.exitCode = 1;
   });
+}
+
+/**
+ * NCEI publishes one gzipped CSV per year. Unlike the SPC archive the years are
+ * independent files, so a rebuild of a single year is cheap.
+ * @param {number} year
+ * @returns {Promise<{rows: object[], file: string, bytes: number}>}
+ */
+export async function fetchNceiYear(year) {
+  const listing = await (await fetch(NCEI_LISTING)).text();
+  const match = new RegExp(
+    `(StormEvents_details-ftp_v1\\.0_d${year}_c[0-9]+\\.csv\\.gz)`,
+  ).exec(listing);
+  if (!match) return { rows: [], file: '', bytes: 0 };
+  const name = match[1];
+  const file = `${NCEI_BASE}/${name}`;
+  const buffer = await fetchBuffer(file);
+  const csv = zlib.gunzipSync(buffer).toString('utf8');
+  return { rows: parseCsv(csv), file, bytes: buffer.length };
+}
+
+/**
+ * Discover how far NCEI has published. Its publication lags by roughly a
+ * quarter, so the newest snapshot routinely stops months short of today and
+ * the recent window has to come from somewhere else.
+ * @returns {Promise<number>} The last year with a published details file.
+ */
+export async function discoverNceiEndYear() {
+  const listing = await (await fetch(NCEI_LISTING)).text();
+  const years = [
+    ...listing.matchAll(/StormEvents_details-ftp_v1\.0_d(\d{4})_c/g),
+  ]
+    .map((m) => Number(m[1]))
+    .filter(Number.isFinite);
+  return years.length ? Math.max(...years) : 0;
 }
