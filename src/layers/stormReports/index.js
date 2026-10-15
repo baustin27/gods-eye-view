@@ -106,6 +106,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
   let _stats = null;
   let _loaded = false;
   let _optionsDirty = true;
+  let _packed = null;
   let _previouslyEmpty = true;
 
   /**
@@ -160,6 +161,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       ]);
       if (_request?.signal?.aborted) return;
       _events = events;
+      _packed = packed;
       applyFilter(packed);
     } catch (error) {
       if (error?.name === 'AbortError') return;
@@ -176,6 +178,20 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
   }
 
   /** Apply the option filter and paint. */
+  /**
+   * Repaint from the rows already in memory.
+   *
+   * The chip handlers are called by the panel, which does not then call
+   * update() - and this layer sets updateInterval: 0, so nothing else will.
+   * Marking the options dirty and waiting left the map on the old selection
+   * until something else happened to trigger a refresh.
+   */
+  function repaintFromMemory() {
+    if (!_loaded || !_packed) return false;
+    applyFilter(_packed);
+    return true;
+  }
+
   function applyFilter(packed) {
     const { hazard, minHailIn, minWindKt, fromDate, toDate } = _options;
     // The ordinal is the row's index in the year file, so it survives filtering
@@ -453,7 +469,10 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       _options = { ..._options, fromDate: from || null, toDate: to || null };
       _pendingParams = null;
       _optionsDirty = true;
-      _loaded = false;
+      if (!repaintFromMemory()) {
+        // Nothing in memory yet - the next update() picks this up.
+        _loaded = false;
+      }
       publish();
     },
 
@@ -466,7 +485,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     clearDateRange() {
       _options = { ..._options, fromDate: null, toDate: null };
       _optionsDirty = true;
-      _loaded = false;
+      if (!repaintFromMemory()) _loaded = false;
       publish();
     },
 
@@ -582,6 +601,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
         minHailTenths: Math.round(inches * 10),
       };
       _optionsDirty = true;
+      repaintFromMemory();
       publish();
     },
 
@@ -589,6 +609,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     setHazard(hazard) {
       _options = { ..._options, hazard: hazard === 'wind' ? 'wind' : 'hail' };
       _optionsDirty = true;
+      repaintFromMemory();
       publish();
     },
 

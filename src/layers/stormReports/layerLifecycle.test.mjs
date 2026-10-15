@@ -379,3 +379,49 @@ test('two identical reports at one point stay two markers', async () => {
   const ids = drawn(viewer).map((e) => e.id);
   assert.equal(new Set(ids).size, ids.length, 'every entity id is unique');
 });
+
+test('clicking a day chip repaints without waiting for update()', async () => {
+  // The panel calls chip.onClick() and never calls update() afterwards, and
+  // this layer sets updateInterval: 0, so nothing else will. Marking the
+  // options dirty and waiting left the map on the previous selection - which
+  // is how a working date view looks broken to the person using it.
+  const viewer = stubViewer();
+  const other = REPORT(2);
+  other[0] = '2026-07-04';
+  const { layer } = makeLayer([REPORT(2), other]);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(drawn(viewer).length, 2);
+
+  const chip = layer
+    .getRowControls()
+    .chips.find((c) => c.id === 'storm-reports-2026-08-10');
+  assert.ok(chip, 'the day is offered as a chip');
+  chip.onClick();
+
+  // No update() call - the repaint has to happen inside the click.
+  const shown = drawn(viewer);
+  assert.equal(shown.length, 1, 'the map narrowed on its own');
+  assert.equal(shown[0].properties.date.getValue(), '2026-08-10');
+});
+
+test('the hail threshold chip repaints too', async () => {
+  const viewer = stubViewer();
+  const rows = [REPORT(1.75), REPORT(0.75)];
+  const { layer } = makeLayer(rows);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(
+    drawn(viewer).length,
+    1,
+    '0.75 inch is below the 1 inch default',
+  );
+
+  layer
+    .getRowControls()
+    .chips.find((c) => c.id === 'storm-reports-hail-075')
+    .onClick();
+  assert.equal(drawn(viewer).length, 2, 'the smaller report appeared at once');
+});
