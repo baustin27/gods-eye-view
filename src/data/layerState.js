@@ -432,6 +432,22 @@ const OPTION_GROUPS = Object.freeze({
     // MAX_SINCE_DAYS in streetLevel/policy.js (pinned by layerState.test).
     boundedIntegerOption('sinceDays', 's', 0, { min: 0, max: 36500 }),
   ]),
+  'storm-observed': Object.freeze([
+    // The year window is an option rather than panel-only state because the
+    // whole point of the decade chips is that the answer depends on it: a link
+    // that shows "2010 onward" is a different claim from one showing the whole
+    // record, and the reader cannot see which they were given.
+    integerOption('fromYear', 'f', 1955),
+    booleanOption('includeHail', 'h', true),
+    booleanOption('includeWind', 'w', true),
+    enumOption(
+      'surface',
+      's',
+      'damage',
+      ['damage', 'radar-gap', 'vs-expected'],
+      { damage: 'd', 'radar-gap': 'g', 'vs-expected': 'v' },
+    ),
+  ]),
   radio: Object.freeze([
     Object.freeze({
       key: 'filter',
@@ -652,6 +668,28 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
     token: 's',
     disposition: 'enabled+options',
     optionOwner: 'satellites',
+  }),
+  Object.freeze({
+    // FEMA NRI expected-loss surface. Split from storm-observed on the
+    // analytical axis (what happened vs what the model says should), so the
+    // comparison is the point of having two layers rather than a mode.
+    //
+    // Mirrors storm-observed's options rather than owning its own: the two
+    // layers are read side by side, so a link that says "hail only, since
+    // 2010" must mean the same thing on both. `surface` arrives here too and
+    // is ignored — there is no cell grid to switch.
+    id: 'storm-expected',
+    token: '4',
+    disposition: 'enabled+mirrored-options',
+    optionOwner: 'storm-observed',
+  }),
+  Object.freeze({
+    // Never published on main, so no historic share link needs to keep reading:
+    // these take the next free numeric tokens.
+    id: 'storm-observed',
+    token: '3',
+    disposition: 'enabled+options',
+    optionOwner: 'storm-observed',
   }),
   Object.freeze({
     id: 'street-level',

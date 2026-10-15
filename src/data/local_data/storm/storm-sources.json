@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "builtAt": "2026-10-14T19:27:54.582Z",
+  "builder": "scripts/build-storm-snapshots.mjs",
+  "thresholds": {
+    "HAIL": {
+      "severe": 1,
+      "shingle": 1.5,
+      "significant": 2
+    },
+    "WIND": {
+      "damaging": 50,
+      "severe": 58,
+      "severeStructural": 75
+    },
+    "EVENT_HAIL_MIN_IN": 2,
+    "EVENT_WIND_MIN_KT": 75,
+    "FINE_DEG": 0.25,
+    "COARSE_DEG": 0.5
+  },
+  "recordCounts": {
+    "total": 976552,
+    "hail": 414481,
+    "wind": 562071,
+    "hailMeasured": 414481,
+    "windMeasured": 449124,
+    "cellsFine": 12094,
+    "cellsCoarse": 3514,
+    "significantEvents": 37245,
+    "duplicateEventsCollapsed": 482,
+    "counties": 3234,
+    "nriCounties": 3228
+  },
+  "completeness": {
+    "1950": {
+      "hail": 2214,
+      "wind": 3205,
+      "hailMeasured": 2214,
+      "windMeasured": 902
+    },
+    "1960": {
+      "hail": 7532,
+      "wind": 10114,
+      "hailMeasured": 7532,
+      "windMeasured": 3824
+    },
+    "1970": {
+      "hail": 10979,
+      "wind": 18707,
+      "hailMeasured": 10979,
+      "windMeasured": 5338
+    },
+    "1980": {
+      "hail": 26566,
+      "wind": 39604,
+      "hailMeasured": 26566,
+      "windMeasured": 11057
+    },
+    "1990": {
+      "hail": 71400,
+      "wind": 84328,
+      "hailMeasured": 71400,
+      "windMeasured": 33989
+    },
+    "2000": {
+      "hail": 137278,
+      "wind": 128809,
+      "hailMeasured": 137278,
+      "windMeasured": 116710
+    },
+    "2010": {
+      "hail": 107261,
+      "wind": 161244,
+      "hailMeasured": 107261,
+      "windMeasured": 161244
+    },
+    "2020": {
+      "hail": 51251,
+      "wind": 116060,
+      "hailMeasured": 51251,
+      "windMeasured": 116060
+    }
+  },
+  "sources": [
+    {
+      "id": "spc-severe-database",
+      "name": "NOAA/NWS Storm Prediction Center Severe Weather Database",
+      "url": "https://www.spc.noaa.gov/wcm/",
+      "coverage": "hail + wind 1955-2025",
+      "license": "US Government public domain",
+      "attribution": "NOAA/NWS Storm Prediction Center",
+      "commercialUse": true
+    },
+    {
+      "id": "fema-nri",
+      "name": "FEMA National Risk Index for Natural Hazards, v1.20 (December 2025)",
+      "url": "https://www.fema.gov/flood-maps/products-tools/national-risk-index",
+      "coverage": "US counties; hail + strong wind expected annual loss",
+      "license": "Free to use with FEMA-mandated disclaimer",
+      "attribution": "U.S. Federal Emergency Management Agency (FEMA)",
+      "commercialUse": true,
+      "disclaimer": "This product uses the Federal Emergency Management Agency's OpenFEMA API, but is not endorsed by FEMA. The Federal Government or FEMA cannot vouch for the data or analyses derived from these data after the data have been retrieved from the Agency's website(s)."
+    },
+    {
+      "id": "census-tiger-cb",
+      "name": "US Census Bureau cartographic boundary county polygons",
+      "url": "https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.html",
+      "coverage": "US counties and equivalents",
+      "license": "US Government public domain",
+      "attribution": "U.S. Census Bureau",
+      "commercialUse": true
+    }
+  ]
+}

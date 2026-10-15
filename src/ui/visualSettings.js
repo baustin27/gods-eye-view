@@ -207,6 +207,15 @@ export class VisualSettings {
       document.getElementById('detection-allocation-elastic'),
       document.getElementById('detection-allocation-weighted'),
     ].filter(Boolean);
+    // The data-scope setting is owned by src/data/scopeController.js — this
+    // object only mirrors it into the UI. The controller stays the single
+    // source of truth so a scope change made by voice, a share link or
+    // automation lands on the same control instead of diverging from it.
+    this._dataScopeBtns = [
+      document.getElementById('data-scope-global'),
+      document.getElementById('data-scope-viewport'),
+    ].filter(Boolean);
+    this._dataScope = null;
     let storedDetectionAllocation = 'ELASTIC';
     try {
       storedDetectionAllocation =
@@ -218,6 +227,47 @@ export class VisualSettings {
       storedDetectionAllocation,
     );
   }
+  /**
+   * Adopt the data-scope controller and mirror it into the DISPLAY control.
+   *
+   * VisualSettings does not own the setting; it only renders it. That keeps the
+   * controller's generation guard as the single authority when a switch is in
+   * flight, so the buttons cannot show a scope the data no longer matches.
+   */
+  attachDataScope(dataScope) {
+    this._unsubscribeDataScope?.();
+    this._dataScope = dataScope ?? null;
+    if (!dataScope) return;
+    this._syncDataScopeUi(dataScope.getScope());
+    this._unsubscribeDataScope = dataScope.subscribe((scope) =>
+      this._syncDataScopeUi(scope),
+    );
+  }
+
+  _syncDataScopeUi(scope) {
+    const mode = scope?.mode === 'viewport' ? 'viewport' : 'global';
+    for (const button of this._dataScopeBtns) {
+      const active = button.dataset.scope === mode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-checked', String(active));
+      button.classList.toggle('busy', scope?.switching === true);
+    }
+  }
+
+  /** Read the current scope, for share state and voice. */
+  getDataScope() {
+    return this._dataScope?.getScope() ?? null;
+  }
+
+  /**
+   * Switch data scope. Returns the state that won, which is not necessarily the
+   * one requested if a newer switch landed first.
+   */
+  async setDataScope(mode, options = {}) {
+    if (!this._dataScope) return null;
+    return this._dataScope.setMode(mode, options);
+  }
+
   get hud() {
     return this.readHud();
   }

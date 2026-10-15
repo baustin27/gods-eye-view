@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "builtAt": "2026-10-14T00:36:09.463Z",
+  "builder": "scripts/build-storm-radar-snapshots.mjs",
+  "product": "CONUS/MESH_Max_1440min_00.50",
+  "productLabel": "MRMS MESH 24-hour maximum",
+  "bucket": "s3://noaa-mrms-pds",
+  "license": "US Government public domain (NOAA/NWS/NSSL)",
+  "attribution": "NOAA/NWS/NSSL — Multi-Radar/Multi-Sensor (MRMS)",
+  "commercialUse": true,
+  "requiresKey": false,
+  "units": "millimetres",
+  "hailCoreThresholdMm": 25,
+  "gridDeg": 0.25,
+  "window": {
+    "from": "2021-01-01",
+    "to": "2026-10-13",
+    "days": 2112
+  },
+  "unavailableDays": [],
+  "cellCount": 21945,
+  "corePointCount": 8376138,
+  "caveat": "MESH is a radar estimate and is known to over-report relative to ground reports. Treat it as evidence of where hail fell, not as an exact stone size."
+}

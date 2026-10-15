@@ -15,6 +15,61 @@ const PHOTON_RESULT_LIMIT = 5;
 const photonCache = new Map();
 
 /**
+ * Consecutive transport failures before a Photon provider stops being called,
+ * and how long it then stays out of the chain.
+ *
+ * Three is deliberate. One failure must not open the circuit, because the
+ * unbiased retry below already exists for exactly that case and is covered by
+ * "a biased pass that never answered leaves the whole lookup unanswered".
+ */
+const PHOTON_BREAKER_THRESHOLD = 3;
+
+/**
+ * Cooldown after the circuit opens.
+ *
+ * Nominatim's own rule is one request per second, so the chain behind Photon
+ * stays slow for a while once it starts being used again. A minute is long
+ * enough that a durably-unreachable host is not re-probed on every keystroke,
+ * and short enough that a transient outage recovers without a restart.
+ */
+const PHOTON_BREAKER_COOLDOWN_MS = 60_000;
+
+/**
+ * Track a provider that is unreachable rather than merely unhelpful.
+ *
+ * Every miss costs a full `PHOTON_TIMEOUT_MS`. When the host is durably down —
+ * blocked egress, an outage — a biased lookup pays that twice, and together the
+ * two attempts consume the whole budget in `createPlaceSearch`, so the
+ * providers after this one never run. Nominatim is the only answer available
+ * without a Google key, so a dead Photon silently empties every off-screen
+ * search. Staying open briefly lets the chain fall through immediately.
+ *
+ * A failure is a request that never produced a usable answer. An empty `features`
+ * array is a healthy host with nothing to say, so it closes the circuit.
+ */
+export function createCircuitBreaker({
+  threshold = PHOTON_BREAKER_THRESHOLD,
+  cooldownMs = PHOTON_BREAKER_COOLDOWN_MS,
+  now = Date.now,
+} = {}) {
+  let failures = 0;
+  let openUntil = 0;
+  return {
+    get isOpen() {
+      return now() < openUntil;
+    },
+    recordSuccess() {
+      failures = 0;
+      openUntil = 0;
+    },
+    recordFailure() {
+      failures += 1;
+      if (failures >= threshold) openUntil = now() + cooldownMs;
+    },
+  };
+}
+
+/**
  * Photon's own coarse class → the Google Place Type `geocodeNavigationMode`
  * reads. Only types that function consults are worth emitting; anything else
  * falls through to `precise-place`, which is the correct default for a house
@@ -302,11 +357,16 @@ export async function geocodeKeylessWithOutcome(
     signal,
     cache = photonCache,
     endpoint = PHOTON_ENDPOINT,
+    breaker = null,
   } = {},
 ) {
   signal?.throwIfAborted();
   const trimmed = String(query ?? '').trim();
   if (!trimmed) return { place: null, answered: true };
+
+  // A known-unreachable host costs nothing to skip, and answering is what the
+  // providers after this one are for.
+  if (breaker?.isOpen) return { place: null, answered: false };
 
   const memoKey = `${endpoint}\n${bias ?? ''}\n${trimmed}`;
   // Only answered outcomes are memoised, so a hit is always an answer.
@@ -324,15 +384,26 @@ export async function geocodeKeylessWithOutcome(
         ? AbortSignal.any([signal, deadline])
         : deadline;
       const response = await fetchImpl(url, { signal: requestSignal });
-      if (!response.ok) return null;
+      if (!response.ok) {
+        breaker?.recordFailure();
+        return null;
+      }
       const data = await response.json();
       requestSignal.throwIfAborted();
-      if (!Array.isArray(data?.features)) return null;
-      if (data.features.some((feature) => !normalizePhotonFeature(feature)))
+      if (!Array.isArray(data?.features)) {
+        breaker?.recordFailure();
         return null;
+      }
+      if (data.features.some((feature) => !normalizePhotonFeature(feature))) {
+        breaker?.recordFailure();
+        return null;
+      }
+      // Reached the host and it answered — even with nothing to say.
+      breaker?.recordSuccess();
       return data.features;
     } catch {
       signal?.throwIfAborted();
+      breaker?.recordFailure();
       return null;
     }
   };
@@ -405,6 +476,7 @@ export async function geocodeKeyless(query, options) {
 export function createPhotonGeocoder({
   fetchImpl = (...args) => fetch(...args),
   endpoint = PHOTON_ENDPOINT,
+  breaker = createCircuitBreaker(),
 } = {}) {
   const cache = new Map();
   return {
@@ -414,6 +486,7 @@ export function createPhotonGeocoder({
         fetchImpl,
         cache,
         endpoint,
+        breaker,
       }),
   };
 }

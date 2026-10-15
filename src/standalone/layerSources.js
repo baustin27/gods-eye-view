@@ -19,6 +19,7 @@ import { createWeatherSource } from '../layers/weather/source.js';
 import { createCycloneSource } from '../layers/cyclones/source.js';
 import { createWindSource } from '../layers/wind/source.js';
 import { createFirmsSource } from '../layers/firms/source.js';
+import { createUsgsEarthquakeSource } from '../layers/earthquakes/source.js';
 import { createMapillarySource } from '../layers/streetLevel/providers/mapillary/source.js';
 import { createReferenceSources } from '../sources/reference.js';
 export { createReferenceSources as createStandaloneReferenceSources } from '../sources/reference.js';
@@ -27,6 +28,9 @@ export { createReferenceSources as createStandaloneReferenceSources } from '../s
 export function createStandaloneLayerSources(overrides = {}) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides))
     throw new TypeError('Source overrides must be an object');
+  // Data-scope reader, threaded in rather than imported so this module holds
+  // no scope state. Sources that cannot honour a scope simply ignore it.
+  const { getScope = null } = overrides;
   const mapTiles = createOpenFreeMapSource();
   const defaults = {
     ...createReferenceSources(),
@@ -49,7 +53,8 @@ export function createStandaloneLayerSources(overrides = {}) {
     satellites: createSatelliteSource(),
     launches: createLaunchSource(),
     alpr: createAlprTileSource(),
-    firms: createFirmsSource(),
+    firms: createFirmsSource({ getScope }),
+    earthquakes: createUsgsEarthquakeSource({ getScope }),
     wind: createWindSource(),
     weather: createWeatherSource(),
     cyclones: createCycloneSource(),

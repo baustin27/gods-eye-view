@@ -7,6 +7,7 @@ import { createStandaloneControls } from './controls.js';
 import { createStandaloneData } from './data.js';
 import { createStandaloneTools } from './tools.js';
 import { createGoogleTokenSource } from '../maps/googleTokens.js';
+import { createScopeController } from '../data/scopeController.js';
 
 // The existing controls and layer catalog contain page-scoped state.
 let constructed = false;
@@ -28,6 +29,10 @@ export function createStandaloneApplication({
   const loaderStatus = loadingScreen.querySelector('.loader-status');
   let placeSearch;
   let catalog;
+  // Built before either dependency exists: sources are created during the
+  // scene phase, long before the data manager exists, and all they need is a
+  // reader for whatever the scope is at request time.
+  const dataScope = createScopeController();
   return createApplication({
     createScene: async (context) => {
       placeSearch = createStandalonePlaceSearch({
@@ -59,9 +64,11 @@ export function createStandaloneApplication({
             // The locator draws the border whenever it arrives.
             { budgetMs: Infinity },
           ),
+        getScope: () => dataScope.getScope(),
         signal: context.signal,
         surface: scene.operations.surface,
       });
+      dataScope.attach({ viewer: scene.viewer });
       return scene;
     },
     createControls: (context) =>
@@ -70,10 +77,24 @@ export function createStandaloneApplication({
         loaderStatus,
         placeSearch,
         catalog,
+        dataScope,
       }),
-    createData: (context) =>
-      createStandaloneData({ ...context, allowQaRegistration, catalog }),
+    createData: (context) => {
+      const data = createStandaloneData({
+        ...context,
+        allowQaRegistration,
+        catalog,
+      });
+      dataScope.attach({ dataManager: data.dataManager });
+      return data;
+    },
     createTools: (context) =>
-      createStandaloneTools({ ...context, loadingScreen, placeSearch, voice }),
+      createStandaloneTools({
+        ...context,
+        loadingScreen,
+        placeSearch,
+        voice,
+        dataScope,
+      }),
   });
 }

@@ -1,6 +1,6 @@
 import { catalogControlServices } from './catalog.js';
 import { StyleManager } from '../ui/composition.js';
-import { flyToAustin } from '../camera.js';
+import { flyToDefaultView } from '../camera.js';
 import { initCockpitCloudEffects } from '../cockpitCloudEffects.js';
 
 /** Construct the existing controls and camera presentation. */
@@ -11,6 +11,7 @@ export function createApplicationControls({
   services,
   catalog,
   placeSearch,
+  dataScope = null,
   defer,
 }) {
   // Initialize the style manager (post-processing, HUD, locations, share links)
@@ -28,6 +29,10 @@ export function createApplicationControls({
     placeSearch,
   });
   defer(() => styleManager.orbitController.stop());
+  // The DISPLAY panel's data-scope control is owned by the scope controller;
+  // VisualSettings only mirrors it, so a toggle that is still settling cannot
+  // leave the buttons describing a scope the data no longer matches.
+  if (dataScope) styleManager?.attachDataScope?.(dataScope);
   defer(() => styleManager.hud.destroy());
   defer(() => styleManager.dispose());
   // The previous multi-canvas weather compositor remains disabled. Cockpit
@@ -42,7 +47,7 @@ export function createApplicationControls({
   // If no share link state, do default fly-to Austin
   if (!styleManager.hasShareState) {
     loaderStatus.textContent = 'Flying to Austin, TX...';
-    defer(flyToAustin(viewer));
+    defer(flyToDefaultView(viewer));
   } else {
     loaderStatus.textContent = 'Restoring shared view...';
   }

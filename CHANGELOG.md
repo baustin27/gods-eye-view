@@ -1,4 +1,97 @@
+- Add a persistent **Global / Viewport** data scope, so layers fetch only what is
+  on screen instead of the whole planet. Persisted to `localStorage`
+  (`gev:data-scope:v1`), with the control in the DISPLAY panel.
+
+  Zoomed in over Kansas City the FIRMS payload drops from **16.0 MB to 275
+  bytes**; a Colorado USGS query drops from 162 KB to 3.7 KB. Scoped layers
+  are FIRMS, USGS earthquakes, and OpenSky flights; layers with no spatial
+  filter (SPC/FEMA snapshots, AIS, and the static reference layers) are
+  unaffected.
+
+  Scope was deliberately _not_ extended to the Storm layer's SPC/FEMA data or
+  to AIS. The former is cumulative loss and climatology, where clipping to a
+  partial view would silently understate a county's totals; the latter is a
+  WebSocket subscription fixed at connect time.
+
+  - OpenSky's response cache is now keyed by region with a bounded LRU. It was
+    a single global slot, which at 4 credits per call meant every pan discarded
+    the previous answer and re-bought it.
+  - Region quantisation is adaptive (0.02°/0.05°/0.1°/0.25°) and capped at 1°
+    so a zoomed-out view does not become a planet-sized request.
+  - `scripts/gev-control.mjs` (`npm run gev:control`) drives the live map over
+    CDP for testing and voice-command debugging.
+
 # Changelog
+
+- Add NOAA MRMS radar hail cores to the Storm Intelligence layer, so the map can
+  show where hail fell _without a report ever being filed_.
+
+  Storm reports are a file of human observations, so they are blind by
+  construction wherever a storm produces no witness willing to call it in. MRMS
+  is a national 1 km multi-radar mosaic that sees those storms too. A cell with a
+  large radar hail core on 40 days but 4 filed reports is not low-risk — it is
+  under-reported, and the layer now says so instead of showing a comfortable low
+  number.
+
+  New: `scripts/build-storm-radar-snapshots.mjs`, `scripts/lib/grib2.mjs`,
+  `scripts/lib/png.mjs`, and `storm_radar_hail.geojsonl` (2021 onward, on the
+  same 0.25° index space as the report grid, so the join is a string key).
+
+  - Reads `CONUS/MESH_Max_1440min_00.50` from `s3://noaa-mrms-pds` — **keyless,
+    no AWS account, no egress charge**, US Government public domain. One file
+    per day covers the trailing 24 hours, which is what makes a multi-year
+    climatology affordable.
+  - GRIB2 with PNG data packing is decoded in-process with no dependencies — no
+    `wgrib2`, no `eccodes`. The compact MRMS section layout was established
+    empirically against the archive and cross-checked against an independent
+    decoder; `src/data/stormRadar.test.mjs` pins every field offset with a
+    synthetic fixture.
+  - Radar is weighted low and folded in **only when the snapshot is present**, so
+    a missing file leaves every score exactly as it was instead of silently
+    deflating the map. MESH is known to over-report against ground reports and
+    covers only 2021 onward, so it is used as corroboration and never as a
+    severity measure; the panel states both limits.
+
+- Add a Storm Intelligence layer: hail and wind history with a residential
+  damage-likelihood surface, and a built-in area picker. The layer answers
+  "where in this area should a hail-and-wind inspection effort look first",
+  which is a triage question, not a forecast — the panel states its own limits.
+
+  Everything ships keyless and offline. The bundled snapshot under
+  `src/data/local_data/storm/` is built by `scripts/build-storm-snapshots.mjs`
+  from NOAA/NWS Storm Prediction Center severe-weather reports (hail and wind,
+  1955–2025; US Government public domain), FEMA National Risk Index county data
+  (free to use with the mandated "not endorsed by FEMA" disclaimer the app
+  renders verbatim), and US Census cartographic boundary polygons (public
+  domain). No commercial-use restriction applies to any of it.
+
+  - 976,552 reports are aggregated into a 0.25° damage-score grid (12,119
+    cells) and a 0.5° recurrence grid, plus 37,245 individual significant
+    events (hail ≥ 2.00", wind ≥ 75 kt) with tracked paths where the record
+    has a final location.
+  - The score blends three quantities kept deliberately separate: observed
+    hazard from reports, FEMA's modelled expected annual loss per dollar of
+    building value, and building exposure. Each cell's card names its own
+    inputs so a user can disagree with it.
+  - Year scrubbing is instantaneous and recomputes from decade histograms, with
+    a 0.1°-style grid joined to counties by real point-in-polygon containment.
+  - The report record is **not** uniform across decades — the 1950s hold about
+    2,200 hail reports against roughly 137,000 in the 2000s — so decade-over-decade
+    comparisons overstate the trend. The caveat is surfaced in the layer panel
+    rather than left to a help page, and `STORM_METHOD_CAVEATS` carries the rest.
+  - `/api/storm-recent` proxies today's and yesterday's SPC reports (keyless,
+    rate-limited, disk-cached, serve-stale) because the bulk snapshot ends about
+    75 days behind.
+  - `/api/storm-loss` proxies FEMA OpenFEMA `HousingAssistanceOwners`, which is
+    realized homeowner damage by county and ZIP — current, where the SBA
+    Disaster Loan series stops in September 2022. It is a different, generally
+    lower estimator than SBA's, and the payload says so.
+  - FEMA's required disclaimer is registered in the Data attribution popover
+    and re-exported from a dependency-free leaf module so the contractual
+    wording exists exactly once.
+  - Only one new optional credential is defined, `CENSUS_API_KEY`, for ACS
+    enrichment. The Census Bureau began requiring a key for `api.census.gov` in
+    May 2026; the layer works fully without it.
 
 - Snow flakes sway within a fixed range instead of drifting sideways faster the
   longer the app runs; the Wind setting still scales the sway.
@@ -155,7 +248,7 @@
   photo a click opens, and the cones, by each photo's projection and upload
   date. KartaView's SINCE is the upload date (all its server can filter by);
   a note under the slider says so while KartaView is lit (`sinceBasis:
-  'upload'` in the provider contract).
+'upload'` in the provider contract).
   Mapillary's line coverage and sequence cones are now shared by both
   (`lineCoverage.js`, `sequenceCones.js`).
 

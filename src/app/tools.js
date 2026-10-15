@@ -22,6 +22,7 @@ export function createApplicationTools({
   loadingScreen,
   placeSearch,
   voice = {},
+  dataScope = null,
   startChrome,
   onSceneDirector,
   sceneDataPacks,
@@ -153,6 +154,9 @@ export function createApplicationTools({
     weatherEffects,
     cockpitCloudEffects,
     getRenderGovernorDiagnostics,
+    // Data scope, for automation and the dev tooling in scripts/gev-control.
+    // The controller is the owner; this is a reference, not a copy.
+    dataScope,
     surfaceServices: operations.surface,
     requestRender: governorRequestRender,
   };

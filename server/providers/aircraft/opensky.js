@@ -1,5 +1,9 @@
 import { normalizeAdsbLolPointResponse } from '../../../src/data/adsbLolFallback.js';
 import {
+  parseRegionParam,
+  regionToQueryParam,
+} from '../../../src/data/dataScope.js';
+import {
   coalesceProxyRequest,
   readResponseJsonCapped,
 } from '../common/http.js';
@@ -13,48 +17,58 @@ let _openskyToken = null;
 let _openskyTokenExpiry = 0;
 /** @type {Promise<string|null>|null} In-flight token refresh promise (coalesces concurrent callers). */
 let _openskyTokenPromise = null;
-/** @type {string|null} Cached upstream response body (JSON text). */
-let _openskyCacheBody = null;
-/** @type {number} HTTP status of the cached response. */
-let _openskyCacheStatus = 0;
-/** @type {number} Epoch-ms when the response was cached. */
-let _openskyCacheTime = 0;
-/** @type {{requestedMode:string,usedMode:string,reason:string}|null} Auth metadata for the cached response. */
-let _openskyCacheMeta = null;
-/** @type {number|null} Source snapshot epoch from the cached OpenSky body. */
-let _openskyCacheSourceEpochMs = null;
-/** TTL for the OpenSky response cache (ms). */
-const OPENSKY_CACHE_MS = 9000;
-/** Per-attempt limit for the global snapshot; it normally arrives in ~1.5 s. */
-const OPENSKY_ATTEMPT_TIMEOUT_MS = 10_000;
-const OPENSKY_STATES_URL =
-  'https://opensky-network.org/api/states/all?extended=1';
-
 /**
- * Fetch and read the global snapshot, giving each attempt
- * OPENSKY_ATTEMPT_TIMEOUT_MS and retrying once when an attempt times out or
- * the connection fails. A second failure throws, which the proxy answers
- * from its stale cache or the regional fallback.
- * @param {Record<string, string>} headers Request headers.
- * @returns {Promise<{upstream: Response, body: string}>}
+ * Cached upstream responses, keyed by region.
+ *
+ * Keyed because a viewport scope issues one request per region and OpenSky
+ * bills 4 CREDITS for every call. A single shared slot would mean every pan
+ * invalidated the previous answer and re-bought it; keyed, a drag that stays
+ * inside one region is served from memory for free.
+ *
+ * `''` is the world request. Bounded, so panning across a map cannot pin one
+ * snapshot per cell until the dev server restarts.
+ *
+ * @type {Map<string, {body:string,status:number,time:number,meta:object|null,sourceEpochMs:number|null}>}
  */
-async function fetchOpenSkyStates(headers) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const upstream = await fetch(OPENSKY_STATES_URL, {
-        headers,
-        signal: AbortSignal.timeout(OPENSKY_ATTEMPT_TIMEOUT_MS),
-      });
-      return { upstream, body: await upstream.text() };
-    } catch (error) {
-      if (attempt >= 2) throw error;
-      console.warn(
-        '[OpenSky] global snapshot attempt failed, retrying:',
-        error?.message || error,
-      );
-    }
+const _openskyCache = new Map();
+/** Per-attempt limit for a snapshot; it normally arrives in ~1.5 s. */
+const OPENSKY_ATTEMPT_TIMEOUT_MS = 10_000;
+const OPENSKY_CACHE_MAX_REGIONS = 4;
+
+function _cacheGet(region) {
+  return _openskyCache.get(region ?? '') ?? null;
+}
+
+function _cacheSet(region, entry) {
+  const key = region ?? '';
+  _openskyCache.delete(key);
+  _openskyCache.set(key, entry);
+  while (_openskyCache.size > OPENSKY_CACHE_MAX_REGIONS) {
+    const oldest = _openskyCache.keys().next().value;
+    _openskyCache.delete(oldest);
   }
 }
+
+/**
+ * Read a cached entry, re-inserting it so an LRU eviction counts as use.
+ *
+ * Reading through a plain `get` would let the region the user is currently
+ * looking at be the one evicted by their own next request.
+ *
+ * @param {string} region
+ * @returns {object|null}
+ */
+function _cacheTouch(region) {
+  const key = region ?? '';
+  const entry = _openskyCache.get(key);
+  if (!entry) return null;
+  _openskyCache.delete(key);
+  _openskyCache.set(key, entry);
+  return entry;
+}
+
+/** TTL for the OpenSky response cache (ms). */
+const OPENSKY_CACHE_MS = 9000;
 // --- OpenSky credit governor (field-test fix 2026-07-06) -------------------
 // The global /states/all this proxy fetches costs 4 CREDITS per call against
 // OpenSky's ~4000/day authenticated budget — a day with the app open burned
@@ -137,7 +151,6 @@ export async function getOpenSkyToken() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          signal: AbortSignal.timeout(OPENSKY_ATTEMPT_TIMEOUT_MS),
           body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
         },
       );
@@ -378,28 +391,65 @@ function openSkySourceIsStale(sourceEpochMs, now = Date.now()) {
  *
  * @returns {import('vite').Plugin}
  */
+/**
+ * `/states/all` URL for a region, or the world snapshot when unscoped.
+ *
+ * OpenSky's bbox form is `lamin`/`lomin`/`lamax`/`lomax` — named per parameter,
+ * so there is no axis-order ambiguity to get wrong (contrast the FIRMS area
+ * segment, which is positional). Scoping does NOT reduce the 4-credit call
+ * cost; it only shrinks the body, which is why the region-keyed cache matters
+ * more here than the scoping itself.
+ *
+ * @param {string} region our `south,west,north,east` cache key, '' for world
+ * @returns {string}
+ */
+export function buildOpenSkyStatesUrl(region) {
+  const base = 'https://opensky-network.org/api/states/all?extended=1';
+  if (!region) return base;
+  const parts = region.split(',').map(Number);
+  if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) return base;
+  const [south, west, north, east] = parts;
+  const url = new URL(base);
+  url.searchParams.set('lamin', String(south));
+  url.searchParams.set('lomin', String(west));
+  url.searchParams.set('lamax', String(north));
+  url.searchParams.set('lomax', String(east));
+  return url.toString();
+}
+
 export function openSkyProxy() {
   const installMiddleware = (server) => {
-    server.middlewares.use('/api/flights', async (req, res, next) => {
+    server.middlewares.use('/api/flights', async (req, res) => {
+      // Visible to the catch handler, which serves the last-good body.
+      let _cache = null;
       try {
-        // This mount also matches its /track route, served by its own handler.
-        if (new URL(req.url || '/', 'http://localhost').pathname !== '/')
-          return next();
-        res.setHeader('X-Feed-Source', 'OpenSky Network');
         const requestedMode = normalizeOpenSkyAuthMode(
           process.env.OPENSKY_AUTH_MODE,
         );
+        // Scope is decided per request: '' means the world snapshot.
+        const regionResult = parseRegionParam(
+          new URL(req.url || '/', 'http://localhost').searchParams.get('bbox'),
+        );
+        if (!regionResult.ok) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: regionResult.error }));
+          return;
+        }
+        const region = regionToQueryParam(regionResult.region);
+        const statesUrl = buildOpenSkyStatesUrl(region);
+        // Touching re-inserts, so a region the user keeps looking at is the
+        // one least likely to be evicted. Declared with `let` at function scope
+        // rather than `const` inside the try: the catch handler below serves the
+        // last-good body, and a block-scoped const there resolves to nothing.
+        _cache = _cacheTouch(region);
         const now = Date.now();
         const inCooldown = now < _openskyCooldownUntil;
         // Fresh-enough cache (adaptive TTL) OR any cache during a 429
         // cooldown: serve it without touching upstream. Stale-during-cooldown
         // is deliberate (credit governor): last-good planes beat a dead layer.
-        if (
-          _openskyCacheBody &&
-          (now - _openskyCacheTime < _openskyTtlMs || inCooldown)
-        ) {
+        if (_cache && (now - _cache.time < _openskyTtlMs || inCooldown)) {
           if (
-            openSkySourceIsStale(_openskyCacheSourceEpochMs, now) &&
+            openSkySourceIsStale(_cache.sourceEpochMs, now) &&
             (await serveAdsbLolPointFallback(
               req,
               res,
@@ -409,14 +459,14 @@ export function openSkyProxy() {
           ) {
             return;
           }
-          const cachedMeta = _openskyCacheMeta || {
+          const cachedMeta = _cache.meta || {
             requestedMode,
             usedMode: 'unknown',
             reason: 'cached',
           };
-          const isStale = now - _openskyCacheTime >= _openskyTtlMs;
+          const isStale = now - _cache.time >= _openskyTtlMs;
           res.writeHead(
-            _openskyCacheStatus || 200,
+            _cache.status || 200,
             buildOpenSkyHeaders({
               cacheStatus: isStale ? 'STALE' : 'HIT',
               requestedMode: cachedMeta.requestedMode || requestedMode,
@@ -424,15 +474,13 @@ export function openSkyProxy() {
               reason: isStale
                 ? 'rate_limited_serving_stale'
                 : cachedMeta.reason || 'cached',
-              staleSeconds: isStale
-                ? (now - _openskyCacheTime) / 1000
-                : undefined,
+              staleSeconds: isStale ? (now - _cache.time) / 1000 : undefined,
               retryAfterSeconds: inCooldown
                 ? (_openskyCooldownUntil - now) / 1000
                 : undefined,
             }),
           );
-          res.end(_openskyCacheBody);
+          res.end(_cache.body);
           return;
         }
         // Cooling down with nothing cached (cold start into a rate limit):
@@ -505,7 +553,25 @@ export function openSkyProxy() {
           }
         }
 
-        let { upstream, body } = await fetchOpenSkyStates(headers);
+        // Time-limit each attempt and retry once when it times out or the
+        // connection fails. A second failure throws, and the proxy answers from
+        // its stale cache or the regional adsb.lol fallback.
+        let upstream;
+        for (let attempt = 1; ; attempt++) {
+          try {
+            upstream = await fetch(statesUrl, {
+              headers,
+              signal: AbortSignal.timeout(OPENSKY_ATTEMPT_TIMEOUT_MS),
+            });
+            break;
+          } catch (error) {
+            if (attempt >= 2) throw error;
+            console.warn(
+              '[OpenSky] snapshot attempt failed, retrying:',
+              error?.message || error,
+            );
+          }
+        }
         // Auto-mode fallback: if OAuth was rejected, retry with Basic credentials
         if (
           (upstream.status === 401 || upstream.status === 403) &&
@@ -517,11 +583,12 @@ export function openSkyProxy() {
             Accept: 'application/json',
             Authorization: `Basic ${Buffer.from(`${basicUser}:${basicPass}`).toString('base64')}`,
           };
-          ({ upstream, body } = await fetchOpenSkyStates(retryHeaders));
+          upstream = await fetch(statesUrl, { headers: retryHeaders });
           usedMode = 'basic';
           reason = 'oauth_rejected_fallback_basic';
         }
 
+        let body = await upstream.text();
         const sourceEpochMs = upstream.ok ? openSkySourceEpochMs(body) : null;
         if (
           upstream.ok &&
@@ -535,11 +602,13 @@ export function openSkyProxy() {
         ) {
           // Keep the last global snapshot available as a fail-soft cache,
           // but do not label or render it as a fresh live result.
-          _openskyCacheBody = body;
-          _openskyCacheStatus = upstream.status;
-          _openskyCacheTime = now;
-          _openskyCacheSourceEpochMs = sourceEpochMs;
-          _openskyCacheMeta = { requestedMode, usedMode, reason };
+          _cacheSet(region, {
+            body,
+            status: upstream.status,
+            time: now,
+            sourceEpochMs,
+            meta: { requestedMode, usedMode, reason },
+          });
           return;
         }
         if (upstream.status === 429) {
@@ -559,7 +628,7 @@ export function openSkyProxy() {
           _openskyCooldownUntil = now + cooldownMs;
           // Serve the last-good body instead of the 429 when we have one —
           // the layer keeps rendering (STALE-cued) instead of dying.
-          if (_openskyCacheBody && _openskyCacheStatus === 200) {
+          if (_cache && _cache.status === 200) {
             res.writeHead(
               200,
               buildOpenSkyHeaders({
@@ -567,16 +636,16 @@ export function openSkyProxy() {
                 requestedMode,
                 usedMode,
                 reason: 'rate_limited_serving_stale',
-                staleSeconds: (now - _openskyCacheTime) / 1000,
+                staleSeconds: (now - _cache.time) / 1000,
                 retryAfterSeconds: cooldownMs / 1000,
               }),
             );
-            res.end(_openskyCacheBody);
+            res.end(_cache.body);
             return;
           }
         }
 
-        if (!upstream.ok && !_openskyCacheBody) {
+        if (!upstream.ok && !_cache) {
           const servedFallback = await serveAdsbLolPointFallback(
             req,
             res,
@@ -644,15 +713,17 @@ export function openSkyProxy() {
         // Only cache successful responses — error responses (401/403/429/5xx)
         // should not be served from cache on subsequent requests
         if (upstream.ok) {
-          _openskyCacheBody = body;
-          _openskyCacheStatus = upstream.status;
-          _openskyCacheTime = now;
-          _openskyCacheSourceEpochMs = sourceEpochMs;
-          _openskyCacheMeta = {
-            requestedMode,
-            usedMode,
-            reason,
-          };
+          _cacheSet(region, {
+            body,
+            status: upstream.status,
+            time: now,
+            sourceEpochMs,
+            meta: {
+              requestedMode,
+              usedMode,
+              reason,
+            },
+          });
           // Credit governor: adapt the cache TTL to the remaining daily
           // budget so a continuously-open app stretches its polls instead of
           // exhausting the quota mid-day. Success also clears any cooldown.
@@ -675,8 +746,8 @@ export function openSkyProxy() {
         res.end(body);
       } catch (e) {
         console.error('[OpenSky Proxy]', e.message);
-        if (_openskyCacheBody) {
-          const cachedMeta = _openskyCacheMeta || {
+        if (_cache) {
+          const cachedMeta = _cache.meta || {
             requestedMode: normalizeOpenSkyAuthMode(
               process.env.OPENSKY_AUTH_MODE,
             ),
@@ -684,7 +755,7 @@ export function openSkyProxy() {
             reason: 'cached_stale',
           };
           res.writeHead(
-            _openskyCacheStatus || 200,
+            _cache.status || 200,
             buildOpenSkyHeaders({
               cacheStatus: 'STALE',
               requestedMode:
@@ -693,7 +764,7 @@ export function openSkyProxy() {
               reason: cachedMeta.reason || 'cached_stale',
             }),
           );
-          res.end(_openskyCacheBody);
+          res.end(_cache.body);
           return;
         }
         const requestedMode = normalizeOpenSkyAuthMode(

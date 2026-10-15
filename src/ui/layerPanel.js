@@ -49,7 +49,17 @@ const PANEL_GROUPS = [
   },
   {
     label: 'Events',
-    ids: ['rocket-launches', 'earthquakes', 'local-firms', 'fire-perimeters'],
+    ids: [
+      'rocket-launches',
+      'earthquakes',
+      'local-firms',
+      'fire-perimeters',
+      // Paired deliberately: the comparison between what was observed and
+      // what the model expects is the point, so the two sit next to each
+      // other.
+      'storm-observed',
+      'storm-expected',
+    ],
   },
   {
     label: 'Weather',

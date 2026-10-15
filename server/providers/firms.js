@@ -2,6 +2,11 @@ import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 
 import { filterTrailing24h, parseFirmsCsv } from '../../src/data/firmsCsv.js';
+import {
+  parseRegionParam,
+  regionToFirmsBbox,
+  regionToQueryParam,
+} from '../../src/data/dataScope.js';
 
 /**
  * NASA FIRMS live active-fire proxy with a memory + disk cache.
@@ -38,17 +43,56 @@ export function firmsProxy() {
   const CACHE_DIR = path.join(process.cwd(), '.gev-cache');
   const CACHE_PATH = path.join(CACHE_DIR, 'firms.json');
 
+  /**
+   * Caches are keyed by region. '' is the whole-world entry, which is what
+   * global scope asks for and the only one written to disk.
+   *
+   * A viewport scope produces many keys over a session, so the map is bounded
+   * and evicts least-recently-used: an unbounded one would pin every provider
+   * response the user ever panned across until the dev server restarted.
+   */
+  const REGION_CACHE_MAX = 8;
+  /** @type {Map<string, {at: number, sources: Array<object>, fires: Array<object>}>} */
+  const byRegion = new Map();
+  /** @type {Map<string, Promise<{at:number,sources:Array<object>,fires:Array<object>}>>} */
+  const inflightByRegion = new Map();
+  /** World entry only: the disk cache's whole job is surviving a restart. */
   /** @type {?{at: number, sources: Array<object>, fires: Array<object>}} */
-  let mem = null;
   let diskChecked = false;
-  /** @type {?Promise<?{at: number, sources: Array<object>, fires: Array<object>}>} single-flight refresh */
-  let inflight = null;
   /** @type {?{at: number, transactions: ?{used: number, limit: number}}} mapkey_status cache */
   let statusCache = null;
   /** @type {?Promise<?{used: number, limit: number}>} */
   let statusInflight = null;
 
+  const WORLD_REGION = '';
+
+  function cachedFor(regionKey) {
+    return byRegion.get(regionKey) ?? null;
+  }
+
+  function rememberRegion(regionKey, entry) {
+    byRegion.delete(regionKey);
+    byRegion.set(regionKey, entry);
+    while (byRegion.size > REGION_CACHE_MAX) {
+      const oldest = byRegion.keys().next().value;
+      if (oldest === regionKey) break;
+      byRegion.delete(oldest);
+    }
+  }
+
   const mapKey = () => String(process.env.FIRMS_MAP_KEY || '').trim();
+
+  /**
+   * Cache key (`south,west,north,east`) → FIRMS area segment
+   * (`west,south,east,north`). Returns '' for a world request.
+   */
+  function firmsAreaSegment(region) {
+    if (!region) return '';
+    const parts = region.split(',').map(Number);
+    if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) return '';
+    const [south, west, north, east] = parts;
+    return regionToFirmsBbox({ south, west, north, east });
+  }
 
   async function readDiskOnce() {
     if (diskChecked) return;
@@ -60,7 +104,9 @@ export function firmsProxy() {
         Array.isArray(parsed?.sources) &&
         Array.isArray(parsed?.fires)
       ) {
-        mem = parsed;
+        // The disk file only ever holds the world pull, so stamp its region
+        // rather than trusting an absent field.
+        byRegion.set(WORLD_REGION, { ...parsed, region: WORLD_REGION });
       }
     } catch {
       /* no disk cache yet */
@@ -80,9 +126,14 @@ export function firmsProxy() {
    * Fetch + parse one FIRMS source. Throws on HTTP error or a non-CSV body
    * (FIRMS reports errors as HTML/plain text, never CSV). Never log the URL —
    * it embeds the MAP_KEY.
+   *
+   * `region` is the CACHE KEY form (`south,west,north,east`), not the URL
+   * segment: FIRMS orders its area longitude-first and 400s on a
+   * latitude-first string, so the reorder happens at the last moment.
    */
-  async function fetchSource(key, source) {
-    const url = `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${encodeURIComponent(key)}/${source}/world/2`;
+  async function fetchSource(key, source, region) {
+    const area = firmsAreaSegment(region) || 'world';
+    const url = `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${encodeURIComponent(key)}/${source}/${area}/2`;
     const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const records = parseFirmsCsv(await res.text());
@@ -96,13 +147,16 @@ export function firmsProxy() {
    * failed sources marked ok:false; total failure throws so the caller can
    * serve stale.
    */
-  async function refreshUpstream(key) {
+  async function refreshUpstream(key, region) {
     const now = Date.now();
     const sources = [];
     const fires = [];
     for (const source of SOURCES) {
       try {
-        const records = filterTrailing24h(await fetchSource(key, source), now);
+        const records = filterTrailing24h(
+          await fetchSource(key, source, region),
+          now,
+        );
         // NOT fires.push(...records): spread passes each record as an argument,
         // and a world/2 VIIRS pull exceeds V8's argument limit (~125k) at
         // ~131k records — RangeError, and the whole source is silently dropped.
@@ -117,7 +171,10 @@ export function firmsProxy() {
       }
     }
     if (!sources.some((s) => s.ok)) throw new Error('all FIRMS sources failed');
-    return { at: now, sources, fires };
+    // Stamp the region so buildPayload can tell a scoped answer from a world
+    // one. Without it every response would echo '' and a client could not
+    // tell which box it actually received.
+    return { at: now, sources, fires, region };
   }
 
   /**
@@ -130,6 +187,10 @@ export function firmsProxy() {
       fetchedAt: entry.at,
       stale,
       ttlMs: TTL_MS,
+      // Echoed so a client can tell a global answer from a scoped one, and so
+      // a stale entry served during an upstream failure is not mistaken for the
+      // region that was asked for.
+      region: entry.region || WORLD_REGION,
       sources: entry.sources,
       count: fires.length,
       fires,
@@ -185,6 +246,18 @@ export function firmsProxy() {
       };
       try {
         const subPath = String(req.url || '').split('?')[0];
+        const regionResult = parseRegionParam(
+          req.url
+            ? new URL(req.url, 'http://localhost').searchParams.get('bbox')
+            : null,
+        );
+        if (!regionResult.ok) {
+          sendJson(400, { error: regionResult.error });
+          return;
+        }
+        // The cache key and the FIRMS area segment are both this 4-decimal
+        // query form; '' means the whole-world pull.
+        const region = regionToQueryParam(regionResult.region);
         const key = mapKey();
         await readDiskOnce();
 
@@ -201,11 +274,12 @@ export function firmsProxy() {
             return;
           }
           const transactions = await getTransactions(key);
+          const world = cachedFor(WORLD_REGION);
           sendJson(200, {
             hasKey: true,
-            lastFetch: mem ? mem.at : null,
-            count: mem ? mem.fires.length : null,
-            stale: mem ? Date.now() - mem.at >= TTL_MS : false,
+            lastFetch: world ? world.at : null,
+            count: world ? world.fires.length : null,
+            stale: world ? Date.now() - world.at >= TTL_MS : false,
             ttlMs: TTL_MS,
             transactions,
           });
@@ -217,32 +291,38 @@ export function firmsProxy() {
           return;
         }
 
-        const entry = mem;
+        const entry = cachedFor(region);
         if (entry && Date.now() - entry.at < TTL_MS) {
           sendJson(200, buildPayload(entry, false));
           return;
         }
-        // Stale or missing → refresh, single-flight (concurrent requests
-        // share one upstream pass). Capture the promise locally BEFORE
-        // awaiting: the .finally() nulls `inflight` the moment it settles.
-        if (!inflight) {
-          inflight = refreshUpstream(key)
-            .then(async (fresh) => {
-              mem = fresh;
-              await writeDisk(fresh);
-              return fresh;
-            })
-            .catch((err) => {
-              console.warn(
-                `[firms-proxy] refresh failed (${err?.message || err}) — serving cache if any`,
-              );
-              return null;
-            })
-            .finally(() => {
-              inflight = null;
-            });
+        // Stale or missing → refresh, single-flight per region (concurrent
+        // requests for the same box share one upstream pass; a different box is
+        // a different pass, which is the point). Capture the promise from the
+        // map BEFORE awaiting: the .finally() deletes it the moment it settles.
+        if (!inflightByRegion.has(region)) {
+          inflightByRegion.set(
+            region,
+            refreshUpstream(key, region)
+              .then(async (fresh) => {
+                rememberRegion(region, fresh);
+                // Only the world entry is durable. A viewport region's cache is
+                // worthless across a restart — the camera is elsewhere by then.
+                if (!region) await writeDisk(fresh);
+                return fresh;
+              })
+              .catch((err) => {
+                console.warn(
+                  `[firms-proxy] refresh failed (${err?.message || err}) — serving cache if any`,
+                );
+                return null;
+              })
+              .finally(() => {
+                inflightByRegion.delete(region);
+              }),
+          );
         }
-        const pending = inflight;
+        const pending = inflightByRegion.get(region);
         const fresh = await pending;
         if (fresh) {
           sendJson(200, buildPayload(fresh, false));

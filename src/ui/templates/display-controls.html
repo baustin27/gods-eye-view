@@ -73,6 +73,13 @@
         <input type="range" class="pp-slider" id="detection-fade-slider" min="0" max="40" step="1" value="7" aria-label="Detection fade distance" title="World-overlay fade distance outside the keyhole as a percentage of its radius" />
         <span class="pp-slider-value" id="detection-fade-value">7%</span>
       </div>
+      <div class="pp-slider-row detection-scope-row" id="data-scope-row">
+        <span class="pp-slider-mini-label">Data</span>
+        <div class="pp-mode-seg detection-allocation-seg" role="radiogroup" aria-label="Data scope">
+          <button class="pp-mode-btn active" id="data-scope-global" data-scope="global" role="radio" aria-checked="true" title="Ask every provider for all of its data">Global</button>
+          <button class="pp-mode-btn" id="data-scope-viewport" data-scope="viewport" role="radio" aria-checked="false" title="Ask only for the area on screen. Lighter on data and quota; layers with no spatial filter are unaffected.">Viewport</button>
+        </div>
+      </div>
       <div class="pp-slider-row detection-opacity-row" id="detection-opacity-row">
         <label class="pp-slider-mini-label" for="detection-opacity-slider">Outside</label>
         <input type="range" class="pp-slider" id="detection-opacity-slider" min="0" max="100" step="1" value="1" aria-label="Detection opacity outside the keyhole" title="World-overlay label and card opacity beyond the fade distance" />

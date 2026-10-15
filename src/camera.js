@@ -2,9 +2,22 @@ import * as Cesium from 'cesium';
 
 /**
  * Camera presets for notable locations.
- * Phase 1 default: fly to Austin, TX on load.
+ *
+ * The startup view is Denver (see {@link flyToDefaultView}) — the metro area
+ * with the densest storm reporting in the hail corridor, which is what the
+ * default layers are about. Austin stays available as a preset and as the
+ * centre for the Austin transit and bikeshare feeds, which genuinely live
+ * there.
  */
 export const CAMERA_PRESETS = {
+  denver: {
+    destination: Cesium.Cartesian3.fromDegrees(-104.9903, 39.7392, 800),
+    orientation: {
+      heading: Cesium.Math.toRadians(0),
+      pitch: Cesium.Math.toRadians(-35),
+      roll: 0.0,
+    },
+  },
   austin: {
     destination: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 800),
     orientation: {
@@ -47,13 +60,13 @@ export function flyToPreset(viewer, presetName, duration = 3.0) {
 }
 
 /**
- * Set camera to Austin on load with a cinematic fly-in.
+ * Set the camera to the startup view (Denver metro) with a cinematic fly-in.
  * @returns {Function} Cancels the pending or active startup flight.
  */
-export function flyToAustin(viewer) {
+export function flyToDefaultView(viewer) {
   // Start from a high altitude, then fly down
   viewer.camera.setView({
-    destination: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 25000),
+    destination: Cesium.Cartesian3.fromDegrees(-104.9903, 39.7392, 25000),
     orientation: {
       heading: Cesium.Math.toRadians(0),
       pitch: Cesium.Math.toRadians(-90),

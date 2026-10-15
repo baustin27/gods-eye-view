@@ -1,4 +1,5 @@
 import * as Cesium from 'cesium';
+import { FEMA_NRI_DISCLAIMER } from './femaDisclaimer.js';
 
 /**
  * Per-layer data attribution registered into Cesium's credit display.
@@ -25,6 +26,11 @@ import * as Cesium from 'cesium';
  * follows DATA_SOURCES.md (live sources, then bundled snapshots).
  * @type {{ key: string, html: string }[]}
  */
+// FEMA requires this sentence verbatim wherever National Risk Index data is
+// displayed or derived from. It lives in a dependency-free leaf module so both
+// this credit table and the storm feature can share one copy without either
+// dragging the other into its boundary group.
+export { FEMA_NRI_DISCLAIMER } from './femaDisclaimer.js';
 export const OSM_CREDIT = {
   key: 'openstreetmap',
   html: 'Map and place data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a> (<a href="https://opendatacommons.org/licenses/odbl/1-0/" target="_blank" rel="noopener">ODbL</a>)',
@@ -371,6 +377,24 @@ export const DATA_CREDITS = [
       'Submarine cables: © TeleGeography — ' +
       '<a href="https://www.submarinecablemap.com" target="_blank" rel="noopener">submarinecablemap.com</a> ' +
       '(CC BY-NC-SA 3.0 — NonCommercial)',
+  },
+  {
+    // Storm intelligence (hail/wind history + damage-likelihood surface).
+    // NOAA/NWS and Census are public domain. FEMA's National Risk Index terms
+    // require its disclaimer verbatim wherever the data is displayed or derived
+    // from, so it is reproduced in full here rather than merely linked.
+    key: 'storm-intelligence',
+    html:
+      'Hail &amp; wind reports 1955–2025: ' +
+      '<a href="https://www.spc.noaa.gov/wcm/" target="_blank" rel="noopener">NOAA/NWS Storm Prediction Center</a> ' +
+      '(US Government public domain) · county boundaries: ' +
+      '<a href="https://www.census.gov/geographies/mapping-files.html" target="_blank" rel="noopener">US Census Bureau</a> ' +
+      '(public domain) · radar hail cores: ' +
+      '<a href="https://registry.opendata.aws/noaa-mrms-pds/" target="_blank" rel="noopener">NOAA/NSSL MRMS</a> ' +
+      '(public domain, radar estimate) · expected annual loss &amp; building exposure: ' +
+      '<a href="https://www.fema.gov/flood-maps/products-tools/national-risk-index" target="_blank" rel="noopener">FEMA National Risk Index</a> ' +
+      '— ' +
+      FEMA_NRI_DISCLAIMER,
   },
 ];
 

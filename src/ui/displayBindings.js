@@ -115,6 +115,7 @@ export class DisplayBindings {
         densitySlider: this._detectionDensitySlider,
         detectionButton: this._detectionBtn,
         allocationButtons: this._detectionAllocationBtns,
+        scopeButtons: this._dataScopeBtns,
         fadeSliders: [this._detectionFadeSlider, this._detectionOpacitySlider],
         celestialButton: this._celestialBtn,
         modelsButton: this._models3dBtn,
@@ -122,6 +123,8 @@ export class DisplayBindings {
       },
       actions: {
         setStyle: (style) => this.setStyle(style, { userInitiated: true }),
+        setStyle: (style) => this.setStyle(style),
+        setDataScope: (mode) => this.setDataScope(mode),
         toggleBloom: () => {
           this.shareLinkManager?.claimRestoreLane?.('visual');
           this._setBloomEnabled(!this.bloomEnabled);

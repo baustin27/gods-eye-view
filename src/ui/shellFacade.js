@@ -393,6 +393,17 @@ export class ShellFacade {
     return this._visualSettings.activeStyle;
   }
 
+  /**
+   * Hand the DISPLAY panel its data-scope control.
+   *
+   * VisualSettings only mirrors the controller; the controller keeps ownership
+   * of the value and of the generation guard, so a scope change made by voice,
+   * a share link or automation lands on the same control instead of diverging.
+   */
+  attachDataScope(dataScope) {
+    return this._visualSettings?.attachDataScope?.(dataScope);
+  }
+
   set activeStyle(value) {
     this._visualSettings.activeStyle = value;
   }

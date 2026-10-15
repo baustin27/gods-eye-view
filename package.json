@@ -43,8 +43,11 @@
     "build": "vite build",
     "build:panel": "node scripts/build-panel.mjs",
     "preview": "vite preview",
+    "build:storm": "node scripts/build-storm-snapshots.mjs",
+    "build:storm-radar": "node scripts/build-storm-radar-snapshots.mjs",
     "test": "node scripts/run-unit-tests.mjs",
     "test:track": "node scripts/track-regression.mjs",
+    "gev:control": "node scripts/gev-control.mjs",
     "qa:map-source-tray": "node scripts/qa-map-source-tray.mjs",
     "qa:panel-resize": "node scripts/qa-panel-resize.mjs",
     "qa:street-level": "node scripts/qa-street-level.mjs",
@@ -270,6 +273,12 @@
     "./tools/mcp": "./src/tools/mcp/index.js",
     "./tools/panel": "./src/tools/panel.js",
     "./tools/services": "./src/tools/services.js",
-    "./view": "./src/view/index.js"
+    "./view": "./src/view/index.js",
+    "./data/scope": "./src/data/dataScope.js",
+    "./layers/hailwind": "./src/layers/hailwind/index.js",
+    "./layers/hailwind/source": "./src/layers/hailwind/source.js",
+    "./server/providers/storm-recent": {
+      "node": "./server/providers/storm-recent.js"
+    }
   }
 }

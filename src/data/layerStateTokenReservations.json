@@ -19,6 +19,8 @@
   ["recent-imagery", "1"],
   ["rocket-launches", "x"],
   ["satellites", "s"],
+  ["storm-expected", "4"],
+  ["storm-observed", "3"],
   ["street-level", "0"],
   ["telegeography-submarine-cables", "u"],
   ["traffic", "t"],
