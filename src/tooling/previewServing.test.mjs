@@ -49,6 +49,12 @@ test('real dev and built-preview servers serve provider JSON and terminate unkno
     OPENSKY_AUTH_MODE: 'anon',
     OPENSKY_CLIENT_ID: '',
     OPENSKY_CLIENT_SECRET: '',
+    // Pinokio runs with these set, which correctly makes the local-only gate
+    // refuse every request. Cleared for the duration so the suite asserts the
+    // server rather than the developer's launcher configuration.
+    PINOKIO_SHARE_LOCAL: '',
+    PINOKIO_SHARE_CLOUDFLARE: '',
+    PINOKIO_SHARE_VAR: '',
     CCTV_FORCE_AUSTIN: '0',
     CCTV_SOURCES_FILE: path.join(root, 'absent.json'),
     CCTV_SOURCES_JSON: JSON.stringify([

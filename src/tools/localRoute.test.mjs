@@ -4,6 +4,9 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { isLocalMcpRequest, localMcpPlugin } from '../../server/mcp/plugin.js';
 
+/** A loopback request that never answers must fail, not stall the suite. */
+const REQUEST_TIMEOUT_MS = 5000;
+
 test('only direct loopback connections to this server are local', () => {
   const local = {
     remoteAddress: '127.0.0.1',
@@ -50,6 +53,11 @@ test('the /mcp route answers local MCP requests and refuses others', async (t) =
   let middleware;
   const created = [];
   const plugin = localMcpPlugin({
+    env: {},
+    // Pinokio runs with PINOKIO_SHARE_VAR set, which correctly makes the gate
+    // refuse every request. Reading process.env here would make this test
+    // assert the developer's machine rather than the plugin.
+    env: {},
     createServer: ({ apiBase }) => {
       created.push(apiBase);
       return {
@@ -65,7 +73,13 @@ test('the /mcp route answers local MCP requests and refuses others', async (t) =
   });
   const http = createServer((req, res) => middleware(req, res));
   await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
-  t.after(() => http.close());
+  // close() alone waits for keep-alive sockets to drain, and Node's HTTP
+  // client holds one open after the last request. That left the listener
+  // alive and the runner waiting on an event loop that had nothing left to do.
+  t.after(() => {
+    http.closeAllConnections?.();
+    http.close();
+  });
   const { port } = http.address();
   const send = (method, body, headers = {}) =>
     new Promise((resolve, reject) => {
@@ -92,6 +106,12 @@ test('the /mcp route answers local MCP requests and refuses others', async (t) =
           );
         },
       );
+      // Without a timeout a response that never arrives parks the promise
+      // forever and the whole suite waits on it. This test alone was costing
+      // about fifty minutes of wall clock.
+      request.setTimeout(REQUEST_TIMEOUT_MS, () => {
+        request.destroy(new Error('request timed out'));
+      });
       request.on('error', reject);
       request.end(
         body === undefined
@@ -160,6 +180,7 @@ test('a client that disconnects cancels its tool call', async (t) => {
   const started = Promise.withResolvers();
   const aborted = Promise.withResolvers();
   const plugin = localMcpPlugin({
+    env: {},
     createServer: () => ({
       handle: (message, { signal }) => {
         seen = signal;
@@ -176,7 +197,10 @@ test('a client that disconnects cancels its tool call', async (t) => {
   });
   const http = createServer((req, res) => middleware(req, res));
   await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
-  t.after(() => http.close());
+  t.after(() => {
+    http.closeAllConnections?.();
+    http.close();
+  });
   const { port } = http.address();
   const request = httpRequest({
     host: '127.0.0.1',
@@ -200,6 +224,7 @@ test('a client that disconnects cancels its tool call', async (t) => {
 test('a client that stops sending its request body is answered with a timeout', async (t) => {
   let middleware;
   const plugin = localMcpPlugin({
+    env: {},
     bodyTimeoutMs: 20,
     createServer: () => ({ handle: async () => null }),
   });
@@ -208,7 +233,10 @@ test('a client that stops sending its request body is answered with a timeout', 
   });
   const http = createServer((req, res) => middleware(req, res));
   await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
-  t.after(() => http.close());
+  t.after(() => {
+    http.closeAllConnections?.();
+    http.close();
+  });
   const { port } = http.address();
   const status = await new Promise((resolve, reject) => {
     const request = httpRequest(
@@ -246,7 +274,9 @@ test('panel requests cannot reach /mcp through a suffix the server routes to it'
     envFile: false,
     publicDir: false,
     logLevel: 'silent',
-    plugins: [localMcpPlugin()],
+    // Clean env for the same reason as the other cases: Pinokio sets
+    // PINOKIO_SHARE_VAR, which correctly makes the gate refuse everything.
+    plugins: [localMcpPlugin({ env: {} })],
     optimizeDeps: { noDiscovery: true, include: [] },
     server: { host: '127.0.0.1', port: 0, hmr: false, watch: null },
   });

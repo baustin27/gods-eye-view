@@ -669,6 +669,12 @@ test('key setup writes only the supplied application root, retains request guard
   const first = root(t),
     untouched = root(t);
   env(t, 'OPENAI_API_KEY', undefined);
+  // Pinokio runs with the share vars set, which correctly makes the
+  // local-only gate refuse every request. Cleared so the test asserts the
+  // endpoint rather than the developer's launcher configuration.
+  env(t, 'PINOKIO_SHARE_LOCAL', '');
+  env(t, 'PINOKIO_SHARE_CLOUDFLARE', '');
+  env(t, 'PINOKIO_SHARE_VAR', '');
   const plugin = keySetupEndpoint({ sourceRoot: first });
   assert.equal(plugin.apply({}, { command: 'serve', isPreview: true }), false);
   assert.equal(plugin.configurePreviewServer, undefined);

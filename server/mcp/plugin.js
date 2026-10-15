@@ -62,6 +62,12 @@ export function isLocalMcpRequest({
 export function localMcpPlugin({
   createServer = createLocalMcpServer,
   bodyTimeoutMs = BODY_TIMEOUT_MS,
+  // Injectable so a test can assert the loopback path without inheriting
+  // whatever sharing configuration the developer happens to be running under.
+  // Pinokio sets PINOKIO_SHARE_VAR, which correctly makes the gate refuse; a
+  // test that reads process.env is then testing the developer's laptop rather
+  // than the plugin.
+  env = process.env,
 } = {}) {
   const handlers = new Map();
   const handlerFor = (apiBase) => {
@@ -79,7 +85,7 @@ export function localMcpPlugin({
           host,
           origin: req.headers.origin,
           headers: req.headers,
-          env: process.env,
+          env,
         })
       ) {
         res.writeHead(403, {
