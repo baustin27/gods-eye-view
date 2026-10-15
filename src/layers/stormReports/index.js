@@ -20,7 +20,7 @@ import {
   windBand,
   worstFirst,
 } from './model.js';
-import { eventsFor, getSnapshot, reportsFor } from './source.js';
+import { STORM_SOURCE_BADGE } from '../../data/stormAttribution.js';
 
 /** The layer id, and the token reserved for it in the layer-state ledger. */
 export const STORM_REPORTS_ID = 'storm-reports';
@@ -57,6 +57,9 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
   let _pendingParams = null;
   let _selectedStormId = null;
   let _stats = null;
+  let _loaded = false;
+  let _optionsDirty = true;
+  let _previouslyEmpty = true;
 
   /**
    * Durable option intent from the manager, replayed once data lands. The
@@ -89,10 +92,13 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     try {
       _snapshot = await source.getSnapshot({ signal: _request?.signal });
       applyPendingParams();
+      // Through the source, not around it. Reaching into the module directly
+      // made the data path unreachable to a stub, which is how a layer this
+      // small ends up untested.
       const years = yearsInWindow();
       const [packed, events] = await Promise.all([
-        reportsFor(years, _request?.signal),
-        eventsFor(years, _request?.signal),
+        source.reportsFor(years, _request?.signal),
+        source.eventsFor(years, _request?.signal),
       ]);
       if (_request?.signal?.aborted) return;
       _events = events;
@@ -100,6 +106,11 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     } catch (error) {
       if (error?.name === 'AbortError') return;
       _lastError = error instanceof Error ? error : new Error(String(error));
+      // Surfaced loudly: a layer that swallows its load failure returns false
+      // from update(), the manager rejects the transition, and the only
+      // visible symptom is "Could not enable the requested layer" with no cause
+      // anywhere. That is what made this cost an hour.
+      console.error('[Storm Reports] load failed:', _lastError.message);
     } finally {
       _loading = false;
       publish();
@@ -214,7 +225,12 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
 
   return {
     id: STORM_REPORTS_ID,
-    title: 'Storm Reports',
+    // The panel reads `name`, `icon` and `source`; without them it renders
+    // "undefined" next to the layer.
+    name: 'Hail & Wind — Individual Reports',
+    icon: '📍',
+    source: STORM_SOURCE_BADGE,
+    updateInterval: 0,
 
     init(viewer) {
       _viewer = viewer;
@@ -222,20 +238,40 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       publish();
     },
 
-    async setEnabled(enabled) {
-      if (enabled === _enabled) return _enabled;
-      _enabled = enabled;
-      if (enabled) {
-        _request = new AbortController();
-        await reload();
-      } else {
-        _request?.abort();
-        _request = null;
-        _visible = [];
-        _viewer?.entities?.removeAll?.();
-        publish();
-      }
-      return _enabled;
+    /**
+     * Lifecycle protocol: `enable` marks the layer on, `update` does the work
+     * and reports whether the scene changed. Returning false from `update`
+     * while enabled is what makes the manager reject the transition, so the
+     * first enable has to genuinely render and say so.
+     */
+    enable() {
+      if (_enabled) return;
+      _enabled = true;
+      _request = new AbortController();
+      publish();
+    },
+
+    disable() {
+      if (!_enabled) return;
+      _enabled = false;
+      _request?.abort();
+      _request = null;
+      _visible = [];
+      _loaded = false;
+      overlayHost.entityCollection?.()?.removeAll?.();
+      publish();
+    },
+
+    async update() {
+      if (!_enabled) return false;
+      if (_loaded && !_optionsDirty) return false;
+      await reload();
+      _loaded = true;
+      _optionsDirty = false;
+      // A failed load is still a state change — the layer is on, and its panel
+      // says why. Returning false here would be swallowed as "could not enable".
+      if (_lastError) return true;
+      return _visible.length > 0 || _previouslyEmpty !== true;
     },
 
     /**
@@ -244,7 +280,10 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
      */
     setParams(params) {
       _pendingParams = { ...(_pendingParams || {}), ...params };
-      if (_snapshot) applyPendingParams();
+      if (_snapshot) {
+        applyPendingParams();
+        _optionsDirty = true;
+      }
       publish();
     },
 
@@ -296,7 +335,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
 
     destroy() {
       _request?.abort();
-      _viewer?.entities?.removeAll?.();
+      overlayHost.entityCollection?.()?.removeAll?.();
       _viewer = null;
     },
   };

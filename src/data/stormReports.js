@@ -21,13 +21,34 @@ const reportYears = new Map();
 const eventYears = new Map();
 
 /**
+ * A snapshot fetch that never answers must fail, not park. An unbounded fetch
+ * leaves the layer's enable promise pending forever, which the lifecycle then
+ * reports as an uncertain layer with no cause anywhere.
+ */
+const LOAD_TIMEOUT_MS = 20000;
+
+/**
  * Fetch and inflate one gzipped JSON file.
  * @param {string} file
  * @param {AbortSignal} [signal]
  * @returns {Promise<object>}
  */
 async function loadGzJson(file, signal) {
-  const response = await fetch(new URL(file, BASE), { signal });
+  const timeout = AbortSignal.timeout(LOAD_TIMEOUT_MS);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  let response;
+  try {
+    response = await fetch(new URL(file, BASE), { signal: combined });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (timeout.aborted)
+      throw new Error(
+        `Storm snapshot: ${file} timed out after ${LOAD_TIMEOUT_MS}ms`,
+      );
+    throw new Error(
+      `Storm snapshot: ${file} failed — ${error?.message || error}`,
+    );
+  }
   if (!response.ok)
     throw new Error(`Storm snapshot: ${file} returned ${response.status}`);
   if (!response.body)

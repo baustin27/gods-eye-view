@@ -1,5 +1,9 @@
 import { createStormReportsLayer } from '../../layers/stormReports/index.js';
-import { getSnapshot } from '../../layers/stormReports/source.js';
+import {
+  eventsFor,
+  getSnapshot,
+  reportsFor,
+} from '../../layers/stormReports/source.js';
 import { overlayHost } from './overlayHost.js';
 
 /**
@@ -13,7 +17,11 @@ import { overlayHost } from './overlayHost.js';
  */
 export function createApplicationStormReports({ source } = {}) {
   return createStormReportsLayer({
-    source: source || { getSnapshot: () => getSnapshot() },
+    source: source || {
+      getSnapshot: () => getSnapshot(),
+      reportsFor,
+      eventsFor,
+    },
     overlayHost,
   });
 }

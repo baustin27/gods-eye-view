@@ -59,6 +59,10 @@ const PANEL_GROUPS = [
       // other.
       'storm-observed',
       'storm-expected',
+      // The individual reports, not the aggregate surface. Placed last in the
+      // group because the aggregates answer "where is the risk" and this
+      // answers "what actually fell, where, and how big".
+      'storm-reports',
     ],
   },
   {

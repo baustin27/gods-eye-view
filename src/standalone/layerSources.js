@@ -1,6 +1,10 @@
 import { createDirectionsSource } from '../layers/directions/source.js';
 import { createStormSource } from '../layers/hailwind/source.js';
-import { getSnapshot } from '../layers/stormReports/source.js';
+import {
+  eventsFor,
+  getSnapshot,
+  reportsFor,
+} from '../layers/stormReports/source.js';
 import { createRecentImagerySource } from '../layers/recentImagery/source.js';
 import { createOpenFreeMapSource } from '../sources/openFreeMap.js';
 import {
@@ -63,7 +67,11 @@ export function createStandaloneLayerSources(overrides = {}) {
     storm: createStormSource(),
     // The report-level layer fetches its own gzipped year files; it only
     // needs the day index from here.
-    'storm-reports': { getSnapshot: () => getSnapshot() },
+    'storm-reports': {
+      getSnapshot: () => getSnapshot(),
+      reportsFor,
+      eventsFor,
+    },
     wind: createWindSource(),
     weather: createWeatherSource(),
     cyclones: createCycloneSource(),
