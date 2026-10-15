@@ -14,6 +14,7 @@
 
 import {
   hailBand,
+  HAIL_BANDS,
   magnitudeLabel,
   matchesFilter,
   radiusMetres,
@@ -31,6 +32,35 @@ export const STORM_REPORTS_ID = 'storm-reports';
 /** How many report cards the overlay may show at once. */
 const OVERLAY_COHORT_LIMIT = 25;
 
+/** Bands used for the panel legend. */
+const HAIL_LEGEND = [
+  {
+    label: 'Quarter to half inch',
+    color: '#f4e08d',
+    title: 'Baroque reading, minor damage',
+  },
+  {
+    label: 'Half to three-quarter',
+    color: '#f7c948',
+    title: 'Softens a roof, worth a look',
+  },
+  {
+    label: 'Three-quarter to one inch',
+    color: '#f0a92e',
+    title: 'Typical first-damage threshold',
+  },
+  {
+    label: 'One to one-and-a-half inch',
+    color: '#e8862c',
+    title: 'Likely shingle damage',
+  },
+  {
+    label: 'One and a half inch and up',
+    color: '#d6452c',
+    title: 'Serious damage, call the insurer',
+  },
+];
+
 export const STORM_REPORTS_DEFAULTS = Object.freeze({
   minHailIn: 1.0,
   minWindKt: 50,
@@ -42,6 +72,18 @@ export const STORM_REPORTS_DEFAULTS = Object.freeze({
 /**
  * @param {{source: object, overlayHost?: object}} deps
  */
+/**
+ * The chip handlers are called detached from the row, so they need a handle on
+ * the instance to call back into. Held in a single slot and cleared on destroy
+ * so a stale panel cannot drive a torn-down layer.
+ */
+let _instance = null;
+
+/** @returns {object|null} */
+function self() {
+  return _instance;
+}
+
 export function createStormReportsLayer({ source, overlayHost } = {}) {
   if (typeof source?.getSnapshot !== 'function')
     throw new TypeError('Storm Reports layer requires a snapshot source');
@@ -136,15 +178,19 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
   /** Apply the option filter and paint. */
   function applyFilter(packed) {
     const { hazard, minHailIn, minWindKt, fromDate, toDate } = _options;
-    const rows = packed.filter((row) =>
-      matchesFilter(unpack(row), {
-        hazard,
-        minSize: hazard === 'hail' ? minHailIn : minWindKt,
-        from: fromDate,
-        to: toDate,
-      }),
-    );
-    _visible = rows.map(unpack);
+    // The ordinal is the row's index in the year file, so it survives filtering
+    // and keeps entity ids unique.
+    const rows = packed
+      .map((row, index) => ({ row, index }))
+      .filter(({ row, index }) =>
+        matchesFilter(unpack(row, index), {
+          hazard,
+          minSize: hazard === 'hail' ? minHailIn : minWindKt,
+          from: fromDate,
+          to: toDate,
+        }),
+      );
+    _visible = rows.map(({ row, index }) => unpack(row, index));
     _stats = {
       total: _visible.length,
       hail: _visible.filter((r) => r.hazard === 'hail').length,
@@ -156,8 +202,19 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     publish();
   }
 
-  /** Expand a packed row, reusing the loader's expansion. */
-  function unpack(row) {
+  /**
+   * Expand a packed row, reusing the loader's expansion.
+   *
+   * `ordinal` is the row's position in the year file. Nothing in the tuple is
+   * guaranteed unique - two hail reports of the same size at the same point in
+   * the same minute are ordinary, not rare - and Cesium rejects a duplicate id
+   * and drops the whole rest of the collection. The loader's canonical key
+   * cannot be used as an entity id for exactly that reason.
+   *
+   * @param {Array} row
+   * @param {number} ordinal
+   */
+  function unpack(row, ordinal = 0) {
     const [
       date,
       minute,
@@ -175,6 +232,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     ] = row;
     return {
       date,
+      ordinal,
       minute: minute < 0 ? null : minute,
       hazard: hazardCode === 0 ? 'hail' : 'wind',
       size: size || null,
@@ -203,9 +261,9 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
           : windBand(report.size);
       if (!band) continue;
       _dataSource.entities.add({
-        // Size and time in the id: two reports at the same place on the same
+        // The row ordinal, not the coordinates: two reports of the same size at the
         // day are separate observations, and a data source keys on this.
-        id: `storm-report-${report.date}-${report.minute}-${report.lat}-${report.lon}-${report.hazard}-${report.size}`,
+        id: `storm-report-${report.date}-${report.ordinal}-${report.hazard}-${report.size}`,
         position: Cesium.Cartesian3.fromDegrees(report.lon, report.lat),
         point: {
           // Magnitude-scaled, then clamped in pixels: at 155,737 reports an
@@ -251,7 +309,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
               report.lat,
             );
             return {
-              id: `storm-report:${report.date}:${report.lat}:${report.lon}`,
+              id: `storm-report:${report.date}:${report.ordinal}`,
               position,
               cullPosition: position,
               color: band?.color || '#cccccc',
@@ -279,7 +337,24 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     _stats = { ...(_stats || {}), visibleCount: _visible.length };
   }
 
-  return {
+  /** One line describing what is on screen right now. */
+  function panelInfo() {
+    if (_lastError) return `Failed: ${_lastError.message}`;
+    if (_loading) return 'Loading reports...';
+    if (!_enabled) return '';
+    const count = _visible.length.toLocaleString();
+    const worst = _stats?.worst;
+    const parts = [`${count} report${count === '1' ? '' : 's'}`];
+    if (worst?.size != null) parts.push(`largest ${magnitudeLabel(worst)}`);
+    if (_stats?.storms) parts.push(`${_stats.storms.toLocaleString()} storms`);
+    // Read the options directly: getDateRange is an api method, and this
+    // function sits outside the object literal that exposes it.
+    const from = _options.fromDate;
+    const to = _options.toDate;
+    if (from) parts.push(from === to ? from : `${from} to ${to}`);
+    return parts.join(' \u00b7 ');
+  }
+  const api = {
     id: STORM_REPORTS_ID,
     // The panel reads `name`, `icon` and `source`; without them it renders
     // "undefined" next to the layer.
@@ -405,10 +480,17 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       const days = stormDays(_snapshot || { days: {} });
       return limit ? days.slice(0, limit) : days;
     },
-
     /**
      * Layer-panel controls: the exact-date picker, the size threshold and the
      * hazard switch.
+     *
+     * The panel's contract is `{readout, chips, legend, info}` — not a bare
+     * array. Returning an array meant every control was silently discarded and
+     * the layer row rendered with nothing on it, because the panel reads
+     * `controls.chips` and an array has none.
+     *
+     * `readout` stays falsy: truthy tells the panel to hide the chips entirely
+     * and show a count instead, which is the opposite of what this layer is for.
      *
      * The date chips are the point of this layer. The aggregate layer can only
      * offer decades, because a decade is what it has; this one has a day, and a
@@ -419,73 +501,77 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       const days = stormDays(_snapshot || { days: {} });
       const ready = Boolean(_snapshot);
       const selected = _options.fromDate;
-      return [
+      const chips = [
         {
-          group: 'Date',
           id: 'storm-reports-all',
           label: 'ALL DATES',
           title: 'Every storm day in the record',
           disabled: !ready,
           active: !selected,
-          onClick: () => this.clearDateRange(),
+          onClick: () => self().clearDateRange(),
         },
         // The most recent days, which is what a canvasser works from.
         ...days.slice(0, 12).map((day) => ({
-          group: 'Date',
           id: `storm-reports-${day.date}`,
           label: day.date,
-          title: `${day.hail} hail, ${day.wind} wind reports`,
+          title: `${day.hail} hail and ${day.wind} wind reports`,
           disabled: !ready,
           active: selected === day.date,
-          onClick: () => this.setDate(day.date),
+          onClick: () => self().setDate(day.date),
         })),
         {
-          group: 'Hail size',
           id: 'storm-reports-hail-075',
           label: '0.75\u2033',
           title: 'Include hail down to three-quarter inch',
           active: _options.minHailIn <= 0.75,
-          onClick: () => this.setMinHailIn(0.75),
+          onClick: () => self().setMinHailIn(0.75),
         },
         {
-          group: 'Hail size',
           id: 'storm-reports-hail-1',
           label: '1\u2033',
           title: 'Only hail an inch or larger',
           active: _options.minHailIn === 1,
-          onClick: () => this.setMinHailIn(1),
+          onClick: () => self().setMinHailIn(1),
         },
         {
-          group: 'Hail size',
           id: 'storm-reports-hail-15',
           label: '1.5\u2033',
           title: 'Only hail likely to damage a shingle',
           active: _options.minHailIn === 1.5,
-          onClick: () => this.setMinHailIn(1.5),
+          onClick: () => self().setMinHailIn(1.5),
         },
         {
-          group: 'Hail size',
           id: 'storm-reports-hail-2',
           label: '2\u2033+',
           title: 'Only hail of two inches or more',
           active: _options.minHailIn >= 2,
-          onClick: () => this.setMinHailIn(2),
+          onClick: () => self().setMinHailIn(2),
         },
         {
-          group: 'Show',
           id: 'storm-reports-hail',
           label: 'HAIL',
+          title: 'Show hail reports',
           active: _options.hazard === 'hail',
-          onClick: () => this.setHazard('hail'),
+          onClick: () => self().setHazard('hail'),
         },
         {
-          group: 'Show',
           id: 'storm-reports-wind',
           label: 'WIND',
+          title: 'Show wind reports',
           active: _options.hazard === 'wind',
-          onClick: () => this.setHazard('wind'),
+          onClick: () => self().setHazard('wind'),
         },
       ];
+      return {
+        readout: false,
+        chips,
+        legend: HAIL_LEGEND.map((band) => ({
+          label: band.label,
+          color: band.color,
+          blurb: band.title,
+        })),
+        info: panelInfo(),
+      };
     },
 
     /** Threshold in inches. Persisted in tenths so the codec stays integral. */
@@ -548,7 +634,10 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       overlayHost.clearSource(STORM_REPORTS_ID);
       if (_dataSource && _viewer) _viewer.dataSources.remove(_dataSource);
       _dataSource = null;
+      if (_instance === api) _instance = null;
       _viewer = null;
     },
   };
+  _instance = api;
+  return api;
 }

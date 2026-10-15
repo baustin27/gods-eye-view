@@ -281,17 +281,25 @@ test('the panel offers exact days, not decades', async () => {
   layer.init(stubViewer());
   layer.enable();
   await layer.update();
+  // The panel reads `controls.chips`; an array has none, and every control is
+  // dropped without a word.
   const controls = layer.getRowControls();
-  const dates = controls.filter((c) => c.group === 'Date');
-  assert.ok(dates.length >= 2, 'a date group exists');
+  assert.ok(Array.isArray(controls?.chips), 'chips, as the panel expects');
+  assert.equal(controls.readout, false, 'readout must not hide the chips');
+  const chips = controls.chips;
   assert.ok(
-    dates.some((c) => c.label === 'ALL DATES'),
-    'and a way back to the whole record',
+    chips.some((c) => c.label === 'ALL DATES'),
+    'a way back to the whole record',
   );
-  const sizes = controls.filter((c) => c.group === 'Hail size');
-  assert.ok(sizes.length >= 3, 'several size thresholds');
   assert.ok(
-    controls.some((c) => c.id === 'storm-reports-wind'),
+    chips.some((c) => /^20\d\d-\d\d-\d\d$/.test(c.label)),
+    'exact days, not decades',
+  );
+  assert.ok(chips.length >= 3, 'several size thresholds');
+  assert.ok(controls.legend.length >= 3, 'a size legend to colour the map by');
+  assert.ok(controls.info, 'and a line saying what is on screen');
+  assert.ok(
+    chips.some((c) => c.id === 'storm-reports-wind'),
     'hazard switch',
   );
 });
@@ -303,7 +311,7 @@ test('a date chip sets that exact day when clicked', async () => {
   await layer.update();
   const chip = layer
     .getRowControls()
-    .find((c) => c.group === 'Date' && c.label === '2026-08-10');
+    .chips.find((c) => c.label === '2026-08-10');
   assert.ok(chip, 'the day appears as a chip');
   chip.onClick();
   assert.equal(layer.getDateRange().from, '2026-08-10');
@@ -354,4 +362,20 @@ test('a card names the place and the size', async () => {
   assert.match(card.title, /1\.75 hail/);
   assert.match(card.title, /Cleveland/);
   assert.match(card.details, /2026-08-10/);
+});
+
+test('two identical reports at one point stay two markers', async () => {
+  // Same date, same size, same coordinate, same hazard. Nothing in the wire
+  // tuple is unique, and Cesium rejects a duplicate id outright - dropping
+  // the entire rest of the collection, not just the repeat.
+  const viewer = stubViewer();
+  const rows = [REPORT(2), REPORT(2)];
+  rows[1][4] = rows[0][4];
+  rows[1][5] = rows[0][5];
+  const { layer } = makeLayer(rows);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  const ids = drawn(viewer).map((e) => e.id);
+  assert.equal(new Set(ids).size, ids.length, 'every entity id is unique');
 });

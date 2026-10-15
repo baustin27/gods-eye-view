@@ -13,8 +13,22 @@
  * @module data/stormReports
  */
 
-/** Where the snapshot lives, relative to the module. */
-const BASE = new URL('./local_data/storm/', import.meta.url);
+import { inflateBytes } from './stormReports.inflateHelper.js';
+
+/**
+ * Where the snapshot lives, relative to this module.
+ *
+ * Built by string surgery on `import.meta.url` rather than
+ * `new URL('./local_data/storm/', import.meta.url)`. Vite rewrites that form
+ * as an asset reference and drops the trailing slash; with no slash, `storm`
+ * reads as a filename and gets replaced by whatever follows it, so every
+ * request went to `/src/data/local_data/<file>` instead of
+ * `/src/data/local_data/storm/<file>` and came back as the app's HTML shell.
+ *
+ * The sibling loaders in stormDatasets.js get away with the same rewrite
+ * because each of them names a real file rather than a directory.
+ */
+const BASE = `${import.meta.url.replace(/[^/]*$/, '')}local_data/storm/`;
 
 const indexPromise = new Map();
 const reportYears = new Map();
@@ -36,9 +50,10 @@ const LOAD_TIMEOUT_MS = 20000;
 async function loadGzJson(file, signal) {
   const timeout = AbortSignal.timeout(LOAD_TIMEOUT_MS);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const url = new URL(file, BASE);
   let response;
   try {
-    response = await fetch(new URL(file, BASE), { signal: combined });
+    response = await fetch(url, { signal: combined });
   } catch (error) {
     if (signal?.aborted) throw error;
     if (timeout.aborted)
@@ -50,11 +65,35 @@ async function loadGzJson(file, signal) {
     );
   }
   if (!response.ok)
-    throw new Error(`Storm snapshot: ${file} returned ${response.status}`);
+    throw new Error(
+      `Storm snapshot: ${file} returned ${response.status} at ${url.href}`,
+    );
   if (!response.body)
     throw new Error(`Storm snapshot: ${file} returned no body`);
-  const stream = response.body.pipeThrough(new DecompressionStream('gzip'));
-  return JSON.parse(await new Response(stream).text());
+  try {
+    return JSON.parse(await inflateMaybeAlreadyInflated(response));
+  } catch (error) {
+    throw new Error(
+      `Storm snapshot: ${file} at ${url.href} could not be read — ${error?.message || error}`,
+    );
+  }
+}
+
+/**
+ * Read a `.gz` payload that may or may not have been inflated for us already.
+ *
+ * The dev server serves these with `Content-Encoding: gzip`, and `fetch`
+ * honours that automatically — by the time we see the bytes they are plain
+ * JSON, and piping them through DecompressionStream fails. The same file over a
+ * server that serves it as an opaque binary comes through still compressed.
+ *
+ * Rather than pick a side, look for the gzip magic number and inflate only if
+ * the payload really is compressed. Guessing wrong in either direction used to
+ * surface as "Failed to fetch", which names the network when the fault was the
+ * decoder.
+ */
+async function inflateMaybeAlreadyInflated(response) {
+  return inflateBytes(new Uint8Array(await response.arrayBuffer()));
 }
 
 /**
