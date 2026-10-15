@@ -406,3 +406,18 @@ test('a layer with no field renders exactly as before', async () => {
   );
   h.close();
 });
+
+test('the field survives a panel refresh', async () => {
+  // The row is built once and then re-synced on every scheduled refresh. The
+  // initial build and the refresh pass different arguments, and a field wired
+  // into only one of them renders once and is then orphaned: the row looks
+  // right until the first refresh, with no error anywhere.
+  const h = await panelWithField();
+  assert.ok(h.input(), 'rendered on the initial build');
+  h.panel._renderToggles();
+  assert.ok(h.input(), 'still there after a refresh');
+  assert.equal(h.input().value, '2026-08-10');
+  h.panel._renderToggles();
+  assert.ok(h.input(), 'and after a second one');
+  h.close();
+});

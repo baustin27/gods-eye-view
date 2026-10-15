@@ -656,6 +656,7 @@ export class LayerPanel {
         row.querySelector('.data-toggle-controls'),
         layer,
         row.querySelector('.data-row-list'),
+        row.querySelector('.data-toggle-field'),
       );
     }
     this._refreshWeatherPanel();
