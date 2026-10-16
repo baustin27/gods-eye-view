@@ -93,49 +93,134 @@ const PRODUCT_LABEL = 'MRMS MESH 24-hour maximum';
 const HAIL_CORE_MM = 25;
 
 /**
- * Minimum hail size in millimetres that the per-day accumulator will retain.
- * Below this floor the per-day artifact discards the cell entirely.
- * This is the lower threshold of the two-threshold split:
- *   HAIL_RETAIN_MM = 10  — per-day accumulator keep floor
- *   HAIL_CORE_MM = 25    — core threshold for per-year & combined GeoJSONL
- * Invariant: the 7 existing artifacts (storm_radar_hail.geojsonl, 6 ×
- * storm_radar_hail_<year>.geojsonl.gz, 7 sidecars) remain byte-identical
- * apart from builtAt; HAIL_CORE_MM's behaviour must not change.
+ * MESH, in millimetres, at or above which the *per-day* radar artifact keeps a
+ * cell. Deliberately below {@link HAIL_CORE_MM}: a day whose radar shows 12 mm
+ * in a cell nobody filed a stone in is exactly the finding the per-day artifact
+ * exists to publish, and a 25 mm floor discards it before it reaches the
+ * accumulator.
+ *
+ * The split is the load-bearing part, not the number. One threshold doing double
+ * duty — deciding what to discard *and* what to emit — is precisely why the
+ * per-day field could not be built at all. Separating them lets the per-day
+ * artifact keep 10 mm cells while the per-year and combined GeoJSONL stay
+ * byte-for-byte what they are.
  */
 export const HAIL_RETAIN_MM = 10;
 
-/** Pure predicate: returns true if the given hail size mm is at or above the retain floor. */
-export function aboveRetainFloor(mm) {
-  return mm >= HAIL_RETAIN_MM;
-}
 /** Grid step of the emitted snapshot, degrees. Must match the report snapshot. */
 export const CELL_DEG = 0.25;
-/** Number of columns in the emitted snapshot grid, derived from CELL_DEG. */
-export const COLUMN_COUNT = Math.round(360 / CELL_DEG);
-/** Guard against a pathological day materialising every CONUS cell. */
-const MAX_CELLS = 40000;
 
 /**
- * Minimum longitude bound for the CONUS radar domain.
- * MRMS longitudes start at 230°E; after normalisation to −180..180,
- * the grid spans from ~−125° (dateline-adjacent) to ~125°W.
- * Cells west of −125° belong to the Pacific Ocean and are excluded.
+ * Western bound of the retained domain, degrees. MRMS longitudes start at
+ * 230°E so the grid spans the dateline without a wrap seam; normalised to
+ * -180..180 that begins at -129.995, and everything west of -125 is Pacific.
+ *
+ * There is deliberately no eastern bound, and adding one would be a data
+ * change rather than a refactor: the grid runs east to -60.005 on its own, and
+ * the published climatology already carries Great Lakes and East Coast cells.
  */
 export const DOMAIN_MIN_LON = -125;
 
 /**
- * Minimum latitude bound for the CONUS radar domain.
- * The MRMS CONUS reporting envelope extends from 21°N to 56°N;
- * cells south of 21°N are outside the continental United States.
+ * Southern bound, degrees. Below 21°N is the Gulf, Mexico and the Caribbean —
+ * outside the CONUS envelope the sidecars describe. Inclusive: a point at
+ * exactly 21°N is retained.
  */
 export const DOMAIN_MIN_LAT = 21;
 
 /**
- * Maximum latitude bound for the CONUS radar domain.
- * The MRMS CONUS reporting envelope extends from 21°N to 56°N;
- * cells north of 56°N are outside the continental United States.
+ * Northern bound, degrees, inclusive. The MRMS CONUS grid currently tops out at
+ * 54.995°N so this bound does not bite today. It is pinned anyway because the
+ * emitted row count is derived from it, and a grid that grew north would
+ * otherwise widen the index space with nothing anywhere to notice.
  */
 export const DOMAIN_MAX_LAT = 56;
+
+/**
+ * Eastern edge of the MRMS CONUS grid, degrees. Measured off the archive
+ * rather than assumed: 7,000 columns of 0.01° from 230.005°E normalises to
+ * -129.995 .. -60.005. This is what bounds the emitted column count, since the
+ * domain itself stops at the dateline side.
+ */
+export const GRID_MAX_LON = -60;
+
+/** First retained grid row, `DOMAIN_MIN_LAT / CELL_DEG`. */
+export const GRID_ROW_BASE = Math.round(DOMAIN_MIN_LAT / CELL_DEG);
+/** First retained grid column, `DOMAIN_MIN_LON / CELL_DEG`. */
+export const GRID_COL_BASE = Math.round(DOMAIN_MIN_LON / CELL_DEG);
+/** Rows the retained domain can address: 35° of latitude / CELL_DEG. */
+export const GRID_ROWS = Math.round(
+  (DOMAIN_MAX_LAT - DOMAIN_MIN_LAT) / CELL_DEG,
+);
+/** Columns the retained domain can address: 65° of longitude / CELL_DEG. */
+export const GRID_COLUMNS = Math.round((GRID_MAX_LON - DOMAIN_MIN_LON) / CELL_DEG);
+/**
+ * Cells the retained index space can address. The per-day artifact stores this
+ * position as a `uint16`, so this number staying under 65,536 is not a style
+ * preference — it is the whole reason the encoding is 16-bit rather than 32.
+ */
+export const GRID_CELL_COUNT = GRID_ROWS * GRID_COLUMNS;
+
+/** Guard against a pathological day materialising every CONUS cell. */
+const MAX_CELLS = 40000;
+
+/**
+ * Grid row of a decoded latitude, as the emitted `i` property counts them.
+ * @param {number} lat
+ * @returns {number}
+ */
+export function gridRow(lat) {
+  return Math.floor(lat / CELL_DEG);
+}
+
+/**
+ * Grid column of a decoded longitude, as the emitted `j` property counts them.
+ * @param {number} lon
+ * @returns {number}
+ */
+export function gridCol(lon) {
+  return Math.floor(lon / CELL_DEG);
+}
+
+/**
+ * Does a decoded point fall inside the retained domain? All three bounds are
+ * inclusive, which is what the original inline filter implied and what the
+ * boundary tests pin.
+ *
+ * @param {number} lat
+ * @param {number} lon
+ * @returns {boolean}
+ */
+export function inDomain(lat, lon) {
+  return (
+    lon >= DOMAIN_MIN_LON && lat >= DOMAIN_MIN_LAT && lat <= DOMAIN_MAX_LAT
+  );
+}
+
+/**
+ * The flat cell index the per-day artifact stores alongside `dayIndex`.
+ *
+ * This is the function the per-day encoding rests on, so it refuses rather than
+ * degrades: a cell outside the retained space would alias onto a real cell's
+ * index and quietly misplace hail on the map, with no error at any later stage.
+ * Every axis is bounds-checked for that reason.
+ *
+ * @param {number} i Grid row, as the `i` property counts them.
+ * @param {number} j Grid column, as the `j` property counts them.
+ * @returns {number} Index in `[0, GRID_CELL_COUNT)`.
+ * @throws {RangeError} when the cell falls outside the retained index space.
+ */
+export function cellIndex(i, j) {
+  const row = i - GRID_ROW_BASE;
+  const col = j - GRID_COL_BASE;
+  if (row < 0 || row >= GRID_ROWS || col < 0 || col >= GRID_COLUMNS) {
+    throw new RangeError(
+      `cell ${i}:${j} falls outside the ${GRID_ROWS}x${GRID_COLUMNS} retained index space`,
+    );
+  }
+  return row * GRID_COLUMNS + col;
+}
+
 /**
  * First day of the MRMS archive for this product. A bare run reproduces the
  * bundled snapshot exactly, so the committed artefact is never the product of
@@ -222,9 +307,16 @@ export function yearBucket(cellsByYear, ymd) {
  * @param {Buffer} gzipped Raw `.grib2.gz` bytes.
  * @param {string} ymd Day stamp, for the year bucket and the per-cell day tally.
  * @param {Map<number, Map<string, object>>} cellsByYear Accumulator, mutated in place.
+ * @param {{retainMm?: number}} [options] `retainMm` is the floor this call keeps,
+ *   defaulting to {@link HAIL_CORE_MM}. It defaults to the core threshold because
+ *   the per-year and combined artefacts are defined by cores; the per-day artifact
+ *   passes {@link HAIL_RETAIN_MM} to see the sub-core field. A point below either
+ *   floor is discarded before the domain test, which is why the two had to be split:
+ *   one constant could not be both the discard floor and the emission rule.
  * @returns {{points: number, maxMm: number|null, cellsTouched: number, year: number}}
  */
-export function ingestMeshGz(gzipped, ymd, cellsByYear) {
+export function ingestMeshGz(gzipped, ymd, cellsByYear, options = {}) {
+  const retainMm = options.retainMm ?? HAIL_CORE_MM;
   const { year, bucket: cells } = yearBucket(cellsByYear, ymd);
   const raw = zlib.gunzipSync(gzipped);
   const message = parseGrib2(raw);
@@ -236,22 +328,22 @@ export function ingestMeshGz(gzipped, ymd, cellsByYear) {
   let points = 0;
   for (let i = 0; i < values.length; i += 1) {
     const mm = values[i];
-    if (!(mm >= HAIL_CORE_MM)) continue;
+    if (!(mm >= retainMm)) continue;
     points += 1;
     if (maxMm == null || mm > maxMm) maxMm = mm;
     const { lat, lon } = indexToLonLat(grid, i);
-    // Skip the Pacific out-of-grid tail: MRMS longitudes start at 230E so the
-    // grid spans the dateline, and cells west of -125 belong to the ocean.
-    if (lon < DOMAIN_MIN_LON || lat < DOMAIN_MIN_LAT || lat > DOMAIN_MAX_LAT) continue;
-    const key = `${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`;
+    if (!inDomain(lat, lon)) continue;
+    const i0 = gridRow(lat);
+    const j0 = gridCol(lon);
+    const key = `${i0}:${j0}`;
     let cell = cells.get(key);
     if (!cell) {
       // Every field here is scoped to `year` alone. `firstYmd`/`lastYmd` can no
       // longer disagree about the year, which is what lets the emitter publish
       // them as `y0`/`y1` without inventing a cross-year span in a per-year file.
       cell = {
-        i: Math.floor(lat / CELL_DEG),
-        j: Math.floor(lon / CELL_DEG),
+        i: i0,
+        j: j0,
         maxMm: null,
         corePoints: 0,
         days: new Set(),

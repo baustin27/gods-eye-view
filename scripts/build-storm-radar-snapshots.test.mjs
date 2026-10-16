@@ -19,8 +19,24 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 import {
+  CELL_DEG,
+  cellFeature,
+  cellIndex,
   compareBySeverity,
+  DOMAIN_MAX_LAT,
+  DOMAIN_MIN_LAT,
+  DOMAIN_MIN_LON,
   featuresByYear,
+  GRID_CELL_COUNT,
+  GRID_COLUMNS,
+  GRID_COL_BASE,
+  gridCol,
+  GRID_MAX_LON,
+  GRID_ROW_BASE,
+  GRID_ROWS,
+  gridRow,
+  HAIL_RETAIN_MM,
+  inDomain,
   ingestMeshGz,
   mergeYearFeatures,
   radarMeta,
@@ -29,14 +45,6 @@ import {
   writeGeoJsonlGz,
   writeMetaJson,
   yearBucket,
-  DOMAIN_MIN_LON,
-  DOMAIN_MIN_LAT,
-  DOMAIN_MAX_LAT,
-  CELL_DEG,
-  COLUMN_COUNT,
-  HAIL_RETAIN_MM,
-  aboveRetainFloor,
-  cellFeature,
 } from './build-storm-radar-snapshots.mjs';
 
 /** One accumulator entry, as `ingestMeshGz` leaves it. */
@@ -548,113 +556,236 @@ test('meta sidecars record the truncation decision the artefact cannot otherwise
   assert.deepEqual(await fs.readdir(dir), ['storm-radar-sources_2024.json']);
 });
 
-test('domain constants have the documented values', () => {
-  assert.equal(DOMAIN_MIN_LON, -125, 'DOMAIN_MIN_LON = -125');
-  assert.equal(DOMAIN_MIN_LAT, 21, 'DOMAIN_MIN_LAT = 21');
-  assert.equal(DOMAIN_MAX_LAT, 56, 'DOMAIN_MAX_LAT = 56');
+
+test('the domain bounds are the ones the MRMS grid actually spans', () => {
+  // The retained index space is derived from these bounds, so they are checked
+  // as arithmetic rather than as magic numbers: a bound that moved by one unit
+  // would shift the space, and the plan's 16-bit encoding rests on its size.
+  assert.equal(DOMAIN_MIN_LON, -125);
+  assert.equal(DOMAIN_MIN_LAT, 21);
+  assert.equal(DOMAIN_MAX_LAT, 56);
+  assert.equal(CELL_DEG, 0.25);
+  assert.equal(GRID_ROW_BASE, Math.round(DOMAIN_MIN_LAT / CELL_DEG));
+  assert.equal(GRID_COL_BASE, Math.round(DOMAIN_MIN_LON / CELL_DEG));
+  assert.equal(GRID_ROWS, Math.round((DOMAIN_MAX_LAT - DOMAIN_MIN_LAT) / CELL_DEG));
+  assert.equal(
+    GRID_COLUMNS,
+    Math.round((GRID_MAX_LON - DOMAIN_MIN_LON) / CELL_DEG),
+  );
+  // 140 rows x 260 columns, measured off the archive: the western bound is the
+  // first retained column (-125 / 0.25) and the grid runs east to -60.005.
+  assert.equal(GRID_ROW_BASE, 84);
+  assert.equal(GRID_COL_BASE, -500);
+  assert.equal(GRID_ROWS, 140);
+  assert.equal(GRID_COLUMNS, 260);
+  assert.equal(GRID_CELL_COUNT, 36_400);
+  // The reason the encoding is 16-bit at all. A stride derived from a full 360°
+  // of longitude instead of the retained domain would be 1,440 columns, and
+  // 140 x 1,440 = 201,600 does not fit a uint16.
+  assert.ok(GRID_CELL_COUNT < 65_536, 'the index space fits a uint16');
 });
 
-test('cell ON each boundary is IN, one just outside is OUT', () => {
-  // Domain filter: lon < DOMAIN_MIN_LON || lat < DOMAIN_MIN_LAT || lat > DOMAIN_MAX_LAT => OUT (continue)
-  // IN when all three conditions are false.
-
-  // --- lon boundary: -125 is IN, -125.0001 is OUT ---
-  const lonIn = -125;
-  const lonOut = -125.0001;
-  assert.ok(
-    !(lonIn < DOMAIN_MIN_LON),
-    `lon=${lonIn} is IN (not ${lonIn} < ${DOMAIN_MIN_LON})`
-  );
-  assert.ok(
-    lonOut < DOMAIN_MIN_LON,
-    `lon=${lonOut} is OUT (is ${lonOut} < ${DOMAIN_MIN_LON})`
-  );
-
-  // --- lat boundary: 21 is IN, 20.9999 is OUT ---
-  const latSouthIn = 21;
-  const latSouthOut = 20.9999;
-  assert.ok(
-    !(latSouthIn < DOMAIN_MIN_LAT),
-    `lat=${latSouthIn} is IN (not ${latSouthIn} < ${DOMAIN_MIN_LAT})`
-  );
-  assert.ok(
-    latSouthOut < DOMAIN_MIN_LAT,
-    `lat=${latSouthOut} is OUT (is ${latSouthOut} < ${DOMAIN_MIN_LAT})`
-  );
-
-  // --- lat boundary: 56 is IN, 56.0001 is OUT ---
-  const latNorthIn = 56;
-  const latNorthOut = 56.0001;
-  assert.ok(
-    !(latNorthIn > DOMAIN_MAX_LAT),
-    `lat=${latNorthIn} is IN (not ${latNorthIn} > ${DOMAIN_MAX_LAT})`
-  );
-  assert.ok(
-    latNorthOut > DOMAIN_MAX_LAT,
-    `lat=${latNorthOut} is OUT (is ${latNorthOut} > ${DOMAIN_MAX_LAT})`
-  );
+test('a point exactly on each bound is in, a hair outside is out', () => {
+  // Inclusive bounds, which is what the original inline `lon < -125 || lat < 21
+  // || lat > 56` implied. Written as a table so a future bound change has to
+  // change the table, not drift away from it.
+  for (const [lon, lat, inside] of [
+    [-125, 40, true],
+    [-125.0001, 40, false],
+    [-124.9999, 40, true],
+    [-100, 21, true],
+    [-100, 20.9999, false],
+    [-100, 21.0001, true],
+    [-100, 56, true],
+    [-100, 56.0001, false],
+    [-100, 55.9999, true],
+  ]) {
+    assert.equal(
+      inDomain(lat, lon),
+      inside,
+      `lat=${lat} lon=${lon} ${inside ? 'is' : 'is not'} inside the domain`,
+    );
+  }
+  assert.ok(inDomain(DOMAIN_MIN_LAT, DOMAIN_MIN_LON), 'the SW corner is in');
+  assert.ok(inDomain(DOMAIN_MAX_LAT, GRID_MAX_LON - 0.01), 'the NE corner is in');
 });
 
-test('exported row/column bases and stride agree with ingestMeshGz', () => {
-  // Verify that CELL_DEG, COLUMN_COUNT are correctly derived and match
-  // what ingestMeshGz uses for index computation.
-  // The key computation in ingestMeshGz is: `${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`
-  // and COLUMN_COUNT = Math.round(360 / CELL_DEG).
-
-  // CELL_DEG must be 0.25
-  assert.equal(CELL_DEG, 0.25, 'CELL_DEG is 0.25');
-
-  // COLUMN_COUNT must be 1440 (= round(360 / 0.25))
-  assert.equal(COLUMN_COUNT, 1440, 'COLUMN_COUNT is 1440 (= round(360 / CELL_DEG))');
-
-  // Verify the key computation for a known position.
-  // Using a position inside the domain: lat=40, lon=-100
-  const lat = 40, lon = -100;
-  const expectedKey = `${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`;
-  const expectedI = Math.floor(lat / CELL_DEG);
-  const expectedJ = Math.floor(lon / CELL_DEG);
-  assert.equal(expectedKey, '160:-400', `key for lat=${lat},lon=${lon} is 160:-400`);
-  assert.equal(expectedI, 160, `i=${expectedI} for lat=${lat}`);
-  assert.equal(expectedJ, -400, `j=${expectedJ} for lon=${lon}`);
-});
-
-test('HAIL_RETAIN_MM is strictly less than HAIL_CORE_MM', () => {
-  assert(HAIL_RETAIN_MM < 25, 'HAIL_RETAIN_MM < HAIL_CORE_MM (25)');
-  assert.equal(HAIL_RETAIN_MM, 10, 'HAIL_RETAIN_MM is 10');
-  assert.equal(25, 25, 'HAIL_CORE_MM is 25');
-});
-
-test('aboveRetainFloor helper works correctly', () => {
-  assert(aboveRetainFloor(10) === true, 'mm=10 is at retain floor, retained');
-  assert(aboveRetainFloor(9) === false, 'mm=9 is below retain floor, discarded');
-  assert(aboveRetainFloor(24) === true, 'mm=24 is above retain floor, retained');
-  assert(aboveRetainFloor(25) === true, 'mm=25 is at core, retained');
-  assert(aboveRetainFloor(0) === false, 'mm=0 is below retain floor, discarded');
-});
-
-test('cellFeature output keys still deepEqual [cp,d,dy,i,j,mx,y0,y1]', () => {
-  const feat = cellFeature(0, 0, { mx: 50, cp: 3, dy: 2, y0: 2021, y1: 2021 });
-  assert.deepEqual(
-    Object.keys(feat.properties).sort(),
-    ['cp', 'd', 'dy', 'i', 'j', 'mx', 'y0', 'y1'],
-    'cellFeature property keys unchanged'
+test('gridRow and gridCol are the arithmetic the accumulator keys on', () => {
+  // Not a re-derivation of the same expression: the point is that the emitted
+  // key and the 16-bit index space agree about which cell a point belongs to.
+  assert.equal(gridRow(54.995), 219);
+  assert.equal(gridRow(21), 84);
+  assert.equal(gridCol(-129.995), -520, 'a point west of the bound still has a column');
+  assert.equal(gridCol(-125), -500);
+  assert.equal(gridCol(-60.005), -241);
+  assert.equal(
+    `${gridRow(39.995)}:${gridCol(-101.51)}`,
+    '159:-407',
+    'Denver lands on the cell the committed climatology uses',
   );
 });
 
-test('cellFeature deepEqual values on keys [cp,d,dy,i,j,mx,y0,y1]', () => {
-  const feat = cellFeature(163, -406, { mx: 56.2, cp: 1, dy: 1, y0: 2021, y1: 2021 });
-  const keys = Object.keys(feat.properties).sort();
-  assert.deepEqual(
-    keys,
-    ['cp', 'd', 'dy', 'i', 'j', 'mx', 'y0', 'y1'],
-    'property keys in sorted order'
+test('cellIndex is a bijection onto the retained space, corner to corner', () => {
+  assert.equal(cellIndex(GRID_ROW_BASE, GRID_COL_BASE), 0);
+  assert.equal(
+    cellIndex(GRID_ROW_BASE + GRID_ROWS - 1, GRID_COL_BASE + GRID_COLUMNS - 1),
+    GRID_CELL_COUNT - 1,
   );
-  assert.equal(feat.properties.cp, 1, 'cp preserved');
-  assert.equal(feat.properties.d, 0.25, 'd preserved');
-  assert.equal(feat.properties.dy, 1, 'dy preserved');
-  assert.equal(feat.properties.i, 163, 'i preserved');
-  assert.equal(feat.properties.j, -406, 'j preserved');
-  assert.equal(feat.properties.mx, 56.2, 'mx preserved');
-  assert.equal(feat.properties.y0, 2021, 'y0 preserved');
-  assert.equal(feat.properties.y1, 2021, 'y1 preserved');
+  // The fixture the plan names: 2021-06-15 peaks at 56.2mm in 171:-406.
+  const index = cellIndex(171, -406);
+  assert.equal(index, (171 - GRID_ROW_BASE) * GRID_COLUMNS + (-406 - GRID_COL_BASE));
+  assert.ok(index >= 0 && index <= 65_535);
+  // No two cells in the space share an index, which is what "stored as a
+  // uint16" depends on and what a wrong stride would break silently.
+  const seen = new Set();
+  for (let i = GRID_ROW_BASE; i < GRID_ROW_BASE + GRID_ROWS; i += 1) {
+    for (let j = GRID_COL_BASE; j < GRID_COL_BASE + GRID_COLUMNS; j += 1) {
+      const index = cellIndex(i, j);
+      assert.ok(index >= 0 && index < GRID_CELL_COUNT, `${i}:${j} is in range`);
+      assert.ok(!seen.has(index), `${i}:${j} aliases an index already taken`);
+      seen.add(index);
+    }
+  }
+  assert.equal(seen.size, GRID_CELL_COUNT);
+});
+
+test('cellIndex refuses a cell outside the space instead of aliasing one inside', () => {
+  // The failure this guards is silent: a wrapped or clamped index puts hail on
+  // the map in the wrong cell and nothing downstream can tell. Risk #1 in the
+  // plan is exactly this shape.
+  assert.throws(() => cellIndex(GRID_ROW_BASE - 1, GRID_COL_BASE), RangeError);
+  assert.throws(
+    () => cellIndex(GRID_ROW_BASE + GRID_ROWS, GRID_COL_BASE),
+    RangeError,
+  );
+  assert.throws(() => cellIndex(GRID_ROW_BASE, GRID_COL_BASE - 1), RangeError);
+  assert.throws(
+    () => cellIndex(GRID_ROW_BASE, GRID_COL_BASE + GRID_COLUMNS),
+    RangeError,
+  );
+  assert.throws(
+    () => cellIndex(0, 0),
+    RangeError,
+    'the grid origin is outside the retained domain',
+  );
+});
+
+test(
+  'every cell a real MRMS day produces is inside the retained index space',
+  { skip: !meshCacheFile('20240615') ? 'no cached MRMS day on disk' : false },
+  () => {
+    // Through the real decoder rather than through the predicate: a bound that
+    // moved by one unit would surface here as a cell `cellIndex` refuses, which
+    // is the shape of the bug the plan calls the weakest link in the rebuild.
+    //
+    // 2024-06-15 is the day that touches both edges of the space, so it pins
+    // both: at the retain floor the hail reaches the first retained column
+    // (-125 / 0.25 = -500) and the last (-60.005 / 0.25 = -241). Loosen the
+    // western bound and the space grows; tighten the eastern one and this cell
+    // is outside it.
+    const cellsByYear = new Map();
+    ingestMeshGz(
+      fsSync.readFileSync(meshCacheFile('20240615')),
+      '20240615',
+      cellsByYear,
+      { retainMm: HAIL_RETAIN_MM },
+    );
+    const cells = cellsByYear.get(2024);
+    assert.ok(cells.size > 0, 'the day produced cells');
+    const columns = new Set();
+    const rows = new Set();
+    for (const cell of cells.values()) {
+      assert.ok(inDomain((cell.i + 0.5) * CELL_DEG, (cell.j + 0.5) * CELL_DEG));
+      assert.ok(cellIndex(cell.i, cell.j) >= 0);
+      columns.add(cell.j);
+      rows.add(cell.i);
+    }
+    assert.equal(Math.min(...columns), GRID_COL_BASE, 'hail reached -125');
+    assert.equal(
+      Math.max(...columns),
+      GRID_COL_BASE + GRID_COLUMNS - 1,
+      'hail reached the grid eastern edge, so the stride is exactly this wide',
+    );
+    // Latitude has slack: the grid stops at 54.995°N, three columns short of
+    // the 56°N bound, so nothing has ever exercised the northern edge.
+    assert.equal(Math.max(...rows), 219, 'the grid tops out here, not at 56°N');
+  },
+);
+
+test(
+  'the retain floor reaches cells the core floor discards, and moves nothing else',
+  { skip: !meshCacheFile('20240615') ? 'no cached MRMS day on disk' : false },
+  () => {
+    // The invariant the two-threshold split exists to protect: the per-day
+    // artifact sees an order of magnitude more, and the published climatology
+    // sees exactly what it saw before. Not a re-statement of the thresholds —
+    // this drives the real decoder twice and compares the two accumulators.
+    const core = new Map();
+    ingestMeshGz(fsSync.readFileSync(meshCacheFile('20240615')), '20240615', core);
+    const retained = new Map();
+    ingestMeshGz(
+      fsSync.readFileSync(meshCacheFile('20240615')),
+      '20240615',
+      retained,
+      { retainMm: HAIL_RETAIN_MM },
+    );
+    const coreCells = core.get(2024);
+    const retainedCells = retained.get(2024);
+    assert.ok(
+      retainedCells.size > coreCells.size * 5,
+      'the lower floor reaches an order of magnitude more cells',
+    );
+    for (const [key, cell] of coreCells) {
+      assert.equal(
+        retainedCells.get(key)?.maxMm,
+        cell.maxMm,
+        `cell ${key} keeps its peak under the lower floor`,
+      );
+      // `corePoints` is deliberately *not* invariant: it counts 1 km points at
+      // or above the floor, so a lower floor counts more of them in the same
+      // cell. What must not move is the peak, which is what the published
+      // climatology reads.
+      assert.ok(
+        retainedCells.get(key).corePoints >= cell.corePoints,
+        `cell ${key} counts at least as many points under a lower floor`,
+      );
+    }
+    for (const [key, cell] of retainedCells) {
+      if (coreCells.has(key)) continue;
+      assert.ok(
+        cell.maxMm >= HAIL_RETAIN_MM && cell.maxMm < 25,
+        `cell ${key} is only reachable below the core floor`,
+      );
+    }
+  },
+);
+
+test('cellFeature still emits exactly the eight properties consumers read', () => {
+  const feat = cellFeature(171, -406, {
+    mx: 56.2,
+    cp: 3,
+    dy: 2,
+    y0: 2021,
+    y1: 2021,
+  });
+  assert.deepEqual(Object.keys(feat.properties).sort(), [
+    'cp',
+    'd',
+    'dy',
+    'i',
+    'j',
+    'mx',
+    'y0',
+    'y1',
+  ]);
+  assert.deepEqual(feat.properties, {
+    i: 171,
+    j: -406,
+    d: 0.25,
+    mx: 56.2,
+    cp: 3,
+    dy: 2,
+    y0: 2021,
+    y1: 2021,
+  });
 });
