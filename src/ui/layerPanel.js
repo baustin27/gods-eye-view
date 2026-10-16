@@ -373,7 +373,20 @@ export class LayerPanel {
             this._commitRowField(field, layer.id);
           });
           row.appendChild(field);
-          this._syncRowControls(controls, layer, list, field);
+          // A window control, same contract as the field: its own container and its
+          // own delegated listeners, so a slider mid-drag is never reconciled out
+          // from under the pointer by the next panel refresh.
+          const range = document.createElement('div');
+          range.className = 'data-toggle-range';
+          range.hidden = true;
+          this._bind(range, 'input', (event) =>
+            this._onRowRangeInput(range, layer.id, event),
+          );
+          this._bind(range, 'change', (event) =>
+            this._onRowRangeChange(range, layer.id, event),
+          );
+          row.appendChild(range);
+          this._syncRowControls(controls, layer, list, field, range);
         }
       }
 
@@ -453,6 +466,7 @@ export class LayerPanel {
     layer,
     listContainer = null,
     fieldContainer = null,
+    rangeContainer = null,
   ) {
     if (!container) return;
     const controls = layer.enabled ? this._rowControlsFor(layer.id) : null;
@@ -460,9 +474,11 @@ export class LayerPanel {
       container.remove();
       listContainer?.remove();
       fieldContainer?.remove();
+      rangeContainer?.remove();
       return;
     }
     this._syncRowField(fieldContainer, controls?.field || null);
+    this._syncRowRange(rangeContainer, controls?.range || null);
     const chips = controls?.chips || [];
     const legend = controls?.legend || [];
     const infoText = controls?.info;
@@ -623,6 +639,131 @@ export class LayerPanel {
     container._rowFieldCancelling = false;
   }
 
+  /**
+   * Reconcile a layer's optional window control.
+   *
+   * Two sliders rather than one dual-thumb track. The browser has no dual
+   * range input, and stacking two overlapping ones means z-index juggling, an
+   * unreachable thumb whenever the ends cross, and a keyboard user who cannot
+   * tell which end they are on. Two labelled sliders are plainer and each is
+   * independently operable.
+   *
+   * Values are integer positions the layer owns; the panel never interprets
+   * them, so a layer can map positions onto anything it likes. The nodes are
+   * reconciled rather than rebuilt, and a value is not written while the
+   * pointer or the keyboard is on that slider - otherwise a panel refresh
+   * would yank it back mid-drag.
+   *
+   * @param {HTMLElement|null} container The row's `.data-toggle-range` node.
+   * @param {object|null} descriptor Row-controls `range`, or null to hide it.
+   */
+  _syncRowRange(container, descriptor) {
+    if (!container) return;
+    if (!descriptor || this.destroyed) {
+      container.hidden = true;
+      container._rowRangeNodes = null;
+      return;
+    }
+    const document = container.ownerDocument ?? globalThis.document;
+    const { min = 0, max = 0, step = 1, ariaLabel = 'Range' } = descriptor;
+    let nodes = container._rowRangeNodes;
+    if (!nodes || nodes.min !== min || nodes.max !== max) {
+      container.replaceChildren?.();
+      const document = container.ownerDocument ?? globalThis.document;
+      const readout = document.createElement('span');
+      readout.className = 'data-toggle-range-readout';
+      const make = (which, label) => {
+        const wrap = document.createElement('label');
+        wrap.className = 'data-toggle-range-row';
+        const caption = document.createElement('span');
+        caption.className = 'data-toggle-range-label';
+        caption.textContent = label;
+        const input = document.createElement('input');
+        input.className = 'data-toggle-range-input';
+        input.type = 'range';
+        input.min = String(min);
+        input.max = String(max);
+        input.step = String(step);
+        input.dataset.rangeEnd = which;
+        input.setAttribute('aria-label', `${ariaLabel} ${label.toLowerCase()}`);
+        wrap.append(caption, input);
+        return { wrap, input };
+      };
+      const from = make('from', 'From');
+      const to = make('to', 'To');
+      container.append(from.wrap, to.wrap, readout);
+      nodes = { min, max, from: from.input, to: to.input, readout };
+      container._rowRangeNodes = nodes;
+    }
+    container.hidden = false;
+    const [fromValue, toValue] = descriptor.value || [min, max];
+    for (const [input, value] of [
+      [nodes.from, fromValue],
+      [nodes.to, toValue],
+    ]) {
+      const document = container.ownerDocument ?? globalThis.document;
+      // Never fight the person dragging: a refresh that lands mid-drag and
+      // writes the value back makes the handle jump.
+      if (document.activeElement === input && container._rowRangeEditing)
+        continue;
+      const next = String(value);
+      if (input.value !== next) input.value = next;
+    }
+    if (descriptor.readout) nodes.readout.textContent = descriptor.readout;
+    else nodes.readout.textContent = '';
+  }
+
+  /**
+   * A slider moved. Reported on every `input` so a layer can preview live,
+   * but the layer decides whether that is cheap.
+   * @param {HTMLElement} container
+   * @param {string} layerId
+   * @param {Event} event
+   */
+  _onRowRangeInput(container, layerId, event) {
+    const input = event.target?.closest?.('.data-toggle-range-input');
+    if (!input || !container.contains(input)) return;
+    container._rowRangeEditing = true;
+    const range = this._rowControlsFor(layerId)?.range;
+    if (typeof range?.onInput === 'function') {
+      const [from, to] = this._rowRangeValues(container, range);
+      range.onInput(from, to);
+    }
+  }
+
+  /**
+   * The drag ended. This is where work is worth paying for.
+   * @param {HTMLElement} container
+   * @param {string} layerId
+   * @param {Event} event
+   */
+  _onRowRangeChange(container, layerId, event) {
+    const input = event.target?.closest?.('.data-toggle-range-input');
+    if (!input || !container.contains(input)) return;
+    container._rowRangeEditing = false;
+    const range = this._rowControlsFor(layerId)?.range;
+    if (typeof range?.onCommit === 'function') {
+      const [from, to] = this._rowRangeValues(container, range);
+      range.onCommit(from, to);
+    }
+  }
+
+  /**
+   * Read both thumbs, keeping them in order. The `from` thumb dragged past
+   * `to` means a window, and a window has a start and an end whatever order
+   * the handles were grabbed in.
+   * @returns {[number, number]}
+   */
+  _rowRangeValues(container, range) {
+    const nodes = container._rowRangeNodes;
+    const min = Number(range?.min ?? nodes?.min ?? 0);
+    const max = Number(range?.max ?? nodes?.max ?? 0);
+    const clamp = (value) => Math.min(max, Math.max(min, Number(value) || 0));
+    const a = clamp(nodes.from.value);
+    const b = clamp(nodes.to.value);
+    return a <= b ? [a, b] : [b, a];
+  }
+
   _syncRowList(container, list) {
     syncRowList(container, list);
   }
@@ -661,6 +802,7 @@ export class LayerPanel {
         layer,
         row.querySelector('.data-row-list'),
         row.querySelector('.data-toggle-field'),
+        row.querySelector('.data-toggle-range'),
       );
     }
     this._refreshWeatherPanel();

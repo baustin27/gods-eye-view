@@ -568,3 +568,164 @@ test('a list item left on a disabled layer does nothing', async () => {
   assert.deepEqual(clicked, [], 'and no item callback ran');
   h.close();
 });
+
+/** A panel whose one layer returns the optional window control. */
+async function panelWithRange({ withRange = true } = {}) {
+  const { LayerPanel } = await import('./layerPanel.js');
+  const { railFixture } = await import('./railTestFixture.mjs');
+  const f = railFixture();
+  const previousDocument = globalThis.document;
+  globalThis.document = f.document;
+  const layer = {
+    id: 'storm',
+    name: 'Storm',
+    icon: '*',
+    source: 'S',
+    enabled: true,
+    showInTogglePanel: true,
+    stats: {},
+  };
+  const calls = [];
+  const controls = {
+    readout: false,
+    chips: [{ id: 'a', label: 'A' }],
+    legend: [],
+    info: 'info',
+  };
+  if (withRange) {
+    controls.range = {
+      id: 'w',
+      min: 0,
+      max: 29,
+      step: 1,
+      value: [4, 9],
+      ariaLabel: 'Storm day window',
+      readout: 'a window',
+      onInput: (from, to) => calls.push(['input', from, to]),
+      onCommit: (from, to) => calls.push(['commit', from, to]),
+    };
+  }
+  const panel = new LayerPanel({
+    getLayers: () => [layer],
+    isEnabled: () => true,
+    setEnabled: () => {},
+    setLayerParams: () => {},
+    hasRowControls: () => true,
+    subscribeRowControls: () => () => {},
+    getRowControls: () => controls,
+  });
+  const row = () => f.find((n) => n.dataset.layerId === 'storm');
+  try {
+    panel.mount(f.container);
+  } catch (error) {
+    panel.destroy();
+    globalThis.document = previousDocument;
+    throw error;
+  }
+  const h = {
+    panel,
+    calls,
+    row,
+    box: () => row().querySelector('.data-toggle-range'),
+    // The fixture answers class selectors with the FIRST match only, and
+    // find() returns a single node, so both sliders are walked directly.
+    inputs: () => {
+      const box = h.box();
+      const out = [];
+      const walk = (node) => {
+        if (node.className === 'data-toggle-range-input') out.push(node);
+        for (const child of node.children || []) walk(child);
+      };
+      walk(box);
+      return out;
+    },
+    close() {
+      panel.destroy();
+      globalThis.document = previousDocument;
+    },
+  };
+  return h;
+}
+
+/**
+ * Dispatch from `node` up to the row, because the fixture's EventTarget does
+ * not bubble - its own click() helper walks the chain for the same reason.
+ */
+function fire(node, type, stopAt) {
+  for (let current = node; current; current = current.parent) {
+    const event = new Event(type, { bubbles: true });
+    // The delegated handler reads event.target; the fixture's Event carries none.
+    Object.defineProperty(event, 'target', { value: node });
+    current.dispatchEvent(event);
+    if (current === stopAt) break;
+  }
+}
+
+test('a layer offering a range gets two labelled sliders', async () => {
+  const h = await panelWithRange();
+  const box = h.box();
+  assert.ok(box, 'the range container is rendered');
+  assert.equal(box.hidden, false);
+  const [from, to] = h.inputs();
+  assert.ok(from && to, 'with two sliders, not one');
+  assert.equal(from.dataset.rangeEnd, 'from');
+  assert.equal(to.dataset.rangeEnd, 'to');
+  assert.equal(from.min, '0');
+  assert.equal(from.max, '29');
+  assert.equal(from.value, '4');
+  assert.equal(to.value, '9');
+  assert.match(from.getAttribute('aria-label'), /from/i);
+  h.close();
+});
+
+test('a drag reports on input and again on commit', async () => {
+  const h = await panelWithRange();
+  const [from] = h.inputs();
+  from.value = '7';
+  fire(from, 'input', h.box());
+  assert.deepEqual(h.calls[0], ['input', 7, 9]);
+  fire(from, 'change', h.box());
+  assert.deepEqual(h.calls[1], ['commit', 7, 9]);
+  h.close();
+});
+
+test('crossed thumbs are reported as a window, not a reversed one', async () => {
+  const h = await panelWithRange();
+  const [from, to] = h.inputs();
+  // The start thumb dragged past the end still means a window with a start.
+  from.value = '20';
+  fire(from, 'change', h.box());
+  assert.deepEqual(
+    h.calls.at(-1),
+    ['commit', 9, 20],
+    'start dragged past the end is still a window, ordered',
+  );
+  to.value = '2';
+  fire(to, 'change', h.box());
+  assert.deepEqual(
+    h.calls.at(-1),
+    ['commit', 2, 20],
+    'and the end dragged back past the start, likewise',
+  );
+  h.close();
+});
+
+test('a refresh keeps the slider where the user left it', async () => {
+  const h = await panelWithRange();
+  const [from] = h.inputs();
+  from.value = '12';
+  h.panel._renderToggles();
+  assert.equal(from.value, '12', 'the node is reconciled, not rebuilt');
+  assert.equal(h.inputs().length, 2, 'not rebuilt on every refresh');
+  h.close();
+});
+
+test('a layer with no range renders exactly as before', async () => {
+  const h = await panelWithRange({ withRange: false });
+  const box = h.box();
+  assert.ok(box, 'the container still exists');
+  assert.equal(box.hidden, true, 'and is hidden');
+  assert.equal(box._rowRangeNodes, null, 'with no sliders built');
+  assert.ok(h.row().querySelector('.data-toggle-chip'), 'chips unaffected');
+  h.close();
+});

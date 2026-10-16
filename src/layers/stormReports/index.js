@@ -304,6 +304,15 @@ export function createStormReportsLayer({
   let _selectedStormId = null;
   // The window selectStorm had to move, so clearing it can put it back.
   let _stormMovedWindow = null;
+  // The window the slider owns, kept apart from the date filter.
+  //
+  // `fromDate`/`toDate` are what the map is filtered by, and a selected day
+  // sets them equal. The slider needs the wider bracket the day sits inside,
+  // or dragging it afterwards would have nowhere to go back to. Two pieces of
+  // state for one control is the price of letting the slider be the window and
+  // the chips be a point inside it.
+  let _windowFrom = null;
+  let _windowTo = null;
   let _stats = null;
   let _loaded = false;
   let _optionsDirty = true;
@@ -1235,6 +1244,43 @@ export function createStormReportsLayer({
    * @returns {Array<{id: string, lead: string, text: string, disabled: boolean,
    *                  active: boolean, current: boolean, onClick: Function}>}
    */
+  /**
+   * Every storm day in the snapshot, OLDEST first: the slider's axis.
+   *
+   * `stormDays` hands back newest-first, which is right for a "recent days"
+   * list and backwards for a time axis - left would be the present and right
+   * the past. Reversed here rather than at every call site.
+   */
+  function windowDays() {
+    return stormDays(_snapshot || { days: {} })
+      .map((entry) => entry.date)
+      .sort();
+  }
+
+  /**
+   * Bracket a day inside the slider's window.
+   *
+   * Picking a day that sits outside the current window drags the window to
+   * contain it rather than being silently refused: the user asked for that day,
+   * and a control that shrugs is the same failure this layer keeps having.
+   */
+  function bracketDay(day) {
+    if (!day) return;
+    const days = windowDays();
+    if (!days.length) return;
+    if (!_windowFrom) _windowFrom = days[0];
+    if (!_windowTo) _windowTo = days.at(-1);
+    if (day < _windowFrom) _windowFrom = day;
+    if (day > _windowTo) _windowTo = day;
+  }
+
+  /** The slider's descriptor inputs, or null when there is nothing to slide. */
+  function windowAxis() {
+    const window_ = api.getWindow();
+    if (!window_ || window_.days < 2) return null;
+    return window_;
+  }
+
   function stormListItems() {
     const day = _options.fromDate;
     const singleDay = Boolean(day) && day === _options.toDate;
@@ -1411,6 +1457,9 @@ export function createStormReportsLayer({
     /** Clear the window back to the whole record. */
     clearDateRange() {
       _options = { ..._options, fromDate: null, toDate: null };
+      // ALL DATES means the whole record, so the slider returns to full travel.
+      _windowFrom = null;
+      _windowTo = null;
       _optionsDirty = true;
       if (!repaintFromMemory()) _loaded = false;
       publish();
@@ -1694,6 +1743,25 @@ export function createStormReportsLayer({
       return {
         readout: false,
         chips,
+        // The slider is the window; the field and the day chips pick a point
+        // inside it. `onInput` is deliberately absent: a drag must not trigger a
+        // year fetch per pixel, so only the commit does any work.
+        ...(windowAxis()
+          ? {
+              range: {
+                id: 'storm-reports-window',
+                min: 0,
+                max: windowAxis().days - 1,
+                step: 1,
+                value: [windowAxis().from, windowAxis().to],
+                ariaLabel: 'Storm day window',
+                readout: `${windowAxis().fromDate} → ${windowAxis().toDate} · ${
+                  windowAxis().to - windowAxis().from + 1
+                } of ${windowAxis().days} storm days`,
+                onCommit: (from, to) => api.setWindow(from, to),
+              },
+            }
+          : {}),
         field: {
           id: 'storm-reports-date',
           value: _options.fromDate || '',
@@ -1744,6 +1812,67 @@ export function createStormReportsLayer({
             : []),
         ],
         info: panelInfo(),
+      };
+    },
+
+    /**
+     * Move the window the slider owns.
+     *
+     * Positions, not dates: the slider's axis is the snapshot's storm-day index,
+     * so a position stays meaningful without the layer exposing its day list to
+     * the panel.
+     *
+     * A year that has never been loaded costs one fetch on commit, which is
+     * why `onInput` is a no-op here and only `onCommit` does the work. Dragging
+     * is then free across years already in memory and expensive exactly once
+     * per new one.
+     *
+     * @param {number} from Position of the window start.
+     * @param {number} to Position of the window end.
+     * @returns {boolean} whether the window changed
+     */
+    setWindow(from, to) {
+      const days = windowDays();
+      if (!days.length) return false;
+      const lo = Math.max(0, Math.min(days.length - 1, Math.floor(from)));
+      const hi = Math.max(0, Math.min(days.length - 1, Math.floor(to)));
+      if (lo > hi) return false;
+      const fromDate = days[lo];
+      const toDate = days[hi];
+      if (fromDate === _options.fromDate && toDate === _options.toDate)
+        return false;
+      _windowFrom = fromDate;
+      _windowTo = toDate;
+      // A day selected inside the old window is no longer in force; keeping it
+      // would filter the map to something the window no longer contains.
+      dropStormOutsideWindow();
+      _selectedStormId = null;
+      _options = { ..._options, fromDate, toDate };
+      _fieldMessage = null;
+      if (!repaintFromMemory()) {
+        // A year not in memory yet: the next update() loads it.
+        _loaded = false;
+        _optionsDirty = true;
+      }
+      publish();
+      notifyRowControls();
+      return true;
+    },
+
+    /** The window the slider owns, as positions on its axis. */
+    getWindow() {
+      const days = windowDays();
+      if (!days.length) return null;
+      bracketDay(_options.fromDate);
+      bracketDay(_options.toDate);
+      const from = _windowFrom ? days.indexOf(_windowFrom) : 0;
+      const to = _windowTo ? days.indexOf(_windowTo) : days.length - 1;
+      return {
+        from: from < 0 ? 0 : from,
+        to: to < 0 ? days.length - 1 : to,
+        days: days.length,
+        fromDate: days[from < 0 ? 0 : from],
+        toDate: days[to < 0 ? days.length - 1 : to],
       };
     },
 

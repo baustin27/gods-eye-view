@@ -1560,3 +1560,136 @@ test('a thin day never quotes the whole year as unreported hail', async () => {
   // The figure is still available for the question it is valid for.
   assert.equal(layer.getComparison().radarOnly, 500);
 });
+
+// --- the window slider -------------------------------------------------------
+
+/** A layer over a known run of consecutive storm days. */
+function sliderLayer(dayCount = 30, start = 1) {
+  const days = {};
+  const rows = [];
+  for (let i = 0; i < dayCount; i += 1) {
+    const date = `2026-06-${String(start + i).padStart(2, '0')}`;
+    days[date] = { hail: 1, wind: 0, total: 1 };
+    rows.push(REPORT(2, { date }));
+  }
+  return makeLayer(rows, [], { days });
+}
+
+test('the slider offers the whole storm-day index', async () => {
+  const { layer } = sliderLayer(30);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  const range = layer.getRowControls().range;
+  assert.ok(range, 'the row offers a window control');
+  assert.equal(range.min, 0);
+  assert.equal(range.max, 29, 'one position per storm day');
+  assert.deepEqual(range.value, [0, 29], 'starting at full travel');
+  assert.match(range.readout, /2026-06-01 → 2026-06-30/);
+  assert.match(range.readout, /30 of 30 storm days/);
+});
+
+test('dragging the window filters the map to it', async () => {
+  const viewer = stubViewer();
+  const { layer } = sliderLayer(30);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(drawn(viewer).length, 30);
+
+  assert.equal(layer.setWindow(5, 9), true);
+  assert.deepEqual(layer.getDateRange(), {
+    from: '2026-06-06',
+    to: '2026-06-10',
+  });
+  assert.equal(drawn(viewer).length, 5, 'the map followed');
+  assert.equal(layer.getWindow().fromDate, '2026-06-06');
+  assert.match(
+    layer.getRowControls().range.readout,
+    /5 of 30 storm days/,
+    'and the readout says how much of the record that is',
+  );
+});
+
+test('a day picked inside the window keeps the window around it', async () => {
+  const { layer } = sliderLayer(30);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setWindow(5, 9);
+
+  layer.setDate('2026-06-08');
+  assert.equal(layer.getDateRange().from, '2026-06-08');
+  const window_ = layer.getWindow();
+  assert.equal(
+    window_.fromDate,
+    '2026-06-06',
+    'the window still brackets the day',
+  );
+  assert.equal(window_.toDate, '2026-06-10');
+  assert.deepEqual(
+    layer.getRowControls().range.value,
+    [5, 9],
+    'so the slider has somewhere to go back to',
+  );
+});
+
+test('a day outside the window drags the window to it', async () => {
+  const { layer } = sliderLayer(30);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setWindow(5, 9);
+
+  // Refusing it would be the same shrug as a chip that does nothing.
+  layer.setDate('2026-06-20');
+  const window_ = layer.getWindow();
+  assert.equal(window_.toDate, '2026-06-20', 'the window grew to contain it');
+  assert.equal(window_.fromDate, '2026-06-06', 'without losing its other end');
+});
+
+test('ALL DATES returns the slider to full travel', async () => {
+  const viewer = stubViewer();
+  const { layer } = sliderLayer(30);
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setWindow(5, 9);
+  assert.deepEqual(layer.getRowControls().range.value, [5, 9]);
+  assert.equal(drawn(viewer).length, 5);
+
+  layer.clearDateRange();
+  assert.deepEqual(layer.getRowControls().range.value, [0, 29]);
+  assert.equal(drawn(viewer).length, 30, 'and the whole record is back');
+});
+
+test('the window commits but does not work on every pixel of a drag', async () => {
+  const { layer } = sliderLayer(30);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  const range = layer.getRowControls().range;
+  assert.equal(
+    range.onInput,
+    undefined,
+    'a drag must not trigger a year fetch',
+  );
+  assert.equal(typeof range.onCommit, 'function');
+  assert.equal(range.onCommit(2, 4), true, 'the commit does the work');
+  assert.deepEqual(layer.getDateRange(), {
+    from: '2026-06-03',
+    to: '2026-06-05',
+  });
+});
+
+test('an empty or inverted window is refused rather than half-applied', async () => {
+  const { layer } = sliderLayer(30);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  assert.equal(layer.setWindow(9, 4), false, 'from after to');
+  assert.equal(layer.getDateRange().from, null, 'and nothing moved');
+  assert.equal(layer.setWindow(-5, 900), true, 'out of range clamps');
+  assert.equal(layer.getWindow().fromDate, '2026-06-01');
+  assert.equal(layer.getWindow().toDate, '2026-06-30');
+});

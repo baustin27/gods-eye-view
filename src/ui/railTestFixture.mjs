@@ -58,6 +58,17 @@ export function railFixture(onWrite = () => {}) {
             return Boolean(this.dataset.chipId);
           return false;
         },
+        // Standard DOM, and the panel's delegated handlers rely on it to reject a
+        // click that did not start inside their own container.
+        // Node.contains: is `node` this node, or a descendant of it. The walk
+        // goes up the CANDIDATE's parent chain looking for the receiver - not
+        // down from the receiver, which finds nothing.
+        contains(node) {
+          for (let current = node; current; current = current.parent) {
+            if (current === this) return true;
+          }
+          return false;
+        },
         closest(selector) {
           return this.matches(selector) ? this : this.parent?.closest(selector);
         },
