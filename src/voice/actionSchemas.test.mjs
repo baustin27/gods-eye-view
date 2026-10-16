@@ -40,6 +40,10 @@ test('the complete Realtime tool payload pins the manifest-generated layer relea
     // Re-derived for the Storm layers: storm-observed, storm-expected and
     // storm-reports add their generated analyst_query enums, aliases and
     // field lists to the manifest, which is what this digest covers.
+    // Unchanged by the storm-reports `date` type repair ('d' -> 'ms'): this
+    // payload enumerates field NAMES and units, never field types, so the
+    // shorthand fix is digest-neutral by construction. Verified by reverting
+    // only that edit (identical digest) and by renaming a field (digest moves).
     '45fcec3d2f80f4b7ac5e3737eab695fc3ecc4ddfd8eddf212caaad8f3e1d26a4',
   );
 });

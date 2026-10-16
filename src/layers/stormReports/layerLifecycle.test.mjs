@@ -3,7 +3,15 @@ import test from 'node:test';
 
 import { gridCell } from '../../data/stormCrossReference.js';
 import {
+  getContextStore,
+  getSelectedEntityContext,
+} from '../../data/contextStore.js';
+import { isOwnedByOtherLayer } from '../../data/pickRegistry.js';
+import { normalizeOverlayEntry } from '../../overlays/worldOverlay.js';
+import {
   HAIL_FLOOR_IN,
+  STORM_CONTEXT_LIMIT,
+  STORM_LIST_DAYS,
   STORM_REPORTS_DEFAULTS,
   createStormReportsLayer,
 } from './index.js';
@@ -34,6 +42,10 @@ const REPORT = (size, over = {}) => {
 const STORM = (id, date, over = {}) => ({
   id,
   date,
+  // Real events carry a begin/end minute; the list's lead column shows that
+  // window, so a fixture without one tests a case the data never produces.
+  beginMinute: over.beginMinute ?? 900,
+  endMinute: over.endMinute ?? 1015,
   maxHailIn: over.maxHailIn ?? 2,
   maxWindKt: over.maxWindKt ?? 40,
   reportCount: over.reportCount ?? 1,
@@ -45,7 +57,12 @@ const STORM = (id, date, over = {}) => ({
 const cellKey = (lat, lon) => `${gridCell(lat)}:${gridCell(lon)}`;
 function stubViewer() {
   const sources = [];
+  // `viewer.entities.add` is counted because the rule this layer exists to
+  // follow is that it never writes there: the shared collection is emptied by
+  // whichever layer rendered last.
+  const shared = { added: 0 };
   return {
+    __shared: shared,
     dataSources: {
       add(source) {
         sources.push(source);
@@ -58,7 +75,9 @@ function stubViewer() {
       },
     },
     entities: {
-      add() {},
+      add() {
+        shared.added += 1;
+      },
       removeAll() {},
       values: [],
     },
@@ -101,7 +120,7 @@ function makeLayer(rows, events = [], options = {}) {
   const source = {
     getSnapshot: async () => ({
       years: options.years || ['2026'],
-      days: {
+      days: options.days || {
         '2026-08-10': { hail: rows.length, wind: 0, total: rows.length },
       },
       earliest: '2026-01-01',
@@ -115,10 +134,55 @@ function makeLayer(rows, events = [], options = {}) {
     source,
     overlayHost,
     radarSource: options.radarSource,
+    createInputHandler: options.createInputHandler,
   });
   layer._testReports = rows;
   layer._testEvents = events;
-  return { layer, overlayHost };
+  return { layer, overlayHost, viewer: options.viewer || stubViewer() };
+}
+
+/**
+ * A page host for the shared context store.
+ *
+ * The store is a singleton hung off `window`, and the layer's context calls are
+ * best-effort: with no window they are skipped entirely. These tests are the
+ * ones that need the window, so they put one up and take it back down.
+ */
+function contextHost() {
+  const prior = globalThis.window;
+  globalThis.window = new EventTarget();
+  return {
+    store: getContextStore(),
+    /** Every context record this layer owns. */
+    records(layerId = 'storm-reports') {
+      return [...getContextStore().entities.values()].filter(
+        (record) => record.layerId === layerId,
+      );
+    },
+    restore() {
+      if (prior === undefined) delete globalThis.window;
+      else globalThis.window = prior;
+    },
+  };
+}
+
+/** A viewer with a scene, and an input handler that records its own action. */
+function clickableViewer(pick = () => undefined) {
+  const viewer = stubViewer();
+  const actions = [];
+  viewer.scene = { canvas: {}, pick };
+  return {
+    viewer,
+    actions,
+    createInputHandler: () => ({
+      setInputAction: (fn) => actions.push(fn),
+      destroy: () => actions.splice(0, actions.length),
+    }),
+    click(position = { x: 4, y: 4 }) {
+      assert.ok(actions.length, 'the click handler is installed');
+      actions[0]({ position });
+    },
+  };
 }
 
 /**
@@ -634,8 +698,14 @@ function twoStormDay(options = {}) {
   ];
   if (!options.singleYear)
     rows.push(REPORT(1.75, { date: '2025-08-10', lat: 36.4, ref: 0 }));
+  // Both days must be in the day index, or the storm list cannot offer them:
+  // with no day selected it offers the storm days the date chips also offer.
+  const days = {};
+  for (const row of rows) days[row[0]] = { hail: 1, wind: 0, total: 1 };
   const { layer, overlayHost } = makeLayer(rows, events, {
     years: options.singleYear ? ['2026'] : ['2025', '2026'],
+    days,
+    radarSource: options.radarSource,
   });
   return { layer, overlayHost, north, south, previousYear, rows };
 }
@@ -920,4 +990,538 @@ test('a radar source that fails costs the line, not the layer', async () => {
   } finally {
     console.warn = warn;
   }
+});
+
+/* =========================================================================
+ * The storm drill-down: list, selection, outline, contexts, and the panel
+ * listener that ties them together.
+ * ====================================================================== */
+
+test('the row lists the storms of the selected day, in the list contract', async () => {
+  const { layer } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+
+  const list = layer.getRowControls().list;
+  assert.ok(list, 'the row carries a list under the date field');
+  assert.equal(list.items.length, 2, 'both storms that day, and no other day');
+  assert.match(list.ariaLabel, /2026-08-10/);
+  for (const item of list.items) {
+    // rowList reads exactly these seven; a missing one renders a blank row.
+    for (const key of ['id', 'lead', 'text', 'disabled', 'active', 'current']) {
+      assert.ok(key in item, `an item carries ${key}`);
+      assert.notEqual(item[key], undefined, `${key} is a value, not a hole`);
+    }
+    assert.equal(typeof item.onClick, 'function', 'and something to click');
+  }
+  assert.ok(
+    list.items.some((item) => /3\.25" hail/.test(item.text)),
+    'a storm reads as its own magnitude',
+  );
+  assert.ok(
+    list.items.every((item) => item.disabled === false),
+    'both storms have reports at the current threshold',
+  );
+});
+
+test('the list narrows to the day the date filter is on', async () => {
+  const { layer } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+
+  assert.equal(
+    layer.getRowControls().list.items.length,
+    3,
+    'no day selected: every storm in the window',
+  );
+  layer.setDate('2025-08-10');
+  const items = layer.getRowControls().list.items;
+  assert.equal(
+    items.length,
+    1,
+    'and only that day’s storms once one is chosen',
+  );
+  assert.match(layer.getRowControls().list.ariaLabel, /Storms on 2025-08-10/);
+});
+
+test('with no day selected the list offers the recent days the chips offer', async () => {
+  // The list cannot offer every storm in a 155,737-report record, and a longer
+  // list would name days the date chips cannot reach.
+  const days = {};
+  const events = [];
+  const rows = [];
+  for (let i = 0; i < STORM_LIST_DAYS + 5; i += 1) {
+    const date = `2026-08-${String(28 - i).padStart(2, '0')}`;
+    days[date] = { hail: 1, wind: 0, total: 1 };
+    events.push(STORM(`ep-${i}`, date));
+    const row = REPORT(2, { date });
+    rows.push(row);
+  }
+  const { layer } = makeLayer(rows, events, { days });
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+
+  const list = layer.getRowControls().list;
+  assert.equal(list.items.length, STORM_LIST_DAYS, 'capped at the chip depth');
+  assert.match(list.ariaLabel, /most recent storm days/);
+  const chipDays = new Set(
+    layer
+      .getRowControls()
+      .chips.filter((chip) => /^2026-08-\d\d$/.test(chip.label))
+      .map((chip) => chip.label),
+  );
+  assert.ok(
+    list.items.every((item) => /\d\d:\d\d/.test(String(item.lead))),
+    'lead is a clock window, not a date',
+  );
+  assert.ok(
+    !list.items.some((item) => /^20\d\d-\d\d-\d\d$/.test(String(item.lead))),
+    'and never a bare day',
+  );
+  for (const item of list.items) {
+    assert.match(item.lead, /^\d\d:\d\dZ/, 'the lead column is a time window');
+  }
+  assert.ok(
+    [...chipDays].every((day) => list.items.length > 0) && chipDays.size === 12,
+    'and the chips still reach exactly those days',
+  );
+});
+
+test('selecting a storm narrows the map to that storm alone', async () => {
+  const viewer = stubViewer();
+  const { layer, north } = twoStormDay();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(drawn(viewer).length, 3, 'the window as a whole');
+
+  assert.equal(layer.selectStorm(north.id), true);
+  const shown = drawn(viewer);
+  assert.equal(shown.length, 1, 'one storm, not the day');
+  assert.equal(shown[0].properties.county.getValue(), 'Noble');
+  assert.equal(layer.getSelectedStormId(), north.id);
+  assert.equal(layer.getSelectedStorm().id, north.id);
+
+  assert.equal(layer.clearStormSelection(), true);
+  assert.equal(drawn(viewer).length, 3, 'and back to the whole window');
+  assert.equal(layer.getSelectedStormId(), null);
+});
+
+test('the storm’s own record survives its own selection', async () => {
+  // getStormReports is what the list, the outline and the panel all read. If it
+  // answered out of the narrowed map, every other storm in the list would claim
+  // zero reports the moment one was selected.
+  const { layer, north, south } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.selectStorm(north.id);
+
+  assert.equal(layer.getStormReports(north.id).length, 1);
+  assert.equal(
+    layer.getStormReports(south.id).length,
+    1,
+    'the unselected storm still knows its own report',
+  );
+  const items = layer.getRowControls().list.items;
+  assert.ok(
+    items.every((item) => item.disabled === false),
+    'so the list does not grey out the day behind the selection',
+  );
+});
+
+test('selecting a storm moves a window that does not contain it, and only then', async () => {
+  const { layer, north } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+
+  assert.deepEqual(layer.getDateRange(), { from: null, to: null });
+  layer.selectStorm(north.id);
+  assert.deepEqual(
+    layer.getDateRange(),
+    { from: '2026-08-10', to: '2026-08-10' },
+    'a storm belongs to a date, and an outer filter that excludes it makes the selection empty',
+  );
+
+  // A window that already covers the storm is left exactly as it is: someone
+  // working down a month must not be narrowed to one day by the first click.
+  layer.clearDateRange();
+  layer.setDateRange('2025-08-10', '2026-08-10');
+  layer.selectStorm(north.id);
+  assert.deepEqual(
+    layer.getDateRange(),
+    { from: '2025-08-10', to: '2026-08-10' },
+    'the window was already wide enough',
+  );
+});
+
+test('a date change that leaves the storm drops it rather than selecting nothing', async () => {
+  const { layer, north } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  layer.selectStorm(north.id);
+  assert.equal(layer.getSelectedStormId(), north.id);
+
+  layer.setDate('2025-08-10');
+  assert.equal(
+    layer.getSelectedStormId(),
+    null,
+    'a storm cannot outlive the window it belongs to',
+  );
+});
+
+test('the outline is off until asked for, and says it is approximate', async () => {
+  const viewer = stubViewer();
+  const { layer, north } = twoStormDay();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  layer.selectStorm(north.id);
+
+  assert.equal(layer.isOutlineVisible(), false, 'off by default');
+  assert.equal(
+    drawn(viewer).filter((e) => e.id.startsWith('storm-outline')).length,
+    0,
+  );
+
+  assert.equal(layer.setOutlineVisible(true), true);
+  const outlines = drawn(viewer).filter(
+    (e) => e.id === `storm-outline:${north.id}`,
+  );
+  assert.equal(outlines.length, 1, 'one circle for the selected storm');
+  assert.ok(outlines[0].polygon, 'a polygon hierarchy, not an ellipse graphic');
+  assert.ok(outlines[0].polygon.hierarchy, 'with a hierarchy of ring points');
+  // Cesium wraps a graphics value in a ConstantProperty; the hierarchy is the
+  // value inside it, which is the same trap entity properties set earlier.
+  const hierarchy = outlines[0].polygon.hierarchy.getValue();
+  assert.ok(
+    Array.isArray(hierarchy.positions),
+    'holding an array of positions',
+  );
+  assert.ok(
+    hierarchy.positions.length >= 3,
+    'at least three points, or Cesium rejects it',
+  );
+  assert.equal(
+    viewer.__shared.added,
+    0,
+    'never written into the shared entity collection',
+  );
+  assert.equal(outlines[0].show !== false, true);
+
+  const controls = layer.getRowControls();
+  assert.match(controls.info, /[Aa]pproximate/);
+  assert.match(controls.info, /publishes no storm polygons/);
+  assert.ok(
+    controls.legend.some((entry) => /approximate/i.test(entry.label)),
+    'the legend names it as approximate too',
+  );
+  assert.match(
+    controls.chips.find((chip) => chip.id === 'storm-reports-outline').title,
+    /NOT a measured boundary/,
+  );
+
+  layer.setOutlineVisible(false);
+  assert.equal(
+    drawn(viewer).filter((e) => e.id.startsWith('storm-outline')).length,
+    0,
+    'and it goes away again',
+  );
+});
+
+test('the outline chip is disabled until a storm is chosen', async () => {
+  const { layer } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  assert.equal(chipById(layer, 'storm-reports-outline').disabled, true);
+  layer.setDate('2026-08-10');
+  layer.selectStorm('ep-north');
+  assert.equal(chipById(layer, 'storm-reports-outline').disabled, false);
+  assert.equal(chipById(layer, 'storm-reports-clear-storm').disabled, false);
+});
+
+test('clicking a report registers at most the bound, however many are drawn', async () => {
+  const host = contextHost();
+  try {
+    const viewer = stubViewer();
+    // Past the bound on purpose: the record day holds 44,717 of these.
+    const rows = Array.from({ length: 120 }, (_, i) =>
+      REPORT(1 + (i % 3), { lat: 35 + i * 0.01 }),
+    );
+    const { layer } = makeLayer(rows);
+    layer.init(viewer);
+    layer.enable();
+    await layer.update();
+    assert.equal(drawn(viewer).length, 120, 'every report is drawn');
+    assert.equal(
+      host.records().length,
+      STORM_CONTEXT_LIMIT,
+      'only the worst of them carry a click context',
+    );
+
+    // The bound has to survive every repaint, not just the first one.
+    layer.setMinHailIn(2);
+    layer.setHazard('hail');
+    layer.setDate('2026-08-10');
+    layer.clearDateRange();
+    assert.ok(
+      host.records().length <= STORM_CONTEXT_LIMIT,
+      `a repaint left ${host.records().length} contexts registered`,
+    );
+
+    const record = host.records()[0];
+    assert.ok(
+      record.dataSource,
+      'liveness needs the data source, or the record reads live after disable',
+    );
+    assert.equal(record.layerId, 'storm-reports');
+    assert.ok(record.label, 'and a label');
+    assert.equal(typeof record.latitude, 'number');
+    assert.equal(typeof record.longitude, 'number');
+    assert.ok(record.properties.date, 'with the report properties attached');
+    assert.ok(
+      record.entity.gevLabelModel,
+      'the label model is set before registration, or the readout card is empty',
+    );
+  } finally {
+    host.restore();
+  }
+});
+
+test('disable and destroy both unregister every context', async () => {
+  const host = contextHost();
+  try {
+    const rows = [REPORT(2), REPORT(1.75)];
+    const { layer } = makeLayer(rows);
+    layer.init(stubViewer());
+    layer.enable();
+    await layer.update();
+    assert.equal(host.records().length, 2);
+
+    layer.disable();
+    assert.equal(host.records().length, 0, 'disable releases them');
+    assert.equal(getSelectedEntityContext(), null);
+
+    layer.enable();
+    await layer.update();
+    assert.equal(
+      host.records().length,
+      2,
+      'and re-enabling registers them again',
+    );
+    layer.destroy();
+    assert.equal(host.records().length, 0, 'destroy releases them too');
+  } finally {
+    host.restore();
+  }
+});
+
+test('a click on a report selects it, and a click on empty map releases it', async () => {
+  const host = contextHost();
+  try {
+    const viewer = stubViewer();
+    let picked = null;
+    const harness = clickableViewer(() => picked);
+    const { layer, overlayHost } = makeLayer([REPORT(2), REPORT(1.75)], [], {
+      viewer: harness.viewer,
+      createInputHandler: harness.createInputHandler,
+    });
+    layer.init(harness.viewer);
+    layer.enable();
+    await layer.update();
+
+    const worst = drawn(harness.viewer).find((entity) =>
+      entity.id.includes('-hail-2'),
+    );
+    picked = { id: worst };
+    harness.click();
+    assert.equal(layer.getSelectedReportId(), worst.id);
+    assert.equal(getSelectedEntityContext()?.id, worst.id);
+    assert.ok(
+      overlayHost.entries.at(-1).list.some((card) => card.selected === true),
+      'and the card says so',
+    );
+    assert.equal(
+      isOwnedByOtherLayer('some-sibling', worst.id),
+      true,
+      'siblings are told this pick is ours',
+    );
+
+    picked = undefined;
+    harness.click();
+    assert.equal(layer.getSelectedReportId(), null, 'empty map releases it');
+    assert.equal(getSelectedEntityContext(), null);
+
+    layer.disable();
+    assert.equal(
+      isOwnedByOtherLayer('some-sibling', worst.id),
+      false,
+      'and the pick ownership goes with the layer',
+    );
+  } finally {
+    host.restore();
+  }
+});
+
+test('the row listener fires on every change that moves the panel', async () => {
+  const { layer, north } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+
+  let calls = 0;
+  layer.setRowControlsListener(() => {
+    calls += 1;
+  });
+  const since = () => {
+    const before = calls;
+    return () => assert.ok(calls > before, 'the row was not repainted');
+  };
+
+  let check = since();
+  layer.setDate('2026-08-10');
+  check();
+
+  check = since();
+  layer.setDateRange('2025-08-10', '2026-08-10');
+  check();
+
+  check = since();
+  layer.clearDateRange();
+  check();
+
+  check = since();
+  layer.setMinHailIn(1.5);
+  check();
+
+  check = since();
+  layer.setHazard('wind');
+  check();
+
+  check = since();
+  layer.selectStorm(north.id);
+  check();
+
+  check = since();
+  layer.clearStormSelection();
+  check();
+
+  // A non-function clears it, rather than being called and throwing.
+  layer.setRowControlsListener(null);
+  assert.doesNotThrow(() => layer.setDate('2026-08-10'));
+});
+
+test('an overlay card carries the fields the overlay actually reads', async () => {
+  const viewer = stubViewer();
+  const overlayHost = host();
+  const source = {
+    getSnapshot: async () => ({
+      years: ['2026'],
+      days: { '2026-08-10': { hail: 1, wind: 0, total: 1 } },
+    }),
+    reportsFor: async () => [REPORT(2)],
+    eventsFor: async () => [],
+  };
+  const layer = createStormReportsLayer({ source, overlayHost });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  const [card] = overlayHost.entries.at(-1).list;
+
+  // normalizeOverlayEntry is an explicit field pick: a name it does not read is
+  // dropped without a word, and both of these used to be.
+  assert.equal(card.color, undefined, 'color is not an overlay field');
+  assert.equal(card.caveat, undefined, 'and caveat is not one either');
+  // REPORT(2) is a 2.0 inch stone: the first band at or above 2 is 2.0-2.75.
+  assert.equal(card.accent, '#e06020', 'the band colour travels as accent');
+  assert.equal(card.metadata, null);
+  const normalized = normalizeOverlayEntry('storm-reports', card);
+  assert.equal(normalized.accent, '#e06020', 'and survives normalization');
+});
+
+test('picking a day keeps a share link’s own thresholds', async () => {
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(2), REPORT(1.25)]);
+  layer.init(viewer);
+  // Before any data has loaded, the manager's params are still pending - this
+  // is the moment a share link is applied.
+  layer.setParams({
+    minHailTenths: 15,
+    hazard: 'hail',
+    fromDate: '2026-08-09',
+  });
+  layer.setDate('2026-08-10');
+
+  assert.equal(
+    layer.getParams().minHailTenths,
+    15,
+    'the link’s threshold survives the date the user picked',
+  );
+  layer.enable();
+  await layer.update();
+  assert.equal(layer.getParams().minHailIn, 1.5, 'and is applied on load');
+  assert.deepEqual(layer.getDateRange(), {
+    from: '2026-08-10',
+    to: '2026-08-10',
+  });
+  assert.equal(
+    drawn(viewer).length,
+    1,
+    'so the half-inch-dropped report is gone',
+  );
+});
+
+test('the storm view reports the storm, not the day', async () => {
+  const cells = new Map([[cellKey(35.11, -97.4), { mx: 45, cores: 12 }]]);
+  const radarSource = { cellsFor: async () => ({ cells }) };
+  const { layer, north } = twoStormDay({ radarSource });
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  layer.selectStorm(north.id);
+  await settled(layer);
+
+  const info = layer.getRowControls().info;
+  assert.match(info, /storm/, 'it says which storm it is describing');
+  assert.match(info, /1 report\b/, 'with that storm’s own count');
+  assert.match(info, /3\.25" hail/, 'and its own worst magnitude');
+  assert.match(info, /supercell/, 'and its narrative');
+  assert.match(
+    info,
+    /estimate, not a measured stone/,
+    'the radar caveat stays',
+  );
+  assert.match(
+    info,
+    /\(this storm\)/,
+    'the radar line says whose reports it read',
+  );
+});
+
+test('a storm with no reports at this threshold says so instead of looking empty', async () => {
+  const { layer, south } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setMinHailIn(2);
+  layer.setDate('2026-08-10');
+  // The southern storm's only report is a 1.25 - below the threshold. The
+  // threshold is never loosened to hide that.
+  layer.selectStorm(south.id);
+  assert.equal(drawn(stubViewer()).length, 0);
+  assert.equal(layer.getParams().minHailIn, 2, 'the threshold is untouched');
+  assert.match(
+    layer.getRowControls().info,
+    /no reports at the current hail and size filter/,
+  );
 });

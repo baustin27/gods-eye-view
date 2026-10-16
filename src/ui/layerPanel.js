@@ -338,10 +338,14 @@ export class LayerPanel {
           this._bind(list, 'click', (event) => {
             const button = event.target?.closest?.('.data-row-list-item');
             if (!button || button.disabled) return;
+            // Re-read the live descriptor rather than trusting the rendered
+            // item, so a stale row can never apply the wrong step.
             const item = this._rowControlsFor(layer.id)?.list?.items?.find(
               (entry) => entry.id === button.dataset.listItemId,
             );
-            if (item?.params)
+            if (!item || item.disabled || !this.isEnabled(layer.id)) return;
+            if (typeof item.onClick === 'function') item.onClick();
+            else if (item.params)
               this.setLayerParams(layer.id, item.params, { origin: 'user' });
           });
           row.appendChild(list);

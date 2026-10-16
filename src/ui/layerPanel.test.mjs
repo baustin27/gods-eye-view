@@ -421,3 +421,150 @@ test('the field survives a panel refresh', async () => {
   assert.ok(h.input(), 'and after a second one');
   h.close();
 });
+
+/**
+ * Build a panel over the rail fixture whose single ordinary row carries an
+ * ordered list, and hand back the clicks it received. The list is what a layer
+ * uses for a sequence — turn-by-turn steps, and the storm report the user picks
+ * out of a feed — so an item may drive the layer with `params` or do its own
+ * work with `onClick`.
+ */
+async function panelWithList(items) {
+  const { LayerPanel } = await import('./layerPanel.js');
+  const { railFixture } = await import('./railTestFixture.mjs');
+  const f = railFixture();
+  const previousDocument = globalThis.document;
+  globalThis.document = f.document;
+  const layer = {
+    id: 'storm',
+    name: 'Storm',
+    icon: '*',
+    source: 'S',
+    enabled: true,
+    showInTogglePanel: true,
+    stats: {},
+  };
+  const controls = {
+    readout: false,
+    chips: [],
+    legend: [],
+    list: { items },
+  };
+  const calls = [];
+  const panel = new LayerPanel({
+    getLayers: () => [layer],
+    isEnabled: () => true,
+    setEnabled: () => {},
+    setLayerParams: (...args) => calls.push(args),
+    hasRowControls: () => true,
+    subscribeRowControls: () => () => {},
+    getRowControls: () => controls,
+  });
+  try {
+    panel.mount(f.container);
+  } catch (error) {
+    panel.destroy();
+    globalThis.document = previousDocument;
+    throw error;
+  }
+  const row = () => f.find((n) => n.dataset.layerId === 'storm');
+  const button = (id) => {
+    const list = row().querySelector('.data-row-list');
+    const entry = list.children.find((n) => n.dataset.listItemId === id);
+    return entry.querySelector('.data-row-list-item');
+  };
+  return {
+    panel,
+    calls,
+    row,
+    button,
+    /** Dispatch a click the way the DOM would, ignoring the disabled guard. */
+    rawClick(id) {
+      const node = button(id);
+      for (let at = node; at; at = at.parent) {
+        const event = new Event('click');
+        Object.defineProperty(event, 'target', { value: node });
+        at.dispatchEvent(event);
+      }
+    },
+    close() {
+      panel.destroy();
+      globalThis.document = previousDocument;
+    },
+  };
+}
+
+test('a list item with only onClick runs it instead of going inert', async () => {
+  const clicked = [];
+  const h = await panelWithList([
+    { id: 'a', text: 'Hail 2.75in', onClick: () => clicked.push('a') },
+  ]);
+  h.button('a').click();
+  assert.deepEqual(clicked, ['a'], 'the item did its own work');
+  assert.deepEqual(h.calls, [], 'and set no params it never declared');
+  h.close();
+});
+
+test('a list item with only params still applies them to the layer', async () => {
+  const h = await panelWithList([
+    { id: 'a', text: 'Step one', params: { focus: 'a' } },
+  ]);
+  h.button('a').click();
+  assert.deepEqual(h.calls, [['storm', { focus: 'a' }, { origin: 'user' }]]);
+  h.close();
+});
+
+test('onClick wins over params when a list item declares both', async () => {
+  const clicked = [];
+  const h = await panelWithList([
+    {
+      id: 'a',
+      text: 'Both',
+      params: { focus: 'a' },
+      onClick: () => clicked.push('a'),
+    },
+  ]);
+  h.button('a').click();
+  assert.deepEqual(clicked, ['a'], 'onClick took precedence');
+  assert.deepEqual(h.calls, [], 'so the params fallback never ran');
+  h.close();
+});
+
+test('a disabled list item does nothing at all', async () => {
+  const clicked = [];
+  const h = await panelWithList([
+    {
+      id: 'a',
+      text: 'Disabled',
+      disabled: true,
+      params: { focus: 'a' },
+      onClick: () => clicked.push('a'),
+    },
+  ]);
+  h.button('a').click();
+  assert.deepEqual(clicked, [], 'the DOM never delivered the click');
+  assert.deepEqual(h.calls, []);
+  // Force the event past the disabled attribute the way a browser would after
+  // the node was disabled by an earlier sync; the handler must still refuse.
+  h.rawClick('a');
+  assert.deepEqual(clicked, [], 'and the handler refused it too');
+  assert.deepEqual(h.calls, []);
+  h.close();
+});
+
+test('a list item left on a disabled layer does nothing', async () => {
+  // Turning a layer off does not tear down its row's controls, so the list
+  // nodes survive with their handlers and their item ids intact. A click that
+  // lands on one after the layer went off must not drive it.
+  const clicked = [];
+  const h = await panelWithList([
+    { id: 'a', text: 'Stale step', params: { focus: 'a' } },
+    { id: 'b', text: 'Stale onClick', onClick: () => clicked.push('b') },
+  ]);
+  h.panel.isEnabled = () => false;
+  h.rawClick('a');
+  h.rawClick('b');
+  assert.deepEqual(h.calls, [], 'no params reached the disabled layer');
+  assert.deepEqual(clicked, [], 'and no item callback ran');
+  h.close();
+});

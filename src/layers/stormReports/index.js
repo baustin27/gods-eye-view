@@ -18,12 +18,28 @@ import {
   magnitudeLabel,
   framingFor,
   matchesFilter,
+  OUTLINE_CAVEAT,
+  outlineRing,
   parseStormDate,
   radiusMetres,
+  stormHeadline,
+  stormPlaces,
+  stormTimeRange,
   windBand,
   worstFirst,
 } from './model.js';
 import * as Cesium from 'cesium';
+import {
+  clearSelectedEntityContextForLayer,
+  registerEntityContext,
+  removeEntityContextsForLayer,
+  selectEntityContext,
+} from '../../data/contextStore.js';
+import { isPointerFree } from '../../data/inputOwnership.js';
+import {
+  registerPickOwner,
+  unregisterPickOwner,
+} from '../../data/pickRegistry.js';
 import {
   crossReference,
   indexRadarCells,
@@ -34,6 +50,34 @@ import { STORM_SOURCE_BADGE } from '../../data/stormAttribution.js';
 
 /** The layer id, and the token reserved for it in the layer-state ledger. */
 export const STORM_REPORTS_ID = 'storm-reports';
+
+/** How the panel and the shared context store name this layer. */
+const LAYER_NAME = 'Hail & Wind — Individual Reports';
+
+/**
+ * How many reports carry a click context at once.
+ *
+ * A hard bound, not a sample. The snapshot holds 44,717 reports on the record
+ * day alone; registering one context each would put a five-figure map in a
+ * single-key Map, and `removeEntityContextsForLayer` is an O(total registered)
+ * scan that nothing else in this app runs at above a few hundred. Forty is the
+ * worst of the current filter - the cohort a person works down - so what is
+ * registered is exactly the set worth clicking, and the rest of the map is
+ * drawn but not interactive.
+ */
+export const STORM_CONTEXT_LIMIT = 40;
+
+/**
+ * Days offered by the storm list when no single day is selected.
+ *
+ * Twelve, because that is already how many day chips the row offers: the list
+ * and the chips must not disagree about which days exist, and a longer list
+ * would be a picker the chips cannot reach.
+ */
+export const STORM_LIST_DAYS = 12;
+
+/** Stroke and wash for the approximate outline. */
+const OUTLINE_COLOR = '#7fe6ed';
 
 /** Shareable options, all defaulted so an absent option means the default. */
 /**
@@ -123,7 +167,8 @@ export const STORM_REPORTS_DEFAULTS = Object.freeze({
 });
 
 /**
- * @param {{source: object, overlayHost?: object, radarSource?: object}} deps
+ * @param {{source: object, overlayHost?: object, radarSource?: object,
+ *          createInputHandler?: (canvas: object) => object}} deps
  *
  * `radarSource` is optional and the layer is complete without it: no radar
  * dependency means no cross-reference and no error, which is the only safe
@@ -154,6 +199,19 @@ function self() {
 function yearOf(value) {
   const text = String(value ?? '');
   return /^\d{4}-/.test(text) ? text.slice(0, 4) : null;
+}
+
+/**
+ * Is there a window to hang the shared context store on?
+ *
+ * The context store is a page singleton. The layer's own tests drive the whole
+ * lifecycle with no DOM at all, and an unguarded registration would throw in
+ * the middle of a repaint and take the repaint with it. Registration is
+ * therefore best-effort: no window, no contexts, and nothing else changes.
+ * @returns {boolean}
+ */
+function contextHostAvailable() {
+  return typeof window !== 'undefined' && Boolean(window);
 }
 
 /**
@@ -215,11 +273,19 @@ export function createStormReportsLayer({
   source,
   overlayHost,
   radarSource,
+  createInputHandler,
 } = {}) {
   if (typeof source?.getSnapshot !== 'function')
     throw new TypeError('Storm Reports layer requires a snapshot source');
   if (!overlayHost)
     throw new TypeError('Storm Reports layer requires an overlay host');
+  // Injectable for the same reason localAdsb's is: a ScreenSpaceEventHandler
+  // cannot be driven without a real canvas, so without a seam the click path is
+  // the one part of this layer that can only be reasoned about and never run.
+  const makeInputHandler =
+    typeof createInputHandler === 'function'
+      ? createInputHandler
+      : (canvas) => new Cesium.ScreenSpaceEventHandler(canvas);
 
   let _viewer = null;
   let _dataSource = null;
@@ -236,6 +302,8 @@ export function createStormReportsLayer({
   let _options = { ...STORM_REPORTS_DEFAULTS };
   let _pendingParams = null;
   let _selectedStormId = null;
+  // The window selectStorm had to move, so clearing it can put it back.
+  let _stormMovedWindow = null;
   let _stats = null;
   let _loaded = false;
   let _optionsDirty = true;
@@ -246,6 +314,31 @@ export function createStormReportsLayer({
   let _comparisonKey = null;
   let _comparisonToken = 0;
   let _ordinalYears = new Set();
+  let _firstStormByDate = null;
+  let _firstStormByDateFrom = null;
+  // The storm axis, kept beside the option axis rather than folded into it:
+  // selecting a storm narrows what is DRAWN, and the storm's own record has to
+  // stay reachable or the outline, the list and the card would all read from
+  // the selection they are describing.
+  let _scoped = [];
+  let _contextIds = new Set();
+  let _selectedReportId = null;
+  let _outlineVisible = false;
+  let _outlineEntity = null;
+  let _rowControlsListener = null;
+  let _clickHandler = null;
+
+  /**
+   * Repaint the panel row.
+   *
+   * The panel caches each row's controls and re-reads them only when a layer
+   * calls the listener it handed to `setRowControlsListener`. Without one, a
+   * selected storm changes the map and leaves the row describing the previous
+   * state - which reads to the person using it as though the click missed.
+   */
+  function notifyRowControls() {
+    _rowControlsListener?.();
+  }
 
   /**
    * Durable option intent from the manager, replayed once data lands. The
@@ -336,7 +429,45 @@ export function createStormReportsLayer({
     return true;
   }
 
-  function applyFilter(packed) {
+  /**
+   * Repaint for a change on the STORM axis, not the option axis.
+   *
+   * Deliberately its own path. `repaintFromMemory` re-runs the hazard, size and
+   * date filter, which is the wrong question when the click was a storm in the
+   * list: the storm belongs to a day the filter has already accepted, and
+   * re-deriving the window from `_options` would either throw the selection
+   * away or leave it selecting nothing.
+   *
+   * @returns {boolean} False when nothing is in memory yet.
+   */
+  function applyStormSelection() {
+    if (!_loaded || !_packed) return false;
+    applyFilter(_packed, { narrowToStorm: true });
+    return true;
+  }
+
+  /** Does the current date window contain this day? */
+  /**
+   * Whether the current date window already frames this day.
+   *
+   * An unbounded window (ALL DATES) deliberately counts as NOT framing it. The
+   * map would then show one storm while the date field said "all dates", which
+   * is the same silent mismatch that this layer has shipped three times over:
+   * chips that render but do nothing, an id that resolves to nothing, a
+   * caution that is set and never shown. Naming the day is also the honest
+   * thing to do - a storm belongs to a date - and ALL DATES is always one
+   * click away.
+   */
+  function windowContains(date) {
+    if (!date) return false;
+    const { fromDate, toDate } = _options;
+    if (!fromDate && !toDate) return false;
+    if (fromDate && date < fromDate) return false;
+    if (toDate && date > toDate) return false;
+    return true;
+  }
+
+  function applyFilter(packed, { narrowToStorm = true } = {}) {
     const { hazard, minHailIn, minWindKt, fromDate, toDate } = _options;
     // The ordinal is the row's index in the year file, so it survives filtering
     // and keeps entity ids unique.
@@ -350,7 +481,17 @@ export function createStormReportsLayer({
           to: toDate,
         }),
       );
-    _visible = rows.map(({ row, index }) => unpack(row, index));
+    // The option axis alone: hazard, size, window. This is the set the storm
+    // axis narrows, and the set every question about a storm is answered from.
+    _scoped = rows.map(({ row, index }) => unpack(row, index));
+    // A storm cannot outlive the window it belongs to. The date filter is the
+    // OUTER axis - it is what decides which days exist - so a selection the
+    // window no longer covers is dropped rather than left selecting nothing.
+    dropStormOutsideWindow();
+    _visible =
+      narrowToStorm && _selectedStormId
+        ? _scoped.filter((report) => stormIdFor(report) === _selectedStormId)
+        : _scoped;
     indexOrdinalYears();
     _stats = {
       total: _visible.length,
@@ -358,10 +499,36 @@ export function createStormReportsLayer({
       wind: _visible.filter((r) => r.hazard === 'wind').length,
       worst: worstFirst(_visible, hazard, 1)[0] || null,
       storms: _events.length,
+      scopedTotal: _scoped.length,
     };
     render();
     publish();
     refreshComparison();
+  }
+
+  /** Forget a storm selection the date window has moved out from under. */
+  function dropStormOutsideWindow() {
+    if (!_selectedStormId) return;
+    const storm = _events.find((event) => event.id === _selectedStormId);
+    if (!storm || !windowContains(storm.date)) _selectedStormId = null;
+  }
+
+  /** The storm event currently selected, or null. */
+  function selectedStorm() {
+    if (!_selectedStormId) return null;
+    return _events.find((event) => event.id === _selectedStormId) || null;
+  }
+
+  /**
+   * The storm id a report belongs to, or null when it belongs to none.
+   *
+   * Ordinal first, exactly as `resolveStorm` reads it, and the same date
+   * fallback for a snapshot with no ordinals. The fallback is memoised per
+   * events load: it is a scan of the event list, and running it per report
+   * would make a storm selection on a legacy snapshot quadratic.
+   */
+  function stormIdFor(report) {
+    return resolveStorm(report)?.id ?? null;
   }
 
   /**
@@ -369,12 +536,13 @@ export function createStormReportsLayer({
    *
    * A snapshot built before the ordinal existed has none, and asking by ordinal
    * there returns nothing at all — an empty list is not a worse answer than the
-   * day's reports, it is a wrong one. Recomputed per repaint because the visible
-   * set is what any of this is asked about.
+   * day's reports, it is a wrong one. Read from the option-filtered set rather
+   * than the drawn one: selecting one storm must not make every other year look
+   * like it has no ordinals.
    */
   function indexOrdinalYears() {
     _ordinalYears = new Set();
-    for (const report of _visible) {
+    for (const report of _scoped) {
       if (stormRefOf(report) >= 0) _ordinalYears.add(yearOf(report.date));
     }
   }
@@ -553,7 +721,28 @@ export function createStormReportsLayer({
       if (storm && storm.date === report.date) return storm;
       return null;
     }
-    return _events.find((e) => e.date === report?.date) || null;
+    return firstStormOn(report?.date);
+  }
+
+  /**
+   * The first storm event on a date, or null - the fallback for a snapshot whose
+   * rows carry no ordinals.
+   *
+   * Memoised against the event list itself, so it is rebuilt only when the list
+   * changes. `resolveStorm` reaches here per report, and an unindexed scan of
+   * 44,717 events for each of 155,737 reports is the kind of thing that looks
+   * like a hang.
+   */
+  function firstStormOn(date) {
+    if (_firstStormByDateFrom !== _events) {
+      _firstStormByDate = new Map();
+      for (const event of _events) {
+        if (event?.date && !_firstStormByDate.has(event.date))
+          _firstStormByDate.set(event.date, event);
+      }
+      _firstStormByDateFrom = _events;
+    }
+    return _firstStormByDate.get(date) || null;
   }
 
   /**
@@ -568,31 +757,80 @@ export function createStormReportsLayer({
     return ref >= 0 ? ref : null;
   }
 
+  /**
+   * The reports belonging to one storm, worst first.
+   *
+   * By ordinal within the storm's own year, which is what separates two storms
+   * on the same day. Matching on date returned both storms' reports for either
+   * storm, and a day like 2025-05-16 carried sixty-five.
+   *
+   * Where the snapshot has no ordinals at all, or this year's events do not form
+   * one run in the list we were handed, it falls back to the day: every report
+   * that day is at least a report that day, which is a wider answer than the
+   * ordinal but never a narrower one.
+   *
+   * Answered from the option-filtered set, NOT from what is currently drawn. The
+   * storm axis narrows the map; it must not narrow the storm's own record, or
+   * the outline for the selected storm would be framed on an empty set and
+   * every other storm in the list would read as having no reports.
+   *
+   * @param {string} stormId
+   * @returns {object[]}
+   */
+  function reportsForStorm(stormId) {
+    const storm = _events.find((e) => e.id === stormId);
+    if (!storm) return [];
+    const year = yearOf(storm.date);
+    const ref = _ordinalYears.has(year) ? ordinalOf(storm) : null;
+    const matched =
+      ref === null
+        ? _scoped.filter((r) => r.date === storm.date)
+        : _scoped.filter(
+            (r) => yearOf(r.date) === year && stormRefOf(r) === ref,
+          );
+    return matched.sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
+  }
+
+  /**
+   * The entity id for a report.
+   *
+   * The row ordinal, not the coordinates: two reports of the same size at the
+   * day are separate observations, and a data source keys on this. It is also
+   * the context-store id, so the map and the shared selection slot cannot drift
+   * onto two different names for the same stone.
+   */
+  function entityIdFor(report) {
+    return `storm-report-${report.date}-${report.ordinal}-${report.hazard}-${report.size}`;
+  }
+
+  /** Point radius in pixels: magnitude-scaled, then clamped. */
+  function pixelSizeFor(report) {
+    // At 155,737 reports an unclamped radius turns a national view into a
+    // solid sheet.
+    return Math.max(
+      4,
+      Math.min(20, Math.round(radiusMetres(report.size, report.hazard) / 320)),
+    );
+  }
+
   /** Paint the visible reports. */
   function render() {
     if (!_dataSource) return;
     _dataSource.entities.removeAll();
+    _outlineEntity = null;
     for (const report of _visible) {
       const band =
         report.hazard === 'hail'
           ? hailBand(report.size)
           : windBand(report.size);
       if (!band) continue;
-      _dataSource.entities.add({
-        // The row ordinal, not the coordinates: two reports of the same size at the
-        // day are separate observations, and a data source keys on this.
-        id: `storm-report-${report.date}-${report.ordinal}-${report.hazard}-${report.size}`,
+      const entity = _dataSource.entities.add({
+        id: entityIdFor(report),
         position: Cesium.Cartesian3.fromDegrees(report.lon, report.lat),
         point: {
           // Magnitude-scaled, then clamped in pixels: at 155,737 reports an
           // unclamped radius turns a national view into a solid sheet.
-          pixelSize: Math.max(
-            4,
-            Math.min(
-              20,
-              Math.round(radiusMetres(report.size, report.hazard) / 320),
-            ),
-          ),
+          pixelSize: pixelSizeFor(report),
           color: Cesium.Color.fromCssColorString(band.color),
           outlineColor: Cesium.Color.BLACK,
           outlineWidth: 1,
@@ -601,7 +839,217 @@ export function createStormReportsLayer({
         },
         properties: report,
       });
+      if (entity) entity.gevLabelModel = labelModelFor(report, band);
     }
+    renderOutline();
+    syncEntityContexts();
+  }
+
+  /**
+   * The label model a clicked report shows.
+   *
+   * Set on the entity BEFORE it is registered, because the tracked-readout
+   * bridge republishes a selected entity's `gevLabelModel` and reads it from
+   * there - registered without it, the selection is live but the readout card
+   * renders empty.
+   *
+   * @param {object} report
+   * @param {object} band
+   * @param {boolean} [selected] Defaults to whether this is the selected report.
+   */
+  function labelModelFor(report, band, selected = undefined) {
+    const isSelected =
+      selected === undefined
+        ? _selectedReportId === entityIdFor(report)
+        : selected;
+    return {
+      title: magnitudeLabel(report),
+      details: [
+        report.county
+          ? `${report.county}, ${report.state || ''}`.trim()
+          : report.state || 'unknown place',
+        report.date,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      accent: band?.color || '#cccccc',
+      cardStyle: 'tactical',
+      selected: isSelected,
+      leaderStyle: 'elbow',
+      anchorRadiusPx: pixelSizeFor(report) / 2,
+      anchorRadiusScale: null,
+    };
+  }
+
+  /**
+   * Draw the selected storm's approximate outline.
+   *
+   * A circle, not a boundary. NCEI publishes no storm polygons, so there is
+   * nothing to trace: the radius is the furthest report from the centroid of
+   * the ones in view, and the shape is therefore a bound on where people were
+   * reporting rather than on where hail fell. It is off by default, and
+   * whatever draws it says so.
+   *
+   * The polygon goes on this layer's own data source - never `viewer.entities`,
+   * which whichever layer rendered last would clear - and never as an ellipse,
+   * which nothing else in this app uses.
+   */
+  function renderOutline() {
+    if (!_outlineVisible || !_selectedStormId || !_dataSource) return null;
+    const frame = framingFor(reportsForStorm(_selectedStormId));
+    if (!frame) return null;
+    const ring = outlineRing(frame);
+    // outlineRing drops non-finite points for the same reason hailwind's
+    // polygonRings does: one NaN vertex makes the polygon's centre NaN and the
+    // shape surfaces as "origin has a NaN component". Fewer than three points
+    // left is not a shape at all.
+    if (ring.length < 3) return null;
+    const positions = ring.map((point) =>
+      Cesium.Cartesian3.fromDegrees(point.lon, point.lat),
+    );
+    _outlineEntity = _dataSource.entities.add(
+      new Cesium.Entity({
+        id: `storm-outline:${_selectedStormId}`,
+        polygon: {
+          hierarchy: new Cesium.PolygonHierarchy(positions),
+          material:
+            Cesium.Color.fromCssColorString(OUTLINE_COLOR).withAlpha(0.12),
+          outline: true,
+          outlineColor: Cesium.Color.fromCssColorString(OUTLINE_COLOR),
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      }),
+    );
+    return _outlineEntity;
+  }
+
+  /**
+   * Publish click contexts for the worst reports currently in view, and drop
+   * every context this layer holds that is not in that cohort.
+   *
+   * Bounded on purpose. The snapshot carries 44,717 reports on its record day,
+   * and the store is a single Map that `removeEntityContextsForLayer` rescans
+   * whole on every refresh - registering all of them would make each repaint
+   * cost more than the repaint itself. The cohort is the worst
+   * {@link STORM_CONTEXT_LIMIT} reports under the current filter, which is the
+   * set a person would click through anyway; the rest stay drawn and stay
+   * unclickable, and `retainIds` is what makes that bound hold rather than grow.
+   */
+  function syncEntityContexts() {
+    _contextIds = new Set();
+    if (!_enabled || !contextHostAvailable()) return;
+    const cohort = worstFirst(_visible, _options.hazard, STORM_CONTEXT_LIMIT);
+    for (const report of cohort) {
+      const id = entityIdFor(report);
+      const entity = _dataSource?.entities.getById(id);
+      if (!entity) continue;
+      const band =
+        report.hazard === 'hail'
+          ? hailBand(report.size)
+          : windBand(report.size);
+      entity.gevLabelModel = labelModelFor(report, band);
+      const record = registerEntityContext(entity, {
+        id,
+        layerId: STORM_REPORTS_ID,
+        label: `${magnitudeLabel(report)} — ${report.county || report.state || 'unknown place'}`,
+        layerName: LAYER_NAME,
+        source: STORM_SOURCE_BADGE,
+        latitude: report.lat,
+        longitude: report.lon,
+        // Without this the store cannot tell a live record from one whose
+        // data source has been hidden, and a report from a switched-off layer
+        // stays selectable.
+        dataSource: _dataSource,
+        properties: {
+          date: report.date,
+          minute: report.minute,
+          hazard: report.hazard,
+          size: report.size,
+          county: report.county,
+          state: report.state,
+          countyFips: report.countyFips,
+          loss: report.loss,
+          sources: report.sources,
+          trace: report.trace,
+          ordinal: report.ordinal,
+          band: band?.label || null,
+          stormId: stormIdFor(report),
+        },
+      });
+      if (record) _contextIds.add(id);
+    }
+    removeEntityContextsForLayer(STORM_REPORTS_ID, {
+      retainIds: _contextIds,
+    });
+  }
+
+  /**
+   * Drop every context this layer owns, and any selection that pointed at one.
+   *
+   * Called from disable and destroy. A record left behind points at an entity
+   * that no longer exists, and the shared selection slot would keep serving it
+   * to voice and the cockpit until something else happened to overwrite it.
+   */
+  function releaseEntityContexts() {
+    _contextIds = new Set();
+    _selectedReportId = null;
+    if (!contextHostAvailable()) return;
+    clearSelectedEntityContextForLayer(STORM_REPORTS_ID);
+    removeEntityContextsForLayer(STORM_REPORTS_ID);
+  }
+
+  /**
+   * Select a clicked report into the shared context slot.
+   * @param {string} entityId
+   * @returns {boolean}
+   */
+  function selectReportContext(entityId) {
+    const entity = _dataSource?.entities.getById(entityId);
+    if (!entity) return false;
+    _selectedReportId = entityId;
+    selectEntityContext(entity);
+    publish();
+    notifyRowControls();
+    return true;
+  }
+
+  /** Release the shared selection, if it was ours. */
+  function clearReportContext() {
+    if (!_selectedReportId) return;
+    _selectedReportId = null;
+    if (contextHostAvailable())
+      clearSelectedEntityContextForLayer(STORM_REPORTS_ID);
+    publish();
+    notifyRowControls();
+  }
+
+  /**
+   * Take the click, when the pointer is ours to take.
+   *
+   * A tool that has claimed the pointer (src/data/inputOwnership.js) gets the
+   * click instead, and empty map releases only this layer's selection - never
+   * a sibling layer's.
+   */
+  function installInteraction() {
+    if (_clickHandler || !_viewer?.scene?.canvas) return;
+    _clickHandler = makeInputHandler(_viewer.scene.canvas);
+    _clickHandler.setInputAction((click) => {
+      if (!isPointerFree() || !_enabled) return;
+      const picked = _viewer.scene.pick?.(click.position);
+      const id = typeof picked?.id?.id === 'string' ? picked.id.id : null;
+      if (id && _contextIds.has(id)) {
+        // Re-selecting the same report still counts as a click: its card may
+        // have been displaced, and a click must never read as a deselect.
+        selectReportContext(id);
+        return;
+      }
+      clearReportContext();
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+  }
+
+  function releaseInteraction() {
+    _clickHandler?.destroy();
+    _clickHandler = null;
   }
 
   /**
@@ -632,7 +1080,13 @@ export function createStormReportsLayer({
               id: `storm-report:${report.date}:${report.ordinal}`,
               position,
               cullPosition: position,
-              color: band?.color || '#cccccc',
+              // `normalizeOverlayEntry` is an explicit field pick, not a
+              // pass-through: `color` is not a field it reads - the band colour
+              // goes in as `accent` - and `caveat` is not a field it has at
+              // all. Both names are accepted here and dropped in silence, so
+              // every card rendered in the default grey and the one message
+              // that mattered never appeared.
+              accent: band?.color || '#cccccc',
               title: `${magnitudeLabel(report)} — ${report.county || report.state || 'unknown place'}`,
               details: [
                 report.county
@@ -642,9 +1096,11 @@ export function createStormReportsLayer({
               ]
                 .filter(Boolean)
                 .join(' · '),
-              caveat: band
-                ? undefined
-                : 'No measured magnitude on this report.',
+              // Opaque per-source extras travel in `metadata`.
+              metadata: band
+                ? null
+                : { caveat: 'No measured magnitude on this report.' },
+              selected: _selectedReportId === entityIdFor(report),
             };
           },
         )
@@ -680,6 +1136,38 @@ export function createStormReportsLayer({
     return `radar ${parts.join(', ')} — an estimate, not a measured stone`;
   }
 
+  /**
+   * The panel lines for a selected storm.
+   *
+   * Its own numbers, not the day's. A day that carried two storms has one radar
+   * split between them, and the count on screen is the storm's own reports under
+   * the current filter - so the line has to name the storm it is describing, and
+   * say so when the filter has left it with nothing.
+   *
+   * @returns {string[]}
+   */
+  function stormPanelLines(storm) {
+    const reports = reportsForStorm(storm.id);
+    const count = reports.length;
+    const lines = [];
+    lines.push(
+      count
+        ? `${storm.date} · storm · ${stormHeadline(storm, count)}`
+        : `${storm.date} · storm · no reports at the current ${_options.hazard} and size filter`,
+    );
+    const places = stormPlaces(storm);
+    if (places && count) lines.push(places);
+    const window = stormTimeRange(storm);
+    if (window) lines.push(`reported ${window}`);
+    if (storm.narrative) lines.push(storm.narrative);
+    const radar = comparisonLine();
+    // The comparison is computed over whatever is in view, and in view means
+    // this storm's reports - so the line says whose reports it is reading.
+    if (radar) lines.push(_selectedStormId ? `${radar} (this storm)` : radar);
+    if (_outlineVisible) lines.push(OUTLINE_CAVEAT);
+    return lines;
+  }
+
   /** One line describing what is on screen right now. */
   function panelInfo() {
     // A rejected date outranks everything: the person is still looking at the
@@ -688,6 +1176,8 @@ export function createStormReportsLayer({
     if (_lastError) return `Failed: ${_lastError.message}`;
     if (_loading) return 'Loading reports...';
     if (!_enabled) return '';
+    const storm = selectedStorm();
+    if (storm) return stormPanelLines(storm).join('\n');
     const count = _visible.length.toLocaleString();
     const worst = _stats?.worst;
     const parts = [`${count} report${count === '1' ? '' : 's'}`];
@@ -698,9 +1188,59 @@ export function createStormReportsLayer({
     const from = _options.fromDate;
     const to = _options.toDate;
     if (from) parts.push(from === to ? from : `${from} to ${to}`);
+    if (_outlineVisible) parts.push(OUTLINE_CAVEAT);
     const radar = comparisonLine();
     if (radar) parts.push(radar);
     return parts.join(' · ');
+  }
+
+  /**
+   * The rows of the storm list.
+   *
+   * Exactly the seven properties `rowList` reads, plus the `onClick` the
+   * panel's list handler calls. Scoped to the selected day when there is one,
+   * because a storm belongs to a date and a list of every storm in the record is
+   * not a list anyone can act on. With no day selected it offers the same
+   * {@link STORM_LIST_DAYS} recent days the date chips already offer.
+   *
+   * @returns {Array<{id: string, lead: string, text: string, disabled: boolean,
+   *                  active: boolean, current: boolean, onClick: Function}>}
+   */
+  function stormListItems() {
+    const day = _options.fromDate;
+    const singleDay = Boolean(day) && day === _options.toDate;
+    const recentDays = new Set(
+      stormDays(_snapshot || { days: {} })
+        .slice(0, STORM_LIST_DAYS)
+        .map((entry) => entry.date),
+    );
+    const storms = _events
+      .filter((storm) =>
+        singleDay ? storm?.date === day : recentDays.has(storm?.date),
+      )
+      .sort((a, b) =>
+        (a?.date || '') < (b?.date || '')
+          ? 1
+          : (a?.date || '') > (b?.date || '')
+            ? -1
+            : (a?.beginMinute ?? 0) - (b?.beginMinute ?? 0),
+      );
+    return storms.map((storm) => {
+      // Counted against the option filter, not against what is drawn: with a
+      // storm selected the map shows only that storm, and reading every other
+      // list row out of it would mark the whole day disabled.
+      const reports = reportsForStorm(storm.id);
+      const selected = storm.id === _selectedStormId;
+      return {
+        id: `storm-list:${storm.id}`,
+        lead: stormTimeRange(storm) || storm.date || '',
+        text: stormHeadline(storm, reports.length),
+        disabled: reports.length === 0,
+        active: selected,
+        current: selected,
+        onClick: () => self().selectStorm(storm.id),
+      };
+    });
   }
   const api = {
     id: STORM_REPORTS_ID,
@@ -737,6 +1277,11 @@ export function createStormReportsLayer({
       _request = new AbortController();
       if (_dataSource) _dataSource.show = true;
       overlayHost.setVisible(STORM_REPORTS_ID, true);
+      // The click handler and the pick-ownership predicate come and go with the
+      // layer: a handler left installed after disable would keep selecting
+      // entities out of a data source that has been emptied.
+      installInteraction();
+      registerPickOwner(STORM_REPORTS_ID, (id) => _contextIds.has(id));
       publish();
     },
 
@@ -746,6 +1291,9 @@ export function createStormReportsLayer({
       _request?.abort();
       _request = null;
       _visible = [];
+      _scoped = [];
+      _contextIds = new Set();
+      _outlineEntity = null;
       _comparison = null;
       _comparisonKey = null;
       _comparisonToken += 1;
@@ -755,9 +1303,13 @@ export function createStormReportsLayer({
         _dataSource.show = false;
         _dataSource.entities.removeAll();
       }
+      releaseInteraction();
+      unregisterPickOwner(STORM_REPORTS_ID);
+      releaseEntityContexts();
       overlayHost.clearSource(STORM_REPORTS_ID);
       overlayHost.setVisible(STORM_REPORTS_ID, false);
       publish();
+      notifyRowControls();
     },
 
     async update() {
@@ -802,7 +1354,16 @@ export function createStormReportsLayer({
      */
     setDateRange(from, to = from) {
       _options = { ..._options, fromDate: from || null, toDate: to || null };
-      _pendingParams = null;
+      // Only the DATES are dropped from a pending parameter record, and only
+      // because the person has just overridden them. The rest of a share link's
+      // intent - minHailTenths, minWindKt, hazard - is still waiting for data
+      // that has not loaded yet, and clearing the whole record meant opening a
+      // shared two-inch wind link and then picking a day silently threw the
+      // link's whole point away.
+      if (_pendingParams) {
+        const { fromDate: _from, toDate: _to, ...rest } = _pendingParams;
+        _pendingParams = Object.keys(rest).length ? rest : null;
+      }
       _fieldMessage = null;
       _optionsDirty = true;
       if (!repaintFromMemory()) {
@@ -810,6 +1371,7 @@ export function createStormReportsLayer({
         _loaded = false;
       }
       publish();
+      notifyRowControls();
     },
 
     /** One exact day. */
@@ -823,6 +1385,126 @@ export function createStormReportsLayer({
       _optionsDirty = true;
       if (!repaintFromMemory()) _loaded = false;
       publish();
+      notifyRowControls();
+    },
+
+    /**
+     * Narrow the map to one storm, and put its numbers in the panel.
+     *
+     * AND THE DATE: a storm belongs to a date, so the date filter is the outer
+     * axis - it decides which days exist at all - and a storm selected from a
+     * wider window is moved to its own day rather than drawn against a filter
+     * that no longer covers it. When the window already contains the storm the
+     * date is left exactly as it is: someone working down a single day must not
+     * have the window rewritten under them by each click, and someone working a
+     * month must not be narrowed to one day by the first storm they pick.
+     *
+     * The hazard and size filters are never touched. Loosening a threshold
+     * silently to make a selection look populated would change what "2 inches"
+     * means everywhere else in the layer; an empty storm instead says so in the
+     * panel.
+     *
+     * @param {string} stormId
+     * @returns {boolean} False when no loaded storm carries that id.
+     */
+    selectStorm(stormId) {
+      const storm = _events.find((event) => event.id === stormId);
+      if (!storm) return false;
+      _selectedStormId = stormId;
+      if (!windowContains(storm.date)) {
+        // Remember what the window was, so clearing the storm clears this too.
+        // Otherwise selecting a storm from ALL DATES and then deselecting it
+        // leaves the map on one day with nothing explaining why.
+        _stormMovedWindow = {
+          fromDate: _options.fromDate,
+          toDate: _options.toDate,
+        };
+        _options = { ..._options, fromDate: storm.date, toDate: storm.date };
+        _fieldMessage = null;
+      }
+      if (!applyStormSelection()) {
+        // Nothing in memory yet - the next update() picks it up.
+        _loaded = false;
+        _optionsDirty = true;
+      }
+      publish();
+      notifyRowControls();
+      return true;
+    },
+
+    /** Drop the storm selection and show the whole window again. */
+    clearStormSelection() {
+      if (!_selectedStormId) return false;
+      _selectedStormId = null;
+      if (_stormMovedWindow) {
+        _options = {
+          ..._options,
+          fromDate: _stormMovedWindow.fromDate,
+          toDate: _stormMovedWindow.toDate,
+        };
+        _stormMovedWindow = null;
+      }
+      if (!applyStormSelection()) {
+        _loaded = false;
+        _optionsDirty = true;
+      }
+      publish();
+      notifyRowControls();
+      return true;
+    },
+
+    /** The storm currently narrowed to, or null. */
+    getSelectedStorm() {
+      return selectedStorm();
+    },
+
+    /** The storm id currently narrowed to, or null. */
+    getSelectedStormId() {
+      return _selectedStormId;
+    },
+
+    /** The context id of the clicked report, or null. */
+    getSelectedReportId() {
+      return _selectedReportId;
+    },
+
+    /**
+     * Draw or hide the selected storm's approximate outline.
+     *
+     * Off by default: an inferred circle sitting on a map of measured points
+     * invites being read as a measured edge, and this one has no better claim
+     * than "people reported roughly this far apart". Whoever turns it on gets
+     * the caveat in the legend and the info line, which is why it is offered as
+     * an explicit choice rather than a side effect of selecting a storm.
+     *
+     * @param {boolean} visible
+     * @returns {boolean} The state it ended in.
+     */
+    setOutlineVisible(visible) {
+      _outlineVisible = visible !== false;
+      render();
+      publish();
+      notifyRowControls();
+      return _outlineVisible;
+    },
+
+    /** Whether the approximate outline is being drawn. */
+    isOutlineVisible() {
+      return _outlineVisible;
+    },
+
+    /**
+     * Repaint this row's controls when the layer's state changes.
+     *
+     * The panel caches each row's controls and re-reads them only through this
+     * listener. A layer with none keeps rendering the controls it first
+     * produced, so a selected storm or a clicked marker changes the map and
+     * leaves the row describing the previous state.
+     *
+     * @param {Function|null} fn
+     */
+    setRowControlsListener(value) {
+      _rowControlsListener = typeof value === 'function' ? value : null;
     },
 
     /** The window currently in force. */
@@ -911,6 +1593,26 @@ export function createStormReportsLayer({
           onClick: () => self().setDate(day.date),
         })),
         {
+          id: 'storm-reports-clear-storm',
+          label: 'CLEAR STORM',
+          title: 'Show every report in the window again',
+          disabled: !ready || !_selectedStormId,
+          active: false,
+          onClick: () => self().clearStormSelection(),
+        },
+        {
+          id: 'storm-reports-outline',
+          label: 'OUTLINE',
+          // The title says what the shape is not, because that is the part
+          // that would otherwise be assumed.
+          title:
+            'Approximate circle around the selected storm - inferred from where ' +
+            'people reported, NOT a measured boundary',
+          disabled: !ready || !_selectedStormId,
+          active: _outlineVisible,
+          onClick: () => self().setOutlineVisible(!_outlineVisible),
+        },
+        {
           id: 'storm-reports-hail-1',
           label: '1\u2033',
           title: 'Hail an inch or larger',
@@ -983,11 +1685,35 @@ export function createStormReportsLayer({
             publish();
           },
         },
-        legend: HAIL_LEGEND.map((band) => ({
-          label: band.label,
-          color: band.color,
-          blurb: band.title,
-        })),
+        // The storm list, under the date field: the storms on the selected day,
+        // or on the same recent days the date chips offer when no day is
+        // chosen. A date with no storms in view yields no rows, and rowList
+        // hides an empty list rather than rendering a shell.
+        list: {
+          items: stormListItems(),
+          ariaLabel:
+            selected && selected === _options.toDate
+              ? `Storms on ${selected}`
+              : `Storms on the ${STORM_LIST_DAYS} most recent storm days`,
+        },
+        legend: [
+          ...HAIL_LEGEND.map((band) => ({
+            label: band.label,
+            color: band.color,
+            blurb: band.title,
+          })),
+          // Only while it is drawn. A legend entry for a shape nobody can see
+          // is noise, and this one needs its caveat wherever it is explained.
+          ...(_outlineVisible
+            ? [
+                {
+                  label: 'Storm outline (approximate)',
+                  color: OUTLINE_COLOR,
+                  blurb: OUTLINE_CAVEAT,
+                },
+              ]
+            : []),
+        ],
         info: panelInfo(),
       };
     },
@@ -1003,6 +1729,7 @@ export function createStormReportsLayer({
       _optionsDirty = true;
       repaintFromMemory();
       publish();
+      notifyRowControls();
     },
 
     /** Switch which hazard the layer is showing. */
@@ -1011,6 +1738,7 @@ export function createStormReportsLayer({
       _optionsDirty = true;
       repaintFromMemory();
       publish();
+      notifyRowControls();
     },
 
     /** Every storm in the current window, for a picker. */
@@ -1031,29 +1759,11 @@ export function createStormReportsLayer({
     },
 
     /**
-     * The reports belonging to one storm.
-     *
-     * By ordinal within the storm's own year, which is what separates two storms
-     * on the same day. Matching on date returned both storms' reports for either
-     * storm, and a day like 2025-05-16 carried sixty-five.
-     *
-     * Where the snapshot has no ordinals at all, or this year's events do not
-     * form one run in the list we were handed, it falls back to the day: every
-     * report that day is at least a report that day, which is a wider answer
-     * than the ordinal but never a narrower one.
+     * The reports belonging to one storm, worst first. See
+     * {@link module:layers/stormReports/index.reportsForStorm}.
      */
     getStormReports(stormId) {
-      const storm = _events.find((e) => e.id === stormId);
-      if (!storm) return [];
-      const year = yearOf(storm.date);
-      const ref = _ordinalYears.has(year) ? ordinalOf(storm) : null;
-      const matched =
-        ref === null
-          ? _visible.filter((r) => r.date === storm.date)
-          : _visible.filter(
-              (r) => yearOf(r.date) === year && stormRefOf(r) === ref,
-            );
-      return matched.sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
+      return reportsForStorm(stormId);
     },
 
     /** The card a click opens. */
@@ -1084,6 +1794,13 @@ export function createStormReportsLayer({
 
     destroy() {
       _request?.abort();
+      releaseInteraction();
+      unregisterPickOwner(STORM_REPORTS_ID);
+      // Same teardown as disable: a context record left pointing at an entity
+      // this layer has just removed keeps being served to voice and the cockpit
+      // as though it were still on the map.
+      releaseEntityContexts();
+      _rowControlsListener = null;
       overlayHost.clearSource(STORM_REPORTS_ID);
       if (_dataSource && _viewer) _viewer.dataSources.remove(_dataSource);
       _dataSource = null;

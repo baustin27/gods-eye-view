@@ -218,8 +218,18 @@ export function getActiveTrackedReadoutId() {
   return _activeEntryId;
 }
 
-/** Static-context layers whose click selection publishes the readout card. */
-const READOUT_CONTEXT_LAYERS = new Set(['alpr-cameras', 'local-adsb']);
+/**
+ * Static-context layers whose click selection publishes the readout card.
+ * A member's selection is held as `_selectedContext` and `publishEntity`ed
+ * straight from `record.entity`, so the card is built from the clicked
+ * entity's `gevLabelModel` rather than a Cesium trackedEntity. Outside this
+ * set a selection only ever clears a previous card.
+ */
+const READOUT_CONTEXT_LAYERS = new Set([
+  'alpr-cameras',
+  'local-adsb',
+  'storm-reports',
+]);
 
 /**
  * Initialize the model bridge and selection listeners. No render listener is

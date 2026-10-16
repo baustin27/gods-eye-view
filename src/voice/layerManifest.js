@@ -210,7 +210,7 @@ const layers = [
         county: ['t'],
         state: ['t'],
         narrative: ['t'],
-        date: ['d'],
+        date: ['ms'],
         hazard: ['t'],
         identitySource: ['t'],
       },

@@ -424,6 +424,200 @@ export function framingFor(reports) {
   };
 }
 
+/* -------------------------------------------------------------------------
+ * The approximate storm outline.
+ *
+ * NCEI's Storm Events Database publishes no polygons. A storm event row
+ * carries a time window, counties, states, hazards and the magnitudes people
+ * reported - and no geometry of any kind. So the only outline this layer can
+ * draw is a circle drawn around the places reports came FROM, and that circle
+ * is not where hail fell: it is a guess at the outer bound of where enough
+ * people were watching for anything to be measured.
+ *
+ * It therefore ships off, behind a toggle, and says so in its own words
+ * wherever it is drawn.
+ * ---------------------------------------------------------------------- */
+
+/** Ring resolution. Enough to read as a circle at any usable zoom. */
+export const OUTLINE_POINT_COUNT = 64;
+
+/**
+ * A one-report storm would otherwise frame a zero-radius ring: three identical
+ * points is not a polygon, and Cesium rejects it. County-scale is the smallest
+ * honest circle - it is roughly what one reporting location speaks for.
+ */
+export const MIN_OUTLINE_RADIUS_KM = 8;
+
+/**
+ * The widest circle drawn. Beyond this the reports are not one storm's core,
+ * they are the day's footprint, and a ring over a third of a state reads as a
+ * measurement when it is nothing of the kind.
+ */
+export const MAX_OUTLINE_RADIUS_KM = 400;
+
+/**
+ * The wording that travels with every approximate outline.
+ *
+ * Read by the panel info line and the legend. It is a claim about what the
+ * shape is NOT, which is the part a reader has to be told: the record has no
+ * polygons, so this circle is an inference about where reports came from, not a
+ * boundary of where weather happened.
+ */
+export const OUTLINE_CAVEAT =
+  'Approximate outline: a circle around where people reported, not a measured ' +
+  'storm boundary. NCEI publishes no storm polygons - only times, counties and ' +
+  'states - so the edge is inferred from report locations and the hail may have ' +
+  'fallen well outside it.';
+
+/**
+ * The point a bearing and distance lands on, by the great-circle formula.
+ *
+ * Exported because the ring generator's accuracy is a testable claim and not a
+ * detail worth hiding.
+ *
+ * @param {number} lat Degrees.
+ * @param {number} lon Degrees.
+ * @param {number} bearingRad Clockwise from north.
+ * @param {number} distanceKm
+ * @returns {{lon: number, lat: number}}
+ */
+export function destinationPointKm(lat, lon, bearingRad, distanceKm) {
+  const toRad = Math.PI / 180;
+  const angular = distanceKm / EARTH_RADIUS_KM;
+  const lat1 = lat * toRad;
+  const lon1 = lon * toRad;
+  const sinLat1 = Math.sin(lat1);
+  const cosLat1 = Math.cos(lat1);
+  const sinLat2 =
+    Math.sin(lat1) * Math.cos(angular) +
+    cosLat1 * Math.sin(angular) * Math.cos(bearingRad);
+  const lat2 = Math.asin(Math.min(1, Math.max(-1, sinLat2)));
+  const lon2 =
+    lon1 +
+    Math.atan2(
+      Math.sin(bearingRad) * Math.sin(angular) * cosLat1,
+      Math.cos(angular) - sinLat1 * sinLat2,
+    );
+  // Wrapped into [-180, 180] so a ring that crosses the antimeridian is still
+  // one ring and never a vertex at 540 degrees.
+  const lonDeg = (lon2 * 180) / Math.PI;
+  const wrapped = ((((lonDeg + 180) % 360) + 360) % 360) - 180;
+  return { lon: wrapped, lat: (lat2 * 180) / Math.PI };
+}
+
+/**
+ * The ring points of the approximate outline for a framing.
+ *
+ * Clamps the radius to the county-scale floor and the regional ceiling, walks
+ * one full turn in equal bearings, and DROPS any point that is not finite -
+ * Cesium turns one non-finite coordinate into a NaN vertex, and a single NaN
+ * vertex makes the whole polygon's centre NaN, which surfaces as "origin has a
+ * NaN component" and takes the shape with it.
+ *
+ * Pure, so the geometry is testable without a viewer.
+ *
+ * @param {{lat: number, lon: number, radiusKm?: number}|null} frame
+ * @param {{count?: number}} [options]
+ * @returns {Array<{lon: number, lat: number}>} `[{lon, lat}]` in ring order.
+ */
+export function outlineRing(frame, { count = OUTLINE_POINT_COUNT } = {}) {
+  if (!frame || !Number.isFinite(frame.lat) || !Number.isFinite(frame.lon))
+    return [];
+  const steps =
+    Number.isInteger(count) && count >= 3 ? count : OUTLINE_POINT_COUNT;
+  const measured = Number.isFinite(frame.radiusKm) ? frame.radiusKm : 0;
+  const radiusKm = Math.min(
+    Math.max(
+      measured > 0 ? measured : MIN_OUTLINE_RADIUS_KM,
+      MIN_OUTLINE_RADIUS_KM,
+    ),
+    MAX_OUTLINE_RADIUS_KM,
+  );
+  const points = [];
+  for (let step = 0; step < steps; step += 1) {
+    const bearing = (step / steps) * 2 * Math.PI;
+    const point = destinationPointKm(frame.lat, frame.lon, bearing, radiusKm);
+    if (!Number.isFinite(point.lon) || !Number.isFinite(point.lat)) continue;
+    points.push(point);
+  }
+  return points;
+}
+
+/** Minutes past midnight UTC, as `HH:MMZ`, or null when unreadable. */
+export function stormMinuteLabel(minute) {
+  if (!Number.isFinite(minute) || minute < 0 || minute >= 24 * 60) return null;
+  const hours = Math.floor(minute / 60);
+  const rest = Math.floor(minute % 60);
+  return `${String(hours).padStart(2, '0')}:${String(rest).padStart(2, '0')}Z`;
+}
+
+/**
+ * A storm's time window, as `HH:MMZ-HH:MMZ`, or just the start when there is
+ * no end. The events table carries begin and end minutes for most storms and
+ * not for the rest, so both readings have to be honest.
+ */
+export function stormTimeRange(storm) {
+  const begin = stormMinuteLabel(storm?.beginMinute);
+  if (!begin) return null;
+  const end = stormMinuteLabel(storm?.endMinute);
+  return end && end !== begin ? `${begin}-${end}` : begin;
+}
+
+/** Where a storm was reported, in one line, at two counties' worth of names. */
+export function stormPlaces(storm, limit = 2) {
+  const counties = (storm?.counties || []).filter(Boolean);
+  const states = (storm?.states || []).filter(Boolean);
+  const shown = counties.slice(0, limit);
+  if (counties.length > limit) shown.push(`+${counties.length - limit} more`);
+  const parts = [shown.join(', '), states.join(' ')].filter(Boolean);
+  return parts.join(' · ') || null;
+}
+
+/**
+ * The worst magnitude a storm is known to have carried.
+ *
+ * A zero or absent magnitude is a storm where nobody measured that hazard, not
+ * a storm that measured zero, so it is left out and the hazards it did carry
+ * are named instead.
+ */
+export function stormMagnitude(storm) {
+  const bits = [];
+  if (Number.isFinite(storm?.maxHailIn) && storm.maxHailIn > 0)
+    bits.push(`${trimInches(storm.maxHailIn)}\" hail`);
+  if (Number.isFinite(storm?.maxWindKt) && storm.maxWindKt > 0)
+    bits.push(`${storm.maxWindKt} kt wind`);
+  if (bits.length) return bits.join(' / ');
+  const hazards = (storm?.hazards || []).filter(Boolean);
+  return hazards.length ? hazards.join(' + ') : null;
+}
+
+/**
+ * One line describing a storm, for the storm list and the panel alike.
+ *
+ * `reportCount` is passed in rather than read from the storm because the storm
+ * row's own count is NCEI's total for the event, while the line has to describe
+ * what is actually in view under the current hazard and size filter. When the
+ * two disagree the visible number is the honest one.
+ *
+ * @param {object} storm
+ * @param {number|null} [reportCount] Reports currently in view.
+ * @returns {string}
+ */
+export function stormHeadline(storm, reportCount = null) {
+  const count =
+    Number.isInteger(reportCount) && reportCount >= 0
+      ? reportCount
+      : Number.isInteger(storm?.reportCount)
+        ? storm.reportCount
+        : 0;
+  const parts = [`${count} report${count === 1 ? '' : 's'}`];
+  const magnitude = stormMagnitude(storm);
+  if (magnitude) parts.push(magnitude);
+  const places = stormPlaces(storm);
+  if (places) parts.push(places);
+  return parts.join(' · ');
+}
+
 /** Closer than this loses the county context; higher and the reports are dots. */
 export const MIN_FRAME_ALTITUDE_M = 60_000;
 export const MAX_FRAME_ALTITUDE_M = 1_500_000;
