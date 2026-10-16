@@ -174,6 +174,51 @@ function stringOption(key, token, defaultValue) {
   });
 }
 
+/**
+ * A free-text value that KEEPS ITS CASE, unlike `stringOption`.
+ *
+ * Used for the isolation area, which is a name a person typed. Lowercasing it
+ * would not break resolution - `resolveIsolation` is case-insensitive - but a
+ * link that reopened "New York State" in a field reading "new york state"
+ * would look like the app had mangled it, and that reads as a bug even when
+ * the behaviour is identical.
+ *
+ * The grammar is deliberately permissive but bounded: an area name is a short
+ * phrase, and an unbounded string in a URL is a way to put a megabyte in
+ * someone's address bar.
+ */
+function areaNameOption(key, token, defaultValue = null) {
+  const MAX = 80;
+  return Object.freeze({
+    key,
+    token,
+    defaultValue,
+    absentValue: null,
+    normalize: (value) => {
+      const raw =
+        typeof value === 'number' && Number.isFinite(value)
+          ? String(value)
+          : typeof value === 'string'
+            ? value
+            : null;
+      if (raw === null) return null;
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      // Newlines and control characters have no business in a name and would
+      // make the encoded value ambiguous to read in a URL.
+      if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+      return trimmed.length > MAX ? trimmed.slice(0, MAX) : trimmed;
+    },
+    encode: (value) => String(value),
+    decode: (value) => {
+      if (typeof value !== 'string') return null;
+      const trimmed = value.trim();
+      if (!trimmed || /[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+      return trimmed.length > MAX ? trimmed.slice(0, MAX) : trimmed;
+    },
+  });
+}
+
 function enumOption(
   key,
   token,
@@ -297,6 +342,11 @@ function imageryPinOption(key, token) {
 }
 
 const OPTION_GROUPS = Object.freeze({
+  // The area is encoded as the NAME, never as geometry: a link carrying New
+  // York's boundary would put kilobytes of coordinates in a URL and would
+  // break the next time the boundaries pack is rebuilt. Re-resolving a name is
+  // deterministic and costs one lookup.
+  isolation: Object.freeze([areaNameOption('area', 'a', null)]),
   traffic: Object.freeze([
     enumOption('roadMode', 'r', null, ['tomtom', 'osm', 'hybrid'], {
       tomtom: 't',
@@ -635,10 +685,17 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
     disposition: 'enabled+options',
     optionOwner: 'flights',
   }),
-  // Isolation carries no option groups. The area a share link names is encoded
-  // as the text the person typed and re-resolved on load, so the option codec
-  // would only be carrying a second spelling of something already in the link.
-  Object.freeze({ id: 'isolation', token: '6', disposition: 'enabled-only' }),
+  // Isolation encodes its area in the share link, so it IS an options layer.
+  // An earlier version shipped as enabled-only with no option group and the
+  // codec silently dropped the area: the layer round-tripped its own
+  // getParams/setParams perfectly in isolation and the URL still reopened
+  // with nothing isolated. The layer-level test passed the whole time.
+  Object.freeze({
+    id: 'isolation',
+    token: '6',
+    disposition: 'enabled+options',
+    optionOwner: 'isolation',
+  }),
   Object.freeze({ id: 'local-dams', token: 'q', disposition: 'enabled-only' }),
   Object.freeze({
     id: 'local-datacenters',

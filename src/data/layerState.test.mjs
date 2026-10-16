@@ -19,6 +19,7 @@ import {
   encodeLayerStateParams,
   nextLayerStateToken,
   normalizeLayerState,
+  optionSpecs,
   parseStoredLayerState,
   serializeStoredLayerState,
   validateLayerStateAllocations,
@@ -199,6 +200,50 @@ function encode(state) {
   encodeLayerStateParams(params, state);
   return params.toString();
 }
+
+test('a share link reopens the isolation area, name and all', () => {
+  // The layer-level round-trip in layers/isolation/layerRender.test.mjs passes
+  // whether or not the CODEC carries the area. Only this test would have caught
+  // isolation shipping as enabled-only with the area silently dropped from
+  // every URL while its own getParams/setParams looked perfect.
+  // Written with the real encoder, so the test cannot pass against a URL shape
+  // the codec never emits.
+  const params = new URLSearchParams([['v', '2']]);
+  encodeLayerStateParams(params, {
+    enabledLayerIds: ['isolation'],
+    options: { isolation: { area: 'New York State' } },
+  });
+  assert.match(
+    params.get('lo'),
+    /6\.a\.New York State/,
+    'the area is in the URL',
+  );
+  const decoded = decodeLayerStateParams(params);
+  assert.deepEqual(decoded.enabledLayerIds, ['isolation']);
+  // Case survives: a link that reopened "New York State" in a field reading
+  // "new york state" looks like the app mangled it, even though resolution is
+  // case-insensitive and the behaviour is identical.
+  assert.equal(decoded.options.isolation.area, 'New York State');
+});
+
+test('an isolation link with no area encodes no bucket at all', () => {
+  const params = new URLSearchParams([['v', '2']]);
+  encodeLayerStateParams(params, { enabledLayerIds: ['isolation'] });
+  assert.equal(
+    params.get('lo').includes('6'),
+    false,
+    'an absent area stays absent rather than encoding an empty one',
+  );
+});
+
+test('the isolation area is bounded and control characters are refused', () => {
+  const area = optionSpecs('isolation').find((o) => o.key === 'area');
+  assert.ok(area, 'isolation owns an area option');
+  assert.equal(area.normalize('x'.repeat(500)).length, 80, 'bounded');
+  assert.equal(area.normalize('New\nYork'), null, 'a newline is not a name');
+  assert.equal(area.normalize('   '), null, 'whitespace is not a name');
+  assert.equal(area.normalize('New York State'), 'New York State', 'case kept');
+});
 
 test('production registry is exact, canonical, and rejects incomplete contracts', async () => {
   assert.equal(validateLayerStateRegistry(), true);
