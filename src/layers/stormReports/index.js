@@ -3,18 +3,26 @@
  *
  * Where the hail/wind layer paints a blended score across 0.25-degree cells,
  * this draws the reports themselves: one point per observation, sized and
- * coloured by magnitude, filterable by date, county and size, and clickable
- * through to the storm it belonged to.
+ * coloured by magnitude, filterable by date, county and size, isolatable to an
+ * area, and clickable through to the storm it belonged to.
  *
  * That level is the one a canvasser works from, and it is only possible
  * because the snapshot keeps the day. The aggregate layer averages seventy
  * years; this answers "what fell, where, how big, and on what day".
+ *
+ * ISOLATION. Three axes, deliberately separate: the options (hazard, size and
+ * window), the storm selection, and the area (`setIsolation`). Someone working
+ * one storm day inside one state is using all three at once, so each is held in
+ * its own state and applied from it, and clearing one never clears another.
+ * "Inside" is answered by `data/isolation.js` and never here — see
+ * {@link module:layers/stormReports/index.insideIsolation}.
  * @module layers/stormReports/index
  */
 
 import {
   hailBand,
   HAIL_BANDS,
+  isolationLine,
   magnitudeLabel,
   framingFor,
   matchesFilter,
@@ -36,6 +44,7 @@ import {
   selectEntityContext,
 } from '../../data/contextStore.js';
 import { isPointerFree } from '../../data/inputOwnership.js';
+import { areaContains, describeIsolation } from '../../data/isolation.js';
 import {
   registerPickOwner,
   unregisterPickOwner,
@@ -78,6 +87,11 @@ export const STORM_LIST_DAYS = 12;
 
 /** Stroke and wash for the approximate outline. */
 const OUTLINE_COLOR = '#7fe6ed';
+
+/** Verdict-cache entries. 0 is "not asked yet", so it has to mean nothing. */
+const UNTESTED = 0;
+const INSIDE = 1;
+const OUTSIDE = 2;
 
 /** Shareable options, all defaulted so an absent option means the default. */
 /**
@@ -330,6 +344,19 @@ export function createStormReportsLayer({
   // stay reachable or the outline, the list and the card would all read from
   // the selection they are describing.
   let _scoped = [];
+  // The ISOLATION axis, beside the option axis and the storm axis rather than
+  // folded into either. A date window answers "which days" and a size floor
+  // "how big"; an area answers "where", and the three are chosen independently —
+  // a person canvassing one storm day inside one state is using all three, and
+  // clearing one must never silently clear the others.
+  let _isolation = null;
+  let _inArea = [];
+  // The inside/outside verdict per packed row, kept until the packed array or the
+  // area changes. Tri-state, and filled in only for the rows the option filter let
+  // through. See `isolationFlags` for what that buys.
+  let _flags = null;
+  let _flagsPacked = null;
+  let _flagsArea = null;
   let _contextIds = new Set();
   let _selectedReportId = null;
   let _outlineVisible = false;
@@ -476,6 +503,103 @@ export function createStormReportsLayer({
     return true;
   }
 
+  /**
+   * The reports of a set that fall inside the isolation area.
+   *
+   * `areaContains` is the whole answer and this deliberately does not re-derive
+   * it. Two point-in-polygon implementations in one app is two answers, and they
+   * would drift at exactly the cases the data module documents (the antimeridian,
+   * a hole in a unit's geometry). `areaContains` also rejects on the bounding box
+   * before it walks a single vertex, which is the difference between a filter
+   * change and a visible hitch — see the pre-reject note in data/isolation.js and
+   * the layer test that counts the scans.
+   *
+   * With no area set, the set passes through untouched, so an un-isolated layer
+   * pays nothing at all for the axis being there.
+   *
+   * @param {object[]} reports
+   * @returns {object[]}
+   */
+  function insideIsolation(reports) {
+    const flags = isolationFlags();
+    if (!flags) return reports;
+    const inside = [];
+    for (const report of reports) {
+      const { ordinal } = report;
+      // `ordinal` is the row's index in the packed array `flags` was built for,
+      // so this is the same row and not a similar one. An ordinal outside it is
+      // a row this layer did not unpack, and it is not an inside one.
+      if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= flags.length)
+        continue;
+      if (flags[ordinal] === UNTESTED) {
+        const row = _packed[ordinal];
+        // Slots 4 and 5 of the packed tuple, read the same way `unpack` reads
+        // them. This is the one place that knows the layout; `unpack` owns the
+        // rest, and a slot moving would break both rather than one silently.
+        flags[ordinal] = areaContains(_isolation.area, row[4], row[5])
+          ? INSIDE
+          : OUTSIDE;
+      }
+      if (flags[ordinal] === INSIDE) inside.push(report);
+    }
+    return inside;
+  }
+
+  /**
+   * The verdict cache for the current area, or null when there is none.
+   *
+   * One byte per packed row, tri-state and LAZY: a row is only ever tested when
+   * the option filter actually lets it through, and never twice for the same
+   * area. An isolation outlives the filter changes made under it, so without
+   * this, picking a hail floor after isolating re-walks the geometry of every
+   * row the floor has just removed — measured on the shipped six-year record at
+   * 72 ms for Texas and 1.6 s for the whole country, per click.
+   *
+   * The packed array is replaced whenever a year is (re)loaded, and an area is
+   * replaced when the isolation changes, so a stale verdict is never read: the
+   * identity check IS the invalidation, and it is why a row that is no longer
+   * in view does not hold a place in the array that could go stale behind it.
+   *
+   * @returns {Uint8Array|null} null when there is no area or nothing loaded
+   */
+  function isolationFlags() {
+    const area = _isolation?.area;
+    const packed = _packed;
+    if (!area || !packed) return null;
+    if (_flagsPacked !== packed || _flagsArea !== area || !_flags) {
+      _flags = new Uint8Array(packed.length);
+      _flagsPacked = packed;
+      _flagsArea = area;
+    }
+    return _flags;
+  }
+
+  /**
+   * The panel's one isolation line, or null when no area is set.
+   *
+   * Counted from whichever set is named, so a storm's card quotes its own
+   * reports rather than the whole day's: with a storm selected the option-axis
+   * total is a day's, and "12 of 40 reports inside Texas" beside a one-storm
+   * view is a number about something the person is not looking at.
+   *
+   * @param {string} [subject] what the counts are of
+   * @param {object[]} [reports] that set, or the whole option-axis set
+   * @returns {string|null}
+   */
+  function isolationPanelLine(subject = 'reports', reports = null) {
+    if (!_isolation) return null;
+    const counted = reports || _scoped;
+    // `_inArea` IS `insideIsolation(_scoped)`, so the unscoped case re-reads the
+    // answer applyFilter already paid for instead of scanning the window again.
+    const inside = reports ? insideIsolation(reports).length : _inArea.length;
+    return isolationLine(_isolation.describe, {
+      inside,
+      total: counted.length,
+      active: _isolation.active,
+      subject,
+    });
+  }
+
   function applyFilter(packed, { narrowToStorm = true } = {}) {
     const { hazard, minHailIn, minWindKt, fromDate, toDate } = _options;
     // The ordinal is the row's index in the year file, so it survives filtering
@@ -493,14 +617,26 @@ export function createStormReportsLayer({
     // The option axis alone: hazard, size, window. This is the set the storm
     // axis narrows, and the set every question about a storm is answered from.
     _scoped = rows.map(({ row, index }) => unpack(row, index));
+    // The isolation axis, applied between the options and the storm selection.
+    // `_scoped` is deliberately NOT narrowed here: a storm's own record stays
+    // reachable whatever area is set, because the storm card describing a
+    // selection must not be drawn from an empty set.
+    //
+    // The inside set is computed even while the axis is switched off, because
+    // that is the number the panel needs to say what turning it on would do —
+    // and because a switch whose filter quietly stops when you look away is
+    // indistinguishable from a broken one. The filter itself is the `active`
+    // gate below.
+    _inArea = insideIsolation(_scoped);
     // A storm cannot outlive the window it belongs to. The date filter is the
     // OUTER axis - it is what decides which days exist - so a selection the
     // window no longer covers is dropped rather than left selecting nothing.
     dropStormOutsideWindow();
+    const placed = isolationIsOn() ? _inArea : _scoped;
     _visible =
       narrowToStorm && _selectedStormId
-        ? _scoped.filter((report) => stormIdFor(report) === _selectedStormId)
-        : _scoped;
+        ? placed.filter((report) => stormIdFor(report) === _selectedStormId)
+        : placed;
     indexOrdinalYears();
     _stats = {
       total: _visible.length,
@@ -509,6 +645,7 @@ export function createStormReportsLayer({
       worst: worstFirst(_visible, hazard, 1)[0] || null,
       storms: _events.length,
       scopedTotal: _scoped.length,
+      insideIsolation: _inArea.length,
     };
     render();
     publish();
@@ -812,6 +949,11 @@ export function createStormReportsLayer({
     return `storm-report-${report.date}-${report.ordinal}-${report.hazard}-${report.size}`;
   }
 
+  /** Is the isolation axis currently narrowing the map? */
+  function isolationIsOn() {
+    return _isolation?.active === true;
+  }
+
   /** Point radius in pixels: magnitude-scaled, then clamped. */
   function pixelSizeFor(report) {
     // At 155,737 reports an unclamped radius turns a national view into a
@@ -862,14 +1004,22 @@ export function createStormReportsLayer({
    * there - registered without it, the selection is live but the readout card
    * renders empty.
    *
+   * `selected` also means "inside the isolation" while an area is on. The
+   * isolation already filtered the map down to exactly those reports, so there
+   * is no second list to maintain and no new rendering path: whatever draws
+   * `selected` for a clicked report draws it for an isolated one, and turning
+   * the isolation off leaves the click selection as the only thing marking a
+   * marker.
+   *
    * @param {object} report
    * @param {object} band
-   * @param {boolean} [selected] Defaults to whether this is the selected report.
+   * @param {boolean} [selected] Defaults to whether this report is the selected
+   *   one or falls inside the active isolation.
    */
   function labelModelFor(report, band, selected = undefined) {
     const isSelected =
       selected === undefined
-        ? _selectedReportId === entityIdFor(report)
+        ? _selectedReportId === entityIdFor(report) || isolationIsOn()
         : selected;
     return {
       title: magnitudeLabel(report),
@@ -1109,7 +1259,11 @@ export function createStormReportsLayer({
               metadata: band
                 ? null
                 : { caveat: 'No measured magnitude on this report.' },
-              selected: _selectedReportId === entityIdFor(report),
+              // Same mark as the label model, for the same reason: inside an
+              // active isolation, every card on offer is one of the inside
+              // reports.
+              selected:
+                _selectedReportId === entityIdFor(report) || isolationIsOn(),
             };
           },
         )
@@ -1195,6 +1349,8 @@ export function createStormReportsLayer({
     // would say something the headline does not.
     const places = stormPlaces(storm);
     if (places && count && !headline.includes(places)) lines.push(places);
+    const isolation = isolationPanelLine("this storm's reports", reports);
+    if (isolation) lines.push(isolation);
     const window = stormTimeRange(storm);
     if (window) lines.push(`reported ${window}`);
     if (storm.narrative) lines.push(storm.narrative);
@@ -1226,6 +1382,11 @@ export function createStormReportsLayer({
     const from = _options.fromDate;
     const to = _options.toDate;
     if (from) parts.push(from === to ? from : `${from} to ${to}`);
+    // Beside the dates on purpose: those two are the axes, and a person who
+    // cannot tell which of them is in force is looking at a map they did not
+    // ask for.
+    const isolation = isolationPanelLine();
+    if (isolation) parts.push(isolation);
     if (_outlineVisible) parts.push(OUTLINE_CAVEAT);
     const radar = comparisonLine();
     if (radar) parts.push(radar);
@@ -1572,6 +1733,92 @@ export function createStormReportsLayer({
     },
 
     /**
+     * Isolate the layer to an area: keep the reports that fall inside it, and
+     * mark them as the ones that do.
+     *
+     * The shape is whatever `resolveIsolation` hands back in its `area` field —
+     * `{kind, name, bbox, polygons, ring, areaKm2, …}` for a boundary, and the
+     * same shape with `polygons: []` and a box around the point for a place.
+     * The `{area}` wrapper is accepted too, because every caller that has just
+     * resolved a name has that wrapper to hand and one shape accepted is one
+     * shape that cannot be passed wrong.
+     *
+     * `null` clears the axis. It does NOT touch the date window: the two are
+     * independent (see the axis note on `_isolation`), and clearing one because
+     * the other changed is the bug this separation exists to prevent.
+     *
+     * @param {object|null} area
+     * @returns {boolean} whether an area is set afterwards
+     */
+    setIsolation(area) {
+      const unit = area && typeof area === 'object' ? area : null;
+      _isolation = unit
+        ? {
+            area: unit,
+            active: true,
+            // Stated once, here, by the module that owns the wording: a place
+            // must read as approximate everywhere it surfaces, not just on the
+            // control that set it.
+            describe: describeIsolation(unit),
+          }
+        : null;
+      if (!repaintFromMemory()) {
+        // Nothing in memory yet - the next update() picks this up.
+        _loaded = false;
+        _optionsDirty = true;
+      }
+      publish();
+      notifyRowControls();
+      return Boolean(_isolation);
+    },
+
+    /**
+     * Turn the isolation filter on or off, keeping the area.
+     *
+     * Separate from `setIsolation(null)` on purpose: the chip is a switch for a
+     * chosen area, so the off position has to remember what it was filtering to
+     * or turning it back on becomes a re-resolve.
+     *
+     * @param {boolean} active
+     * @returns {boolean} false when there is no area to isolate to
+     */
+    setIsolationActive(active) {
+      if (!_isolation) return false;
+      const on = active !== false;
+      if (_isolation.active !== on) {
+        _isolation = { ..._isolation, active: on };
+        if (!repaintFromMemory()) {
+          _loaded = false;
+          _optionsDirty = true;
+        }
+      }
+      publish();
+      notifyRowControls();
+      return on;
+    },
+
+    /**
+     * The isolation in force, or null.
+     *
+     * `inside` of `total` is the option-axis population under the current date,
+     * size and hazard filter — so the numbers answer "how much of what I am
+     * looking at", which is the only question an isolation is asked.
+     *
+     * @returns {{area: object, active: boolean, describe: string,
+     *            inside: number, total: number}|null}
+     */
+    getIsolation() {
+      if (!_isolation) return null;
+      return {
+        area: _isolation.area,
+        active: _isolation.active,
+        describe: _isolation.describe,
+        inside: _inArea.length,
+        total: _scoped.length,
+      };
+    },
+
+    /**
      * Repaint this row's controls when the layer's state changes.
      *
      * The panel caches each row's controls and re-reads them only through this
@@ -1689,6 +1936,21 @@ export function createStormReportsLayer({
           disabled: !ready || !_selectedStormId,
           active: _outlineVisible,
           onClick: () => self().setOutlineVisible(!_outlineVisible),
+        },
+        {
+          id: 'storm-reports-isolate',
+          label: 'ISOLATE',
+          // Disabled rather than hidden when there is no area: an ISOLATE chip
+          // that is always live and does nothing is worse than one that says it
+          // has nothing to isolate to.
+          title: _isolation
+            ? isolationIsOn()
+              ? `Stop filtering to ${_isolation.describe}`
+              : `Filter to ${_isolation.describe}`
+            : 'No area to isolate to - pick a place or a boundary first',
+          disabled: !_isolation,
+          active: isolationIsOn(),
+          onClick: () => self().setIsolationActive(!isolationIsOn()),
         },
         {
           id: 'storm-reports-hail-1',

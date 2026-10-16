@@ -285,6 +285,8 @@
     },
     "./layers/stormReports": "./src/layers/stormReports/index.js",
     "./layers/stormReports/model": "./src/layers/stormReports/model.js",
-    "./layers/stormReports/source": "./src/layers/stormReports/source.js"
+    "./layers/stormReports/source": "./src/layers/stormReports/source.js",
+    "./layers/isolation": "./src/layers/isolation/index.js",
+    "./layers/isolation/model": "./src/layers/isolation/model.js"
   }
 }

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { gridCell } from '../../data/stormCrossReference.js';
+import { polygonsContain } from '../../data/adminBoundaries.js';
+import { boxesContain, resolveIsolation } from '../../data/isolation.js';
 import {
   getContextStore,
   getSelectedEntityContext,
@@ -1692,4 +1694,510 @@ test('an empty or inverted window is refused rather than half-applied', async ()
   assert.equal(layer.setWindow(-5, 900), true, 'out of range clamps');
   assert.equal(layer.getWindow().fromDate, '2026-06-01');
   assert.equal(layer.getWindow().toDate, '2026-06-30');
+});
+
+/* ------------------------------------------------------------------ *
+ * Isolation — the third axis, beside the dates and beside the storm.
+ * ------------------------------------------------------------------ */
+
+/**
+ * A square area, in the shape `resolveIsolation` returns in its `area` field:
+ * `{kind, name, bbox, polygons, ring, …}`. Hand-built rather than resolved so a
+ * fixture failure is about this layer rather than about a boundary bundle; the
+ * pre-reject tests below use the real Texas for exactly that reason.
+ */
+function squareArea(name, west, south, east, north, region = null) {
+  const ring = [
+    [west, south],
+    [east, south],
+    [east, north],
+    [west, north],
+    [west, south],
+  ];
+  return {
+    kind: 'state',
+    name,
+    region,
+    bbox: [west, south, east, north],
+    polygons: [[ring]],
+    ring,
+  };
+}
+
+/** A place, in the other shape: no geometry, a box around the point. */
+function placeArea(name, lat, lon) {
+  return {
+    kind: 'place',
+    name,
+    country: 'United States',
+    bbox: [lon - 0.25, lat - 0.25, lon + 0.25, lat + 0.25],
+    polygons: [],
+    ring: null,
+    label: { lat, lon },
+    approximate: true,
+  };
+}
+
+/** Small enough to read in a failure message. */
+const BOX = squareArea('Oklahoma', -98.1, 33.6, -94.4, 37.0);
+
+/** The day index a spread of rows needs, built from the rows themselves. */
+const daysFor = (rows) => {
+  const days = {};
+  for (const row of rows) days[row[0]] = { hail: 1, wind: 0, total: 1 };
+  return { years: ['2026'], days };
+};
+
+/** Rows either side of {@link BOX}, over two different days. */
+function isolationLayer() {
+  const rows = [
+    REPORT(2, { lat: 35.5, lon: -97.0 }),
+    REPORT(2, { lat: 34.2, lon: -95.4, date: '2026-08-11' }),
+    REPORT(1.25, { lat: 36.1, lon: -96.1 }),
+    REPORT(2, { lat: 40.71, lon: -74.0, county: 'New York' }),
+    REPORT(2, { lat: 29.76, lon: -95.37, county: 'Harris' }),
+  ];
+  return makeLayer(rows, [], daysFor(rows));
+}
+
+/**
+ * `count` hail reports spread deterministically over the contiguous US, as
+ * packed rows: `[date, minute, hazard, size, lat, lon, …]`. A fixed LCG rather
+ * than Math.random, because a filter test that fails one run in fifty is a test
+ * that gets deleted.
+ */
+function hailSpread(count, seed = 20260810) {
+  let state = seed >>> 0;
+  const next = () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  return Array.from({ length: count }, (unused, i) => [
+    '2026-08-10',
+    300 + i,
+    0,
+    1 + next() * 2,
+    25 + next() * 24,
+    -125 + next() * 59,
+    '40027',
+    'OK',
+    'Cleveland',
+    0,
+    '',
+    'spc-bulk',
+    0,
+    -1,
+  ]);
+}
+
+test('an isolation filters the map to the reports that fall inside it', async () => {
+  const viewer = stubViewer();
+  const { layer } = isolationLayer();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(drawn(viewer).length, 5, 'every report before the isolation');
+
+  assert.equal(layer.setIsolation(BOX), true, 'an area is now set');
+  assert.equal(drawn(viewer).length, 3, 'and only what is inside Oklahoma');
+  const state = layer.getIsolation();
+  assert.equal(state.inside, 3);
+  assert.equal(state.total, 5, 'of the reports the option filter accepted');
+  assert.equal(state.active, true);
+  assert.match(state.describe, /Oklahoma/);
+  assert.ok(
+    drawn(viewer).every((entity) => entity.properties.county !== 'New York'),
+    'a point outside the polygon is out, not merely outside the box',
+  );
+
+  assert.equal(layer.setIsolation(null), false, 'null clears the axis');
+  assert.equal(layer.getIsolation(), null);
+  assert.equal(drawn(viewer).length, 5, 'and every report is back');
+});
+
+test('an isolation set before the data lands still applies on load', async () => {
+  // The manager hands a layer its options before the first load, when there is
+  // nothing to filter yet. An isolation only remembered, never applied, would
+  // leave the map showing the whole country under a panel that says Oklahoma.
+  const { layer } = isolationLayer();
+  layer.setIsolation(BOX);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  assert.equal(layer.getIsolation().inside, 3);
+});
+
+test('the reports inside an isolation carry the selected mark', async () => {
+  // No new rendering path: `selected` on the label model is the hook a clicked
+  // report already uses, so whatever draws it for a click draws it here.
+  const viewer = stubViewer();
+  const { layer } = isolationLayer();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+
+  layer.setIsolation(BOX);
+  const marked = drawn(viewer);
+  assert.equal(marked.length, 3);
+  assert.ok(
+    marked.every((entity) => entity.gevLabelModel.selected === true),
+    'every report on the map is one of the inside ones',
+  );
+
+  layer.setIsolationActive(false);
+  const unmarked = drawn(viewer);
+  assert.equal(unmarked.length, 5, 'off means every report is on the map');
+  assert.ok(
+    unmarked.every((entity) => entity.gevLabelModel.selected === false),
+    'and nothing is marked while the isolation is off',
+  );
+
+  // The click still marks its own report, and is not the same mark — see the
+  // test below, which drives the real click path.
+});
+
+test('a clicked report keeps its own mark while an isolation is on', async () => {
+  // Same hook, two reasons: "you picked this" and "this is inside Oklahoma". A
+  // panel that cannot tell them apart is worse than no mark, and the click must
+  // survive the isolation being switched off and on again.
+  const host = contextHost();
+  try {
+    const viewer = stubViewer();
+    let picked = null;
+    const harness = clickableViewer(() => picked);
+    const rows = [
+      REPORT(2, { lat: 35.5, lon: -97.0 }),
+      REPORT(2, { lat: 40.71, lon: -74.0 }),
+    ];
+    const { layer, overlayHost } = makeLayer(rows, [], {
+      ...daysFor(rows),
+      viewer: harness.viewer,
+      createInputHandler: harness.createInputHandler,
+    });
+    layer.init(harness.viewer);
+    layer.enable();
+    await layer.update();
+
+    const [first] = drawn(harness.viewer);
+    picked = { id: first };
+    harness.click();
+    assert.equal(layer.getSelectedReportId(), first.id);
+    assert.ok(
+      overlayHost.entries.at(-1).list.some((card) => card.selected === true),
+      'the card says so',
+    );
+
+    layer.setIsolation(squareArea('Oklahoma', -98.1, 33.6, -94.4, 37.0));
+    const inside = drawn(harness.viewer);
+    assert.equal(inside.length, 1, 'the isolation kept the clicked report');
+    assert.equal(
+      inside[0].gevLabelModel.selected,
+      true,
+      'now for both reasons at once, which is the same mark',
+    );
+
+    layer.setIsolationActive(false);
+    const back = drawn(harness.viewer);
+    assert.equal(back.length, 2);
+    assert.deepEqual(
+      back
+        .filter((entity) => entity.gevLabelModel.selected === true)
+        .map((entity) => entity.id),
+      [first.id],
+      'with the isolation off, the click is the only thing marking anything',
+    );
+  } finally {
+    host.restore();
+  }
+});
+
+test('the box pre-reject is load-bearing: only the rows the box keeps pay for a scan', async () => {
+  // The invariant data/isolation.js pins, exercised through THIS layer's filter,
+  // because a layer that grew its own point-in-polygon would pass the data test
+  // and still walk every vertex of the whole window on every filter change.
+  const texas = await resolveIsolation('Texas');
+  assert.ok(texas.ok, 'Texas resolves to an area with real polygons');
+  const rows = hailSpread(3000);
+  const { layer } = makeLayer(rows, [], daysFor(rows));
+  // No init(): `render()` needs a data source, and this test is about the filter,
+  // so three thousand rows never become entities. It is the same code path.
+  layer.enable();
+
+  // `polygons` is a counting getter, armed only around the load, so what it
+  // counts is rows that reached the polygons rather than rows that read them.
+  let polygonTests = 0;
+  let armed = false;
+  const counted = {
+    ...texas.area,
+    get polygons() {
+      if (armed) polygonTests += 1;
+      return texas.area.polygons;
+    },
+  };
+
+  // Armed across the load only: `setIsolation` reads `polygons` once to label
+  // the area, which is a lookup, not a scan, and a count that confuses the two
+  // would be a count nobody could act on.
+  layer.setIsolation(counted);
+  armed = true;
+  await layer.update();
+  armed = false;
+
+  const naive = rows.length;
+  const survivors = rows.filter((report) =>
+    boxesContain(texas.boxes, report[4], report[5]),
+  ).length;
+  assert.ok(survivors > 0, 'the fixture kept nothing, so it proves nothing');
+  assert.equal(
+    polygonTests,
+    survivors,
+    'the layer scans the polygons for a different set of rows than the box kept',
+  );
+  assert.ok(
+    polygonTests < naive / 2,
+    `the pre-reject only removed ${naive - polygonTests} of ${naive} scans`,
+  );
+
+  assert.equal(layer.getIsolation().total, rows.length, 'every row was hail');
+
+  // And the next repaints pay nothing at all: an isolation outlives the filter
+  // changes made under it, so the verdict per row is kept rather than re-walked.
+  // Re-walking is what makes a whole-country area cost a second and a half on
+  // every hail-floor click.
+  armed = true;
+  layer.setIsolationActive(false);
+  layer.setIsolationActive(true);
+  layer.setMinHailIn(2);
+  armed = false;
+  assert.equal(
+    polygonTests,
+    survivors,
+    'a repaint under the same area and the same rows re-read no polygons',
+  );
+  assert.ok(
+    layer.getIsolation().total < rows.length,
+    'and the floor still moved the population under it',
+  );
+  assert.ok(layer.getIsolation().inside > 0, 'and it still answers');
+});
+
+test('the pre-reject changes the cost, not the answer', async () => {
+  const texas = await resolveIsolation('Texas');
+  const rows = hailSpread(400);
+  const { layer } = makeLayer(rows, [], daysFor(rows));
+  layer.enable();
+  await layer.update();
+  layer.setIsolation(texas.area);
+
+  const brute = rows.filter(
+    (report) =>
+      polygonsContain(texas.area.polygons, report[4], report[5]) === true,
+  ).length;
+  assert.ok(brute > 0, 'the fixture found no inside point at all');
+  assert.equal(
+    layer.getIsolation().inside,
+    brute,
+    'the layer agrees with a full scan of every row',
+  );
+});
+
+test('the date window and the isolation are independent axes', async () => {
+  const viewer = stubViewer();
+  const { layer } = isolationLayer();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+
+  layer.setDate('2026-08-10');
+  layer.setIsolation(BOX);
+  assert.deepEqual(layer.getDateRange(), {
+    from: '2026-08-10',
+    to: '2026-08-10',
+  });
+  assert.equal(layer.getIsolation().inside, 2, 'one in, one out, that day');
+  assert.equal(drawn(viewer).length, 2);
+
+  // Clearing the window must leave the area standing...
+  layer.clearDateRange();
+  assert.deepEqual(layer.getDateRange(), { from: null, to: null });
+  const kept = layer.getIsolation();
+  assert.ok(kept, 'the isolation survived the window being cleared');
+  assert.equal(kept.active, true);
+  assert.equal(kept.inside, 3, 'and now spans every day in the record');
+
+  // ...and clearing the area must leave the window standing.
+  layer.setDateRange('2026-08-10', '2026-08-11');
+  layer.setIsolation(null);
+  assert.equal(layer.getIsolation(), null);
+  assert.deepEqual(layer.getDateRange(), {
+    from: '2026-08-10',
+    to: '2026-08-11',
+  });
+  assert.equal(drawn(viewer).length, 5, 'both days, nothing isolated');
+});
+
+test('the panel says how much of what is on screen is inside the area', async () => {
+  const { layer } = isolationLayer();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  assert.doesNotMatch(
+    layer.getRowControls().info,
+    /inside/,
+    'no area, nothing to report',
+  );
+
+  layer.setIsolation(BOX);
+  const info = layer.getRowControls().info;
+  assert.match(info, /3 of 5 reports inside Oklahoma/);
+  // The dates and the area are both axes; the line has to show which is in force.
+  layer.setDate('2026-08-10');
+  assert.match(layer.getRowControls().info, /2026-08-10/);
+  assert.match(layer.getRowControls().info, /2 of 4 reports inside Oklahoma/);
+
+  layer.setIsolationActive(false);
+  assert.match(
+    layer.getRowControls().info,
+    /isolation off — 2 of 4 reports inside Oklahoma/,
+    'an area set but switched off says what it would keep',
+  );
+});
+
+test('a place says it is approximate everywhere it surfaces', async () => {
+  // A place is a point with a box around it. Nothing in these bundles is a city
+  // boundary, so the sentence that stops a box being read as a boundary has to
+  // travel onto the panel too — not only onto the control that set it.
+  const { layer } = isolationLayer();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setIsolation(placeArea('New York City', 40.71, -74.0));
+
+  const controls = layer.getRowControls();
+  assert.match(controls.info, /1 of 5 reports inside New York City/);
+  assert.match(
+    controls.info,
+    /approximate: point with a radius, no boundary data/,
+  );
+  assert.match(
+    chipById(layer, 'storm-reports-isolate').title,
+    /approximate: point with a radius/,
+  );
+});
+
+test('the ISOLATE chip is disabled until an area is set, and then switches', async () => {
+  const viewer = stubViewer();
+  const { layer } = isolationLayer();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(chipById(layer, 'storm-reports-isolate').disabled, true);
+  assert.match(
+    chipById(layer, 'storm-reports-isolate').title,
+    /No area to isolate to/,
+  );
+  assert.equal(
+    layer.setIsolationActive(true),
+    false,
+    'and asking for it anyway changes nothing',
+  );
+
+  layer.setIsolation(BOX);
+  assert.equal(chipById(layer, 'storm-reports-isolate').disabled, false);
+  assert.equal(chipById(layer, 'storm-reports-isolate').active, true);
+
+  chipById(layer, 'storm-reports-isolate').onClick();
+  const off = layer.getIsolation();
+  assert.equal(off.active, false, 'the chip is a switch, not a setter');
+  assert.ok(off.area, 'and it kept the area to switch back to');
+  assert.equal(drawn(viewer).length, 5, 'off means every report again');
+
+  chipById(layer, 'storm-reports-isolate').onClick();
+  assert.equal(layer.getIsolation().active, true);
+  assert.equal(drawn(viewer).length, 3);
+});
+
+test('the size floor and the hazard switch still apply under an isolation', async () => {
+  const viewer = stubViewer();
+  const { layer } = isolationLayer();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setIsolation(BOX);
+  assert.equal(drawn(viewer).length, 3);
+
+  layer.setMinHailIn(2);
+  assert.equal(
+    drawn(viewer).length,
+    2,
+    'the 1.25in report inside the area is floored out',
+  );
+  // The axis counts the OPTION-filtered set, so the floor moves its denominator
+  // without moving the area: two of what is left are inside, and the two outside
+  // are still in the population the line is counting against.
+  assert.equal(
+    layer.getIsolation().total,
+    4,
+    'and the axis counts what is left',
+  );
+  assert.equal(layer.getIsolation().inside, 2);
+
+  layer.setHazard('wind');
+  assert.equal(drawn(viewer).length, 0);
+  assert.equal(layer.getIsolation().active, true, 'still isolated, just empty');
+
+  layer.setHazard('hail');
+  layer.setMinHailIn(1);
+  assert.equal(drawn(viewer).length, 3, 'and it all comes back');
+});
+
+test('a storm selected under an isolation keeps its own record', async () => {
+  const viewer = stubViewer();
+  // twoStormDay puts the supercell's report at 35.11N and the pulse storm's at
+  // 35.61N, so a box round one of them isolates to exactly one storm.
+  const { layer, north, south } = twoStormDay();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+
+  layer.setIsolation(
+    squareArea('north-east Oklahoma', -97.6, 35.0, -97.2, 35.3),
+  );
+  assert.equal(layer.selectStorm(north.id), true);
+  assert.equal(drawn(viewer).length, 1, 'the storm inside the area');
+  assert.match(
+    layer.getRowControls().info,
+    /1 of 1 this storm's reports inside north-east Oklahoma/,
+    'a storm card counts the storm, not the day it sat on',
+  );
+
+  // The other storm's report is outside the area, so its selection draws nothing
+  // — but its record is still answered, or the isolation would hollow out the
+  // storm axis rather than narrowing it.
+  layer.selectStorm(south.id);
+  assert.equal(drawn(viewer).length, 0, 'nothing of that storm is inside');
+  assert.equal(
+    layer.getStormReports(south.id).length,
+    1,
+    'and its own record is still there to describe',
+  );
+});
+
+test('the approximate outline still draws under an isolation', async () => {
+  const viewer = stubViewer();
+  const { layer, north } = twoStormDay();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setIsolation(BOX);
+  layer.selectStorm(north.id);
+  assert.equal(drawn(viewer).length, 1, 'the isolation kept this storm');
+
+  layer.setOutlineVisible(true);
+  assert.equal(
+    drawn(viewer).filter((e) => e.id === `storm-outline:${north.id}`).length,
+    1,
+    'the outline is an axis of its own and the isolation did not swallow it',
+  );
+  assert.match(layer.getRowControls().info, /[Aa]pproximate/);
 });

@@ -623,6 +623,37 @@ export const MIN_FRAME_ALTITUDE_M = 60_000;
 export const MAX_FRAME_ALTITUDE_M = 1_500_000;
 
 /**
+ * The one line the panel reads for an isolation: how much of what is on screen
+ * falls inside the area.
+ *
+ * `describe` is handed in rather than computed here, so the label — and the
+ * "approximate: point with a radius, no boundary data" that a place carries and
+ * a state does not — is stated in exactly one place in this app
+ * (`describeIsolation`). A layer that re-derived it would eventually drop that
+ * half-sentence, which is the half that keeps a city box from being read as a
+ * city boundary.
+ *
+ * An area with the isolation switched off still gets a line, because "off" is
+ * only legible when the panel also says what turning it on would do. A control
+ * that silently does nothing is this layer's recurring failure; an axis whose
+ * state is unstated is the same defect wearing a different hat.
+ *
+ * @param {string} describe `describeIsolation`'s own label
+ * @param {{inside: number, total: number, active: boolean, subject?: string}} counts
+ *   `inside` of `total` `subject` are inside the area
+ * @returns {string}
+ */
+export function isolationLine(
+  describe,
+  { inside, total, active, subject = 'reports' } = {},
+) {
+  const kept = Number.isFinite(inside) ? inside : 0;
+  const of = Number.isFinite(total) ? total : kept;
+  const stem = `${kept} of ${of} ${subject} inside ${describe}`;
+  return active ? stem : `isolation off — ${stem}`;
+}
+
+/**
  * Altitude that frames a radius, clamped to something usable at both ends.
  * @param {number} radiusKm
  * @returns {number} metres

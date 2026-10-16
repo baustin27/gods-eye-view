@@ -16,6 +16,7 @@ import {
   framingFor,
   hailBand,
   haversineKm,
+  isolationLine,
   magnitudeLabel,
   matchesFilter,
   outlineRing,
@@ -399,4 +400,59 @@ test('a time window reads as a window, and a missing one as its start', () => {
   assert.equal(stormTimeRange({}), null);
   assert.equal(stormMinuteLabel(1440), null, 'a day has no 24:00');
   assert.equal(stormMinuteLabel(-1), null);
+});
+
+test('the isolation line counts what is inside, and says so when it is off', () => {
+  assert.equal(
+    isolationLine('Texas', { inside: 1342, total: 7484, active: true }),
+    '1342 of 7484 reports inside Texas',
+  );
+  // "Off" has to be legible. A chip that reads inactive and a map that no
+  // longer says why is the same silent failure this layer keeps having.
+  assert.equal(
+    isolationLine('Texas', { inside: 1342, total: 7484, active: false }),
+    'isolation off — 1342 of 7484 reports inside Texas',
+  );
+  assert.equal(
+    isolationLine('Bavaria, Germany', {
+      inside: 0,
+      total: 900,
+      active: true,
+    }),
+    '0 of 900 reports inside Bavaria, Germany',
+  );
+});
+
+test("the isolation line quotes a storm's own reports when it is given them", () => {
+  assert.equal(
+    isolationLine('Travis County, Texas', {
+      inside: 12,
+      total: 40,
+      active: true,
+      subject: "this storm's reports",
+    }),
+    "12 of 40 this storm's reports inside Travis County, Texas",
+  );
+});
+
+test('a place repeats its own approximate label in the isolation line', () => {
+  // `describeIsolation` owns the wording; the line has to carry whatever it
+  // says verbatim, because the half of that sentence that says "approximate" is
+  // the half that stops a box around a point being read as a boundary.
+  const describe =
+    'New York City, United States — approximate: point with a radius, no boundary data';
+  const line = isolationLine(describe, { inside: 3, total: 40, active: true });
+  assert.match(line, /^3 of 40 reports inside /);
+  assert.match(line, /approximate: point with a radius/);
+});
+
+test('an isolation line with no counts reads as zero rather than NaN', () => {
+  assert.equal(
+    isolationLine('Texas', { active: true }),
+    '0 of 0 reports inside Texas',
+  );
+  assert.equal(
+    isolationLine('Texas', { inside: 4, active: false }),
+    'isolation off — 4 of 4 reports inside Texas',
+  );
 });
