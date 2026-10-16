@@ -102,6 +102,11 @@ export function createIsolationLayer({ overlayHost } = {}) {
   // needs to know their typing did not take.
   let _fieldMessage = null;
   let _pendingText = null;
+  // Enter and blur both commit, so the same name can arrive twice. Joins are
+  // keyed on the text, and `_commitGeneration` invalidates anything a newer
+  // commit - or an Escape - has made stale.
+  let _inFlight = null;
+  let _commitGeneration = 0;
   // Layers that honour the isolation. Not a broadcast bus and not an event
   // emitter: a Set of plain listeners, called with the area, cleared on destroy.
   const _areaListeners = new Set();
@@ -432,6 +437,8 @@ export function createIsolationLayer({ overlayHost } = {}) {
       const query = typeof text === 'string' ? text.trim() : '';
       if (!query) {
         _pendingText = null;
+        _commitGeneration += 1;
+        _inFlight = null;
         api.setIsolation(null);
         return { ok: true };
       }
@@ -439,16 +446,49 @@ export function createIsolationLayer({ overlayHost } = {}) {
       // area object, read as a change by identity, and re-filter a storm layer
       // holding tens of thousands of rows to arrive at the answer it already had.
       if (_area && _areaText === query) return { ok: true, area: _area };
-      const result = await resolveIsolation(query, { near, findPlace });
-      if (!result.ok) {
-        // A miss must not silently clear a working isolation, and must not throw
-        // either: the person gets told, and the previous area stays put.
-        return { ok: false, reason: result.reason };
-      }
-      _pendingText = null;
-      _areaText = query;
-      api.setIsolation(result.area);
-      return { ok: true, area: result.area };
+      // Enter and blur BOTH commit. Committing on Enter starts a resolution,
+      // and the click that follows blurs the field and commits the same text
+      // again - which resolved twice and re-filtered every storm row twice.
+      // A second commit of the SAME name joins the one already running.
+      if (_inFlight && _inFlight.query === query) return _inFlight.promise;
+      const generation = ++_commitGeneration;
+      const promise = resolveIsolation(query, { near, findPlace }).then(
+        (result) => {
+          // A newer commit, or a cancel, while this one was in flight: the
+          // answer is stale and must not be applied. Escape works this way.
+          if (generation !== _commitGeneration)
+            return { ok: false, reason: 'superseded' };
+          if (_inFlight?.promise === promise) _inFlight = null;
+          if (!result.ok) {
+            // A miss must not silently clear a working isolation, and must not
+            // throw either: the person gets told, and the previous area stays.
+            return { ok: false, reason: result.reason };
+          }
+          _pendingText = null;
+          _areaText = query;
+          api.setIsolation(result.area);
+          return { ok: true, area: result.area };
+        },
+      );
+      _inFlight = { query, promise };
+      return promise;
+    },
+
+    /**
+     * Abandon whatever is being resolved right now.
+     *
+     * Escape in the field means "I did not mean that". Without this the
+     * in-flight resolution landed a moment later and undid the cancel, which
+     * is worse than not having cancelled at all - it looks like Escape
+     * ignored you.
+     *
+     * @returns {boolean} whether something was actually cancelled
+     */
+    cancelPendingIsolationText() {
+      if (!_inFlight) return false;
+      _commitGeneration += 1;
+      _inFlight = null;
+      return true;
     },
 
     /** The text that produced the current isolation, for a share link. */
@@ -667,6 +707,11 @@ export function createIsolationLayer({ overlayHost } = {}) {
           value: _areaText || '',
           placeholder: 'Type an area - Texas, Denver, Japan',
           ariaLabel: 'Isolate the map to one country, state or city',
+          // Escape in the field means "I did not mean that". Restoring the text
+          // is not enough on its own: a resolution already in flight would land
+          // a moment later and quietly undo the cancel, which reads as Escape
+          // having ignored you.
+          onCancel: () => api.cancelPendingIsolationText(),
           onCommit(raw) {
             const query = String(raw ?? '').trim();
             if (!query) {

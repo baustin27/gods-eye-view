@@ -1024,3 +1024,60 @@ test('SOLO leaves the lens itself on, because the lens clears itself', async () 
   assert.equal(m.state.has('traffic'), false, 'while the others are parked');
   assert.equal(result.off, 3, 'three parked, not counting isolation');
 });
+
+test('the same name committed twice resolves once, not twice', async () => {
+  // Enter and blur BOTH commit. Two resolutions meant two fresh area objects,
+  // two identity-changes, and two full re-filters of the storm layer's rows.
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  const changes = [];
+  layer.onAreaChange((area) => changes.push(area?.name ?? null));
+
+  const [a, b] = await Promise.all([
+    layer.setIsolationText('Denver'),
+    layer.setIsolationText('Denver'),
+  ]);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(a.area, b.area, 'the second caller joined the first resolution');
+  assert.deepEqual(changes, [null, 'Denver'], 'one change, announced once');
+});
+
+test('Escape cancels a resolution that has not landed yet', async () => {
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  await layer.setIsolationText('Texas');
+
+  const inFlight = layer.setIsolationText('California');
+  // Escape before the promise settles.
+  assert.equal(
+    layer.cancelPendingIsolationText(),
+    true,
+    'something was cancelled',
+  );
+  const result = await inFlight;
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'superseded');
+  // The previous isolation is untouched: cancel is not clear.
+  assert.equal(layer.getIsolation().name, 'Texas');
+});
+
+test('a newer commit supersedes an older one still in flight', async () => {
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  const slow = layer.setIsolationText('California');
+  const fast = await layer.setIsolationText('Denver');
+  assert.equal(fast.area.name, 'Denver');
+  assert.equal(
+    (await slow).reason,
+    'superseded',
+    'the stale one applied nothing',
+  );
+  assert.equal(layer.getIsolation().name, 'Denver');
+});
+
+test('cancelling when nothing is in flight is a no-op, not a surprise', () => {
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  assert.equal(layer.cancelPendingIsolationText(), false);
+});

@@ -1216,10 +1216,23 @@ export function createStormReportsLayer({
     // second geometry to keep in sync with the markers.
     _moveHandler = makeInputHandler(_viewer.scene.canvas);
     _moveHandler.setInputAction((move) => {
-      if (!isPointerFree() || !_enabled) return;
-      const picked = _viewer.scene.pick?.(move.endPosition);
+      // Dismissal is gated differently from summoning. `isPointerFree()`
+      // means another tool owns the pointer; that must stop us SUMMONING a
+      // card, but it must never stop us taking one away, or a card summoned
+      // before a tool took over could never be dismissed.
+      const pickable = isPointerFree() && _enabled;
+      if (!pickable && _hoveredReportId === null) return;
+      const picked = pickable
+        ? _viewer.scene.pick?.(move.endPosition)
+        : undefined;
       const id = typeof picked?.id?.id === 'string' ? picked.id.id : null;
-      const next = id && _contextIds.has(id) ? id : null;
+      // ANY report this layer drew is hoverable, not only the ones in the
+      // tracked-readout cohort. `_contextIds` holds the worst
+      // STORM_CONTEXT_LIMIT reports, so gating on it made hover a no-op for
+      // all but forty of 44,717 on a busy day. `publish` builds a card from
+      // the report object rather than from `gevLabelModel`, so it never
+      // needed the cohort in the first place.
+      const next = id && id.startsWith('storm-report-') ? id : null;
       if (next === _hoveredReportId) return;
       _hoveredReportId = next;
       publish();
@@ -1747,6 +1760,30 @@ export function createStormReportsLayer({
     /** The context id of the clicked report, or null. */
     getSelectedReportId() {
       return _selectedReportId;
+    },
+
+    /**
+     * What the layer is showing, for the panel row and for `getAll()`.
+     *
+     * The panel renders `—` when a layer publishes no stats, which is what a
+     * loaded storm layer holding tens of thousands of reports was doing: it
+     * had all of these numbers in `_stats` and no way to publish them. The
+     * count is the NARROWED one - the reports actually on the map - because
+     * that is what the row describes, and under an isolation it is the number
+     * that changed.
+     */
+    getStats() {
+      return {
+        count: _stats?.total ?? 0,
+        lastUpdate: _lastUpdate,
+        error: _lastError?.message ?? null,
+        loading: Boolean(_loading),
+        hail: _stats?.hail ?? 0,
+        wind: _stats?.wind ?? 0,
+        storms: _stats?.storms ?? 0,
+        scopedTotal: _stats?.scopedTotal ?? 0,
+        insideIsolation: _stats?.insideIsolation ?? 0,
+      };
     },
 
     /**

@@ -301,12 +301,22 @@ async function panelWithField({
         committed.push(raw);
         // A rejected value leaves the field value alone, as the layer would.
         if (reject) return false;
-        controls.field.value = raw;
         // `asyncField` models a layer that must resolve text against data
         // before it knows the value to echo back - resolving a place name to
         // geometry. A synchronous layer returns `true` and is unaffected.
+        //
+        // The value is recorded INSIDE the resolution, not before it. That is
+        // the whole point of the fixture: when it was assigned synchronously,
+        // the buggy write-back read the same 'Denver' the fixed one did and
+        // the regression test passed with the bug restored.
         if (asyncField)
-          return new Promise((resolve) => setTimeout(() => resolve(true), 0));
+          return new Promise((resolve) =>
+            setTimeout(() => {
+              controls.field.value = raw;
+              resolve(true);
+            }, 0),
+          );
+        controls.field.value = raw;
         return true;
       },
       onCancel: () => cancelled.push(true),
@@ -335,6 +345,8 @@ async function panelWithField({
     cancelled,
     row,
     input: () => row().querySelector('.data-toggle-field')._rowFieldInput,
+    /** The live row-controls descriptor, so a test can watch it change. */
+    controls: () => controls,
     close() {
       panel.destroy();
       globalThis.document = previousDocument;
@@ -378,13 +390,23 @@ test('Enter commits the typed value to the layer', async () => {
 // panel with the PRE-resolution field value, which was ''. The box would appear
 // for a second and then vanish, because blurring the field committed that blank
 // and the layer read it as "clear".
+//
+// The `focus()` is load-bearing. `_commitRowField` declines to write back once
+// focus has moved on, so without it the write-back never runs and this test
+// passes against the broken code. That is exactly what it did before.
 test('an async commit echoes the resolved value, not the pre-resolution blank', async () => {
   const h = await panelWithField({ asyncField: true });
   const input = h.input();
+  input.focus();
   input.value = 'Denver';
   key(h.row().querySelector('.data-toggle-field'), 'Enter');
-  // The layer records its value synchronously here, but the panel's write-back
-  // happens a tick later - which is the whole point.
+  // Nothing is known synchronously: the layer resolves first, and only then
+  // does the panel have a post-resolution value to write back.
+  assert.equal(
+    h.controls().field.value,
+    '2026-08-10',
+    'before the resolution the old value stands',
+  );
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.deepEqual(h.committed, ['Denver']);
   assert.equal(input.value, 'Denver', 'the typed text survived the round trip');
@@ -394,6 +416,7 @@ test('an async commit echoes the resolved value, not the pre-resolution blank', 
 test('an async rejection keeps the typed text so it can be corrected', async () => {
   const h = await panelWithField({ reject: true, asyncField: true });
   const input = h.input();
+  input.focus();
   input.value = 'qqqzzz nowhere';
   key(h.row().querySelector('.data-toggle-field'), 'Enter');
   await new Promise((resolve) => setTimeout(resolve, 5));

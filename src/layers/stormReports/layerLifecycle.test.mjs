@@ -198,6 +198,20 @@ function clickableViewer(pick = () => undefined) {
       assert.ok(actions.length, 'the click handler is installed');
       actions[0]({ position });
     },
+    /**
+     * Move the pointer. Index 1 because `installInteraction` registers the
+     * click first and the hover second, and this only ever invoked
+     * `actions[0]` - so the entire MOUSE_MOVE path, including the gate that
+     * made hover a no-op on real data, was executed by no test at all.
+     */
+    move(endPosition = { x: 4, y: 4 }) {
+      assert.equal(
+        actions.length,
+        2,
+        'both the click and the hover handler are installed',
+      );
+      actions[1]({ endPosition });
+    },
   };
 }
 
@@ -2283,4 +2297,51 @@ test('cards are summoned by pointing, not scattered over the map', async () => {
   // Pointing away sends the card with it.
   assert.equal(layer.setHoveredReportId(null), true, 'the pointer left');
   assert.equal(overlayHost.entries.at(-1).list.length, 0, 'the card went too');
+});
+
+test('hover works on ANY drawn report, not only the tracked cohort', async () => {
+  // THE BUG. The hover path required `_contextIds`, which holds only the worst
+  // STORM_CONTEXT_LIMIT (40) reports. On a day with 44,717 the other 44,677
+  // summoned nothing at all, and no test noticed because this suite only ever
+  // drove `actions[0]` - the click - and so never executed the MOUSE_MOVE path.
+  const many = Array.from({ length: 120 }, (_, i) =>
+    REPORT(1 + (i % 3) * 0.25),
+  );
+  let picked = null;
+  const harness = clickableViewer(() => picked);
+  const { layer, overlayHost } = makeLayer(many, [], {
+    viewer: harness.viewer,
+    createInputHandler: harness.createInputHandler,
+  });
+  layer.init(harness.viewer);
+  layer.enable();
+  await layer.update();
+
+  // A report well outside the worst-40 cohort. 120 reports, so the cohort is a
+  // third of them and this one is deliberately not among the first.
+  const outsideCohort = drawn(harness.viewer)
+    .map((e) => e.id)
+    .filter((id) => String(id).startsWith('storm-report-'))
+    .at(-1);
+  assert.ok(outsideCohort, 'the layer drew reports');
+
+  // Point at it for real, through the handler the mouse drives.
+  picked = { id: { id: outsideCohort } };
+  harness.move();
+  await settled(layer);
+  assert.equal(
+    overlayHost.entries.at(-1).list.length,
+    1,
+    'a report outside the tracked cohort still summons its card',
+  );
+
+  // Moving off it dismisses.
+  picked = { id: { id: 'something-else' } };
+  harness.move();
+  await settled(layer);
+  assert.equal(
+    overlayHost.entries.at(-1).list.length,
+    0,
+    'and leaving dismisses',
+  );
 });
