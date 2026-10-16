@@ -45,6 +45,8 @@
     "preview": "vite preview",
     "build:storm": "node scripts/build-storm-snapshots.mjs",
     "build:storm-radar": "node scripts/build-storm-radar-snapshots.mjs",
+    "build:storm-reports": "node scripts/build-storm-reports.mjs",
+    "test:storm-radar": "node --test scripts/build-storm-radar-snapshots.test.mjs",
     "test:storm-radar": "node --test scripts/build-storm-radar-snapshots.test.mjs",
     "test": "node scripts/run-unit-tests.mjs",
     "test:track": "node scripts/track-regression.mjs",

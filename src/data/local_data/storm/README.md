@@ -34,7 +34,43 @@ nothing here needs to be deleted for a commercial deployment.
 | `storm_counties.geojsonl` | Polygon / MultiPolygon | County polygons joined to FEMA NRI attributes and to per-county observed storm statistics | 3,234 counties |
 | `storm_radar_hail.geojsonl` | Point | 0.25° radar hail-core grid from NOAA MRMS, on the same index space as `storm_cells_025` | see `storm-radar-sources.json` |
 | `storm-sources.json` | — | Build metadata: record counts, per-decade completeness, thresholds, source list with licenses | — |
+| `storm_radar_hail_<year>.geojsonl.gz` | Point | 0.25° radar hail cores for **one year**, year-scoped: `mx`, `cp` and `dy` are that year's peak, core-point count and distinct hail days | 2021:11,918 · 2022:15,364 · 2023:13,321 · 2024:14,836 · 2025:14,401 · 2026:14,850 |
+| `storm-radar-sources_<year>.json` | — | Build metadata for that year's radar file: window, cell count, caveat | — |
 | `storm-radar-sources.json` | — | Build metadata for the radar snapshot: window, cell count, caveat | — |
+
+### Report-level files
+
+Produced by `node scripts/build-storm-reports.mjs` (alias: `npm run build:storm-reports`).
+These power the **Individual Reports** layer, which is a different surface from the
+aggregate Hail & Wind grid above: it draws individual severe reports rather than a
+scored climatology, and it loads only the years the current date window touches.
+
+| File | Contents | Size |
+|---|---|---|
+| `storm_reports_<year>.json.gz` | Every SPC report in that year as a positional tuple: date, minute, hazard, magnitude, lat/lon, FIPS, state, county, loss, comment, sources, trace, and **`stormRef`** | 155,738 reports, 2021–2026 |
+| `storm_events_<year>.json.gz` | Storm events. `identitySource: 'ncei'` where NCEI published the episode (with narrative and damage dollars); `'clustered'` where it had not and the reports were grouped by proximity and time — a display grouping, not a claim of NCEI-equivalent identity | 21,948 events |
+| `storm_report_index.json.gz` | Per-day hail/wind counts; the only file loaded up front | 1,572 days |
+| `storm_report_sources.json` | Build metadata and provenance | — |
+
+**`stormRef` is the 14th tuple field**: an integer ordinal into *that year's*
+`storm_events_<year>` array, or `-1` for a report belonging to no event. It is what
+makes "which storm was this report part of" answerable on a day carrying several.
+An ordinal is only meaningful inside its own year, so consumers must apply a
+per-year base offset rather than indexing the concatenated event list directly.
+Snapshots built before this field existed read `-1` on every row and consumers must
+fall back to matching on date.
+
+### Rebuilding the report-level files
+
+```bash
+npm run build:storm-reports                    # 2021-2026, warm cache ~40s
+node scripts/build-storm-reports.mjs --dry-run # counts only, writes nothing
+node scripts/build-storm-reports.mjs --from 2024 --to 2026
+```
+
+Downloads are cached under `.gev-cache/build/`, so a rebuild does not re-fetch
+unless the upstream archives changed. Note this script has no `--refresh`: it always
+reads the cache.
 
 Both grid files carry every report that landed in a cell; the fine grid is small
 because only damage-relevant cells are materialised. A cell's centre is at

@@ -1,3 +1,53 @@
+## Individual storm reports — October 16, 2026
+
+The **Hail & Wind — Individual Reports** layer (`storm-reports`, panel group
+Hazard) is a separate surface from the aggregate Hail & Wind grid. Where the
+aggregate answers "where is the risk", this one answers "what actually fell,
+where, how big, and which storm was it part of".
+
+**Data.** 155,738 SPC severe reports across 2021–2026, shipped as gzipped
+per-year files and fetched only for the years the current date window touches.
+Joined to 18,610 NCEI Storm Events episodes for real storm identity, narrative
+and damage dollars. NCEI publishes only through 2026-06-30; every storm after
+that is grouped into clusters by proximity and time and labelled
+`identitySource: 'clustered'`, which is a display grouping and not a claim of
+NCEI-equivalent identity.
+
+**Storm identity.** Each packed report carries `stormRef`, an integer ordinal
+into *its own year's* event array, or `-1`. Because `eventsFor` hands back the
+per-year arrays concatenated, a consumer must apply a per-year base offset —
+indexing the flat list answers with a storm from the wrong year. The layer
+derives the offsets itself and verifies each year's block is contiguous,
+refusing to resolve rather than resolving wrongly. Snapshots predating the field
+read `-1` and fall back to a date match.
+
+**Controls.** A typed date field (`2026-08-11`, `8/11/2026`, `Aug 11 2026`,
+`Aug 11`); a storm list offering that day's storms, or the twelve most recent
+storm days the date chips also reach; a hail threshold whose floor is one inch
+and which runs to three; a hail/wind switch; and GO, which flies the camera to
+the selected storm. Selecting a storm names its date; clearing it restores the
+previous window exactly.
+
+**Radar.** NOAA MRMS hail cores, loaded per year from
+`storm_radar_hail_<year>.geojsonl.gz`, whose `mx`/`cp`/`dy` are year-scoped.
+The layer compares reports against radar for the selected day only. Radar is an
+estimate: the panel line says so unconditionally, and implausible cores (≥100 mm)
+are counted separately so the unreported figure is not read at face value. A
+report with no core and a core with no report are both classified.
+
+**Approximate outline.** A circle around the selected storm, derived from the
+spread of that storm's own reports. NCEI publishes no storm polygons — only
+time, counties and states — so this describes where people reported, not where
+hail fell. It is labelled approximate and is off until asked for.
+
+**Known limits.**
+- Every failure in this layer so far has been silent rather than loud: a control
+  that renders but does nothing, an id that resolves to nothing, a caution that
+  is set and never displayed. The suite cannot distinguish working code from a
+  no-op; driving the real UI can.
+- ASOS station data is not wired in. It is wind-only in practice — 719,576
+  observations yielded no valid hail reports.
+
 # God's Eye View Current State
 
 Vessel sources can report healthy empty coverage using a current, complete

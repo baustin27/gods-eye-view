@@ -1,3 +1,37 @@
+- Add the **Hail & Wind — Individual Reports** layer, and close the gaps in it.
+
+  A separate surface from the aggregate Hail & Wind grid: it draws individual
+  severe reports rather than a scored climatology, and loads only the years the
+  current date window touches. 155,738 SPC reports across 2021–2026, joined to
+  18,610 NCEI storm episodes for real storm identities, narratives and damage
+  dollars. Where NCEI has not published — every storm after 2026-06-30 — reports
+  are grouped into clearly-labelled display clusters rather than given an
+  invented identity.
+
+  Type any date into the layer row (`2026-08-11`, `8/11/2026`, `Aug 11 2026`,
+  `Aug 11`); the hail floor is one inch and the thresholds run to three, because
+  an inch is where hail starts being damage. A storm list narrows a day to one
+  storm, clicking a marker opens its report's card with its storm's narrative,
+  and GO flies the camera to it.
+
+  Radar from NOAA MRMS is shown alongside the reports for the selected day, per
+  year, as an **estimate** — it is never presented as a measured stone size, and
+  implausible cores are counted separately so the "unreported" figure is not read
+  at face value. A report with no radar core and a radar core with no report are
+  now both counted; before, the first case was discarded outright.
+
+  Four defects fixed along the way, all of them silent rather than loud: the
+  overlay was handed a field name it does not read, so every card rendered in
+  the default grey; `getStormReports` matched on date and carried a filter that
+  was always true, so it returned every report on a day rather than one storm's;
+  the storm lookup resolved against a concatenated list of events and so
+  answered with a storm from the wrong year; and panel list items carrying an
+  `onClick` did nothing at all.
+
+  The per-year radar snapshots are now reproducible — they previously had no
+  producer, and the truncation that capped them at 40,000 cells decided which
+  cells survived by download completion order rather than by hail severity.
+
 - Add a persistent **Global / Viewport** data scope, so layers fetch only what is
   on screen instead of the whole planet. Persisted to `localStorage`
   (`gev:data-scope:v1`), with the control in the DISPLAY panel.

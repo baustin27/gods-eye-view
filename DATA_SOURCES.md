@@ -227,8 +227,16 @@ Four upstream sources, aggregated offline so the app needs no key and no network
 
 - **NOAA/NWS Storm Prediction Center Severe Weather Database** — hail and wind
   point reports, 1955–2025, from
-  `https://www.spc.noaa.gov/wcm/data/1955-2025_{hail,wind}.csv.zip`. **US
-  Government public domain.**
+  `https://www.spc.noaa.gov/wcm/data/1955-2025_{hail,wind}.csv.zip`, plus the
+  per-day 26MMDD reports for 2026. **US Government public domain.**
+- **NOAA/NCEI Storm Events Database** (`details-ftp/v1.0/d{year}c*.csv.gz`,
+  `www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/`) — the authoritative
+  storm *episode* identity, with narrative text and damage in dollars, and the
+  begin/end time and affected counties each episode actually covered. Used by
+  the Individual Reports layer to answer "which storm was this report part of".
+  **US Government public domain.**
+  Coverage ends **2026-06-30**; storms after that are grouped into clearly
+  labelled clusters rather than given an invented identity.
 - **FEMA National Risk Index for Natural Hazards v1.20 (Dec 2025)** — county
   expected annual loss for hail and strong wind, read from the published ArcGIS
   county layer. Free to use, including commercially, **conditional on the
