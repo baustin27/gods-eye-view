@@ -90,6 +90,53 @@ bounded at 80 characters and control characters are refused.
 
 Resolved live from a crafted URL: `New York State` → **379 of 44,717 reports**.
 
+### SOLO — opt-in, because auto-off would be destructive
+
+Setting an area only dims and filters. **SOLO** is a separate chip that
+snapshots every enabled layer, switches the rest off, and puts back exactly
+what was on. It is deliberately not automatic: typing a place name and losing
+twenty layers to one keystroke is destructive and surprising, and the scrim
+stays meaningful while layers are still on beneath it.
+
+Measured live, six layers with `local-dams` and `local-datacenters` on:
+
+|          | layers on | scene entities                       |
+| -------- | --------- | ------------------------------------ |
+| before   | 6         | 5,372 (datacenters 4,362 + dams 716) |
+| SOLO on  | 1         | 8                                    |
+| SOLO off | 6         | 5,372, exactly restored              |
+
+Two manager properties make this work, and both are easy to get backwards:
+
+- `clearSelectedLayers` clears **everything, including the caller**, so
+  isolation has to be switched back on afterwards.
+- `restoreEnabledLayerIds` is **authoritative** — it sets every layer it does
+  not exclude to `target.has(id)`. Isolation is deliberately absent from the
+  snapshot (taking the lens off must not park the lens), and absent-but-not-
+  excluded turns it _off_ on the way out. It has to be both.
+
+`origin: 'programmatic'` throughout: `isExplicitLayerStateOrigin` persists only
+`user`, `voice` and `tool`, so SOLO can never overwrite someone's stored layer
+set.
+
+### Cards are summoned, not scattered
+
+At 44,717 reports the layer published the worst `OVERLAY_COHORT_LIMIT` as
+cards, each titled `2.75 hail — Travis County`. The colour bands were already
+drawn by the Cesium points and clicking already picked through `scene.pick`
+against those same points, so the cards duplicated a mark that existed while
+adding a line of text to every one of them. On a national view that reads as a
+sheet of labels rather than a map.
+
+At most two cards are drawn now: the one under the pointer and the one that was
+clicked, never the same one twice. The bands stay on the points and in the
+legend, which is what the legend is for. Hover reuses the click's own pick, so
+there is no second geometry to keep in sync.
+
+`setHoveredReportId` is public because pointing at something is not only a mouse
+gesture — keyboard navigation and voice want the same card without synthesising
+a mouse move.
+
 ### Two defects the test suite could not have caught
 
 Both were found by driving the real app, and both are worth remembering:
