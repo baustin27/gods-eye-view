@@ -228,14 +228,104 @@ export async function ingestDaily(days) {
 }
 
 /**
+ * Claim a unique key for a storm within a set.
+ *
+ * Two storms can carry the same id: an inferred cluster id is derived from the
+ * first report of the cluster, and nothing in that derivation is a guarantee.
+ * Rather than let a collision silently point a report at the wrong storm, the
+ * second claimant takes a suffixed key.
+ * @param {string} base
+ * @param {Set<string>} taken
+ * @returns {string}
+ */
+function claimStormKey(base, taken) {
+  if (!taken.has(base)) {
+    taken.add(base);
+    return base;
+  }
+  let n = 2;
+  while (taken.has(`${base}#${n}`)) n += 1;
+  const key = `${base}#${n}`;
+  taken.add(key);
+  return key;
+}
+
+/**
+ * Index every storm by the year it lands in, and by the key reports carry.
+ *
+ * The ordinal a report stores is its position in that year's
+ * `storm_events_<year>.json.gz` array, so the position can only be known once
+ * the storms are final and split by year. Reports therefore never guess it:
+ * they carry a stable key (`_stormKey` for an inferred cluster, `episodeId` for
+ * an NCEI event) and the integer is resolved here, once.
+ * @param {{id: string, date: string}[]} storms
+ * @returns {Map<string, Map<string, number>>} year -> storm key -> ordinal.
+ */
+function buildStormOrdinals(storms) {
+  const byYear = new Map();
+  const claimed = new Map();
+  for (const storm of storms) {
+    if (!storm?.id || !storm?.date) continue;
+    const year = String(storm.date).slice(0, 4);
+    if (!byYear.has(year)) {
+      byYear.set(year, new Map());
+      claimed.set(year, new Set());
+    }
+    const byKey = byYear.get(year);
+    const keys = claimed.get(year);
+    // The ordinal is the position within the year's own array, which is exactly
+    // how many storms of that year have been seen so far.
+    byKey.set(claimStormKey(String(storm.id), keys), byKey.size);
+  }
+  return byYear;
+}
+
+/**
+ * Group the reports NCEI never claimed into inferred storms, and stamp each
+ * member with a key that reaches its own cluster.
+ *
+ * `summarizeCluster` keeps no back-reference to the reports it summarises, so
+ * this is the only place where a clustered report can still be tied to its
+ * cluster — and it has to happen while the members are in hand. The stamp is a
+ * key rather than an ordinal because the ordinal only exists once the storms
+ * are split into per-year files, which is later, in {@link assemble}.
+ * @param {object[]} orphans Reports with no episode id.
+ * @param {Set<string>} [claimedKeys] Ids already in use by the NCEI storms.
+ * @returns {{inferred: object[], stats: object}}
+ */
+export function clusterOrphanReports(orphans, claimedKeys = new Set()) {
+  const { clusters, stats } = clusterReports(orphans, {
+    maxSpanKm: DEFAULT_MAX_SPAN_KM,
+    maxGapMinutes: DEFAULT_MAX_GAP_MINUTES,
+  });
+  const inferred = [];
+  for (const cluster of clusters) {
+    if (cluster.length <= 1) continue;
+    const storm = summarizeCluster(cluster, 'cl');
+    const key = claimStormKey(String(storm.id), claimedKeys);
+    for (const member of cluster) member._stormKey = key;
+    inferred.push(storm);
+  }
+  return { inferred, stats };
+}
+
+/**
  * Fold the flat report list into per-year payloads and a day index.
  *
  * The index is what makes the timeline cheap: it answers "what happened on
  * this date" without opening a year file, and says which file to open next.
+ *
+ * `storms` is the finished event list — NCEI first, then the inferred clusters,
+ * exactly the order they are later written out in. Every report is stamped with
+ * the ordinal of the storm it belongs to so a consumer can go from a report to
+ * its storm without matching on date, which is wrong on any day carrying more
+ * than one storm. A report that belongs to no storm gets -1.
  * @param {object[]} reports
+ * @param {{id: string, date: string}[]} [storms]
  * @returns {{years: Map<string, object>, index: object}}
  */
-export function assemble(reports) {
+export function assemble(reports, storms = []) {
+  const ordinals = buildStormOrdinals(storms);
   const byYear = new Map();
   const dayIndex = Object.create(null);
   for (const report of reports) {
@@ -245,6 +335,13 @@ export function assemble(reports) {
     const day = (dayIndex[report.date] ||= { hail: 0, wind: 0, total: 0 });
     day[report.hazard] += 1;
     day.total += 1;
+    // An NCEI report keys on its episode id, which is the event id. An inferred
+    // cluster is not an episode, so it carries its own key. Anything else — a
+    // report NCEI never published, or an orphan too small to cluster — belongs
+    // to no storm.
+    const key = report._stormKey || report.episodeId || null;
+    const ref = key ? ordinals.get(year)?.get(key) : undefined;
+    report.stormRef = Number.isInteger(ref) ? ref : -1;
   }
   const years = new Map();
   for (const [year, list] of byYear) {
@@ -397,13 +494,10 @@ async function main() {
     // `identitySource: 'clustered'` and are never presented as observed.
     const orphans = reports.filter((r) => !r.episodeId);
     if (orphans.length) {
-      const { clusters, stats } = clusterReports(orphans, {
-        maxSpanKm: DEFAULT_MAX_SPAN_KM,
-        maxGapMinutes: DEFAULT_MAX_GAP_MINUTES,
-      });
-      const inferred = clusters
-        .filter((c) => c.length > 1)
-        .map((c) => summarizeCluster(c, 'cl'));
+      // NCEI's ids are already claimed, so an inferred storm can never take an
+      // episode id and send a report to the wrong event.
+      const claimedKeys = new Set(stormEvents.map((storm) => storm.id));
+      const { inferred, stats } = clusterOrphanReports(orphans, claimedKeys);
       process.stdout.write(
         `    clustered ${orphans.length.toLocaleString()} unattributed reports into ` +
           `${inferred.length.toLocaleString()} inferred storms ` +
@@ -416,7 +510,7 @@ async function main() {
   process.stdout.write(
     `  assembling ${reports.length.toLocaleString()} reports\n`,
   );
-  const { years, index } = assemble(reports);
+  const { years, index } = assemble(reports, stormEvents);
 
   if (args.dryRun) {
     process.stdout.write('  dry run — nothing written\n');

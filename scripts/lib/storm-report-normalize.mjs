@@ -63,6 +63,9 @@ const HAIL_TRACE_IN = 0.05;
  *   measurable magnitude.
  * @property {string[]} sources    Provenance, e.g. `['spc-bulk']`.
  * @property {string|null} comment Verbatim text where the source carries it.
+ * @property {number} [stormRef]   Ordinal of the storm this report belongs to,
+ *   resolved by the build and absent on a freshly normalised row. `-1` once
+ *   packed means the report belongs to no storm.
  */
 
 /**
@@ -268,6 +271,13 @@ export function sortReports(reports) {
 /**
  * Compact wire form. Field names are abbreviated because the payload is a
  * hundred thousand rows per year and this roughly halves it.
+ *
+ * `stormRef` is appended rather than inserted: the tuple's slot order is a
+ * published contract, and the layer's own unpacker destructures by position.
+ * It is an integer ordinal into the year's `storm_events_<year>.json.gz`
+ * `events` array, not an episode id — a cluster id like
+ * `cl-2025-03-30-250330120701` repeated across every one of 155,737 rows is
+ * real weight for no information.
  * @param {StormReport} report
  * @returns {Array}
  */
@@ -286,6 +296,7 @@ export function packReport(report) {
     report.comment || '',
     report.sources.join(','),
     report.trace ? 1 : 0,
+    report.stormRef ?? -1,
   ];
 }
 
@@ -305,6 +316,7 @@ export function unpackReport(packed) {
     comment,
     sources,
     trace,
+    stormRef,
   ] = packed;
   return {
     id: `${date}-${hazard}-${lat}-${lon}-${minute}`,
@@ -325,6 +337,9 @@ export function unpackReport(packed) {
       .split(',')
       .filter(Boolean),
     comment: comment || null,
+    // A row packed before this field existed reads as undefined here, and an
+    // absent ordinal means the same thing as an explicit -1: no storm.
+    stormRef: Number.isInteger(stormRef) ? stormRef : -1,
   };
 }
 

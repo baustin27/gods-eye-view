@@ -180,6 +180,11 @@ export function loadStormEvents(year, signal) {
  * The wire format is a tuple rather than an object because a hundred thousand
  * rows a year is the difference between 1.1 MB and roughly four times that, and
  * the key names would be repeated on every single row.
+ *
+ * `stormRef` is the row's ordinal into that year's `storm_events_<year>`
+ * `events` array, or -1 when the report belongs to no storm. It is an integer
+ * rather than an episode id because the id is 25 characters and repeating it on
+ * every row costs more than the ordinal it resolves to.
  * @param {Array} packed
  * @returns {object}
  */
@@ -198,6 +203,7 @@ export function unpackReport(packed) {
     comment,
     sources,
     trace,
+    stormRef,
   ] = packed;
   return {
     id: `${date}-${hazard}-${lat}-${lon}-${minute}`,
@@ -216,6 +222,9 @@ export function unpackReport(packed) {
       .split(',')
       .filter(Boolean),
     comment: comment || null,
+    // A row packed before the ordinal existed reads as undefined, and an
+    // absent ordinal means the same thing as -1: it belongs to no storm.
+    stormRef: Number.isInteger(stormRef) ? stormRef : -1,
   };
 }
 

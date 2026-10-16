@@ -24,6 +24,7 @@ const HAIL = (date, size, lat = 35, lon = -97, over = {}) => [
   over.comment || '',
   'spc-bulk,ncei',
   over.trace ? 1 : 0,
+  over.stormRef ?? -1,
 ];
 const WIND = (date, size, over = {}) => [
   date,
@@ -39,6 +40,7 @@ const WIND = (date, size, over = {}) => [
   '',
   'spc-bulk',
   0,
+  over.stormRef ?? -1,
 ];
 
 test('a packed row expands back to every field the UI needs', () => {
@@ -62,6 +64,27 @@ test('a packed row expands back to every field the UI needs', () => {
   assert.equal(report.comment, 'quarter size hail');
   assert.deepEqual(report.sources, ['spc-bulk', 'ncei']);
   assert.equal(report.trace, false);
+  assert.equal(report.stormRef, -1, 'no storm, because this fixture names none');
+});
+
+test('a packed row carries the ordinal of the storm it belongs to', () => {
+  const report = unpackReport(HAIL('2025-05-16', 2, 35, -97, { stormRef: 7 }));
+  assert.equal(report.stormRef, 7, 'the ordinal into the year events array');
+});
+
+test('filtering keeps the storm ordinal, so a filtered row is still traceable', () => {
+  const rows = [
+    HAIL('2025-05-16', 2, 35, -97, { stormRef: 3 }),
+    HAIL('2025-05-16', 0.25, 35, -97, { stormRef: 4 }),
+  ];
+  const kept = filterReports(rows, { minSize: 1 });
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].stormRef, 3);
+});
+
+test('a row packed before the ordinal existed reads as belonging to no storm', () => {
+  const report = unpackReport(HAIL('2025-05-16', 2).slice(0, 13));
+  assert.equal(report.stormRef, -1);
 });
 
 test('a degenerate magnitude stays absent rather than becoming zero inches of hail', () => {

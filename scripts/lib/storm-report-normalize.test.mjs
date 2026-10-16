@@ -335,6 +335,7 @@ test('packing round-trips without losing a field the UI needs', () => {
     trace: false,
     sources: ['spc-bulk', 'spc-daily'],
     comment: 'quarter size hail',
+    stormRef: 12,
   };
   const back = unpackReport(packReport(original));
   assert.equal(back.date, original.date);
@@ -348,6 +349,51 @@ test('packing round-trips without losing a field the UI needs', () => {
   assert.equal(back.comment, original.comment);
   assert.deepEqual(back.sources, ['spc-bulk', 'spc-daily']);
   assert.equal(back.trace, false);
+  assert.equal(back.stormRef, 12, 'the storm ordinal survives the round trip');
+});
+
+test('the storm ordinal is appended, so the earlier slots never move', () => {
+  const packed = packReport({
+    date: '2025-05-16',
+    minute: 728,
+    hazard: 'hail',
+    size: 1.75,
+    lat: 37.57,
+    lon: -84.3,
+    countyFips: '21021',
+    state: 'KY',
+    county: 'Fayette',
+    loss: 5000,
+    trace: false,
+    sources: ['spc-daily'],
+    comment: 'quarter size',
+    stormRef: 4,
+  });
+  assert.equal(packed.length, 14);
+  assert.equal(packed[0], '2025-05-16');
+  assert.equal(packed[11], 'spc-daily');
+  assert.equal(packed[12], 0);
+  assert.equal(packed[13], 4, 'the storm ordinal is the fourteenth slot');
+});
+
+test('a report with no storm packs and reads back as -1, not as undefined', () => {
+  const packed = packReport({
+    date: '2025-05-16',
+    minute: null,
+    hazard: 'wind',
+    size: 60,
+    lat: 1,
+    lon: 2,
+    loss: 0,
+    trace: false,
+    sources: [],
+    comment: null,
+  });
+  assert.equal(packed[13], -1);
+  assert.equal(unpackReport(packed).stormRef, -1);
+  // A row packed before the ordinal existed has no thirteenth slot at all, and
+  // an absent ordinal means the same thing.
+  assert.equal(unpackReport(packed.slice(0, 13)).stormRef, -1);
 });
 
 test('packing keeps an absent magnitude as absent rather than as zero inches', () => {
