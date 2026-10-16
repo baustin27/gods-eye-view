@@ -913,9 +913,20 @@ function fakeManager(enabled) {
       else state.delete(id);
       return true;
     },
-    async restoreEnabledLayerIds(ids, { origin } = {}) {
+    // `restoreEnabledLayerIds` is AUTHORITATIVE in the real manager: it sets
+    // every layer it does not exclude to `target.has(id)`. The fake has to
+    // behave the same way or it will happily pass a restore that switches the
+    // lens off on the way back out.
+    async restoreEnabledLayerIds(ids, { origin, excludeLayerIds } = {}) {
       calls.push(['restore', [...ids], origin]);
-      for (const id of ids) state.add(id);
+      const target = new Set(ids);
+      const excluded = new Set(excludeLayerIds || []);
+      for (const id of state.keys()) {
+        if (excluded.has(id)) continue;
+        if (target.has(id)) state.add(id);
+        else state.delete(id);
+      }
+      for (const id of target) if (!excluded.has(id)) state.add(id);
       return true;
     },
   };
@@ -955,6 +966,13 @@ test('SOLO parks every other layer and puts them all back, programmatically', as
   assert.equal(restoreCall[1].length, 4);
   for (const id of ['storms', 'traffic', 'cctv', 'satellites'])
     assert.equal(m.state.has(id), true, `${id} is back`);
+  // The lens itself is excluded from the restore, not merely absent from the
+  // snapshot: an authoritative restore would otherwise switch it OFF.
+  assert.equal(
+    m.state.has('isolation'),
+    true,
+    'isolation was not switched off',
+  );
 });
 
 test('SOLO refuses to engage without a manager rather than pretending', async () => {
@@ -984,4 +1002,25 @@ test('clearing the area releases SOLO, because parked layers are worse than SOLO
   assert.equal(manager.state.has('traffic'), true, 'put back on the way out');
   assert.equal(manager.state.has('storms'), true);
   assert.equal(layer.isSolo(), false);
+});
+
+test('SOLO leaves the lens itself on, because the lens clears itself', async () => {
+  const m = fakeManager(['isolation', 'storms', 'traffic', 'cctv']);
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  layer.attachDataManager(m);
+  await layer.setIsolationText('Denver');
+
+  const result = await layer.setSolo(true);
+  assert.equal(result.ok, true);
+  // The guard used to be "if isolation was not cleared, re-enable it", which is
+  // backwards: clearSelectedLayers takes everything including the caller, so
+  // that branch never ran and the lens ended up the one light left off.
+  assert.equal(
+    m.state.has('isolation'),
+    true,
+    'isolation is still on - it is what turned the lights off',
+  );
+  assert.equal(m.state.has('traffic'), false, 'while the others are parked');
+  assert.equal(result.off, 3, 'three parked, not counting isolation');
 });

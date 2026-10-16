@@ -624,17 +624,19 @@ export function createIsolationLayer({ overlayHost } = {}) {
           const result = await _manager.clearSelectedLayers({
             origin: 'programmatic',
           });
-          // Put isolation back on if the clear took it with everything else.
-          if (!result.clearedIds.includes(ISOLATION_LAYER_ID)) {
-            await _manager.setEnabled(ISOLATION_LAYER_ID, true, {
-              origin: 'programmatic',
-            });
-          }
+          // `clearSelectedLayers` clears EVERYTHING, including this layer, so
+          // isolation comes back unconditionally. The guard here used to be
+          // "if it wasn't cleared, re-enable it", which is exactly backwards:
+          // the layer that clears itself is the normal case, so the lens that
+          // turned the lights off was then the only light left off.
+          await _manager.setEnabled(ISOLATION_LAYER_ID, true, {
+            origin: 'programmatic',
+          });
           _soloMessage = null;
           notifyRowControls();
           return {
             ok: true,
-            off: result.clearedIds?.length ?? _soloSnapshot.length,
+            off: Math.max(0, (result.clearedIds?.length ?? 0) - 1),
           };
         } catch (error) {
           // The clear failed partway. Put back whatever we can, then report.
@@ -817,6 +819,12 @@ export function createIsolationLayer({ overlayHost } = {}) {
     try {
       await _manager.restoreEnabledLayerIds(snapshot, {
         origin: 'programmatic',
+        // The snapshot deliberately omits isolation, and
+        // `restoreEnabledLayerIds` is AUTHORITATIVE: it sets every layer it
+        // does not exclude to `target.has(id)`. So omitting isolation from
+        // the snapshot without excluding it turned the lens off on the way
+        // back out - the one layer that must never be part of this dance.
+        excludeLayerIds: [ISOLATION_LAYER_ID],
       });
       _soloMessage = null;
       notifyRowControls();
