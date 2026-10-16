@@ -31,6 +31,16 @@
  * ------
  * `storm_radar_hail.geojsonl` — 0.25 deg cells keyed with the same `i`/`j`
  * grid indices as `storm_cells_025.geojsonl`, so the app joins them directly.
+ * Statistics there span the whole window.
+ * `storm_radar_hail_<year>.geojsonl.gz` plus a `storm-radar-sources_<year>.json`
+ * sidecar — the same grid scoped to one calendar year, so a consumer can pull a
+ * single year's climatology without inflating the whole archive, and every
+ * number in a year file describes only hail that fell in that year. A cell
+ * active in several years appears in each of those years' files, once per year;
+ * the combined file is the union of those year records merged on `i:j`, so the
+ * two can never disagree. Every emitted file is ordered by a total order over the
+ * cells, never by insertion order, so two runs over the same window produce
+ * byte-identical artefacts.
  *
  * Usage
  *  node scripts/build-storm-radar-snapshots.mjs [--from YYYY-MM-DD] [--to YYYY-MM-DD]
@@ -137,14 +147,44 @@ function dateRange(from, to) {
 // ---------------------------------------------------------------------------
 
 /**
- * Decode one MRMS daily-maximum file into per-cell statistics.
+ * Fetch — or lazily create — the per-year slice of the accumulator.
+ *
+ * The accumulator is `Map<year, Map<'i:j', cell>>` rather than one flat
+ * `Map<'i:j', cell>`, and this is the whole point of the file: a per-year
+ * snapshot is only meaningful if a cell's statistics describe the year the
+ * consumer asked for. A flat map makes `mx`/`cp`/`dy` lifetime aggregates, so a
+ * "2021" file built by filtering that map carries numbers earned in 2024 and
+ * omits every cell that merely happened to be active in 2021 — the exact
+ * inversion that makes a year file useless for scoring one storm day.
+ *
+ * Keying on the year of the day being ingested (rather than on a cell's first or
+ * last active day) is what lets one cell appear in every year file it was
+ * active in, each carrying that year's own numbers.
+ *
+ * @param {Map<number, Map<string, object>>} cellsByYear Accumulator, mutated in place.
+ * @param {string} ymd Day stamp; its year selects the bucket.
+ * @returns {{year: number, bucket: Map<string, object>}}
+ */
+export function yearBucket(cellsByYear, ymd) {
+  const year = Number(ymd.slice(0, 4));
+  let bucket = cellsByYear.get(year);
+  if (!bucket) {
+    bucket = new Map();
+    cellsByYear.set(year, bucket);
+  }
+  return { year, bucket };
+}
+
+/**
+ * Decode one MRMS daily-maximum file into that year's per-cell statistics.
  *
  * @param {Buffer} gzipped Raw `.grib2.gz` bytes.
- * @param {string} ymd Day stamp, for the per-cell day tally.
- * @param {Map<string, object>} cells Accumulator, mutated in place.
- * @returns {{points: number, maxMm: number|null, cellsTouched: number}}
+ * @param {string} ymd Day stamp, for the year bucket and the per-cell day tally.
+ * @param {Map<number, Map<string, object>>} cellsByYear Accumulator, mutated in place.
+ * @returns {{points: number, maxMm: number|null, cellsTouched: number, year: number}}
  */
-export function ingestMeshGz(gzipped, ymd, cells) {
+export function ingestMeshGz(gzipped, ymd, cellsByYear) {
+  const { year, bucket: cells } = yearBucket(cellsByYear, ymd);
   const raw = zlib.gunzipSync(gzipped);
   const message = parseGrib2(raw);
   const packing = parseDataRepresentation(message.sections);
@@ -165,6 +205,9 @@ export function ingestMeshGz(gzipped, ymd, cells) {
     const key = `${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`;
     let cell = cells.get(key);
     if (!cell) {
+      // Every field here is scoped to `year` alone. `firstYmd`/`lastYmd` can no
+      // longer disagree about the year, which is what lets the emitter publish
+      // them as `y0`/`y1` without inventing a cross-year span in a per-year file.
       cell = {
         i: Math.floor(lat / CELL_DEG),
         j: Math.floor(lon / CELL_DEG),
@@ -182,21 +225,20 @@ export function ingestMeshGz(gzipped, ymd, cells) {
     if (ymd < cell.firstYmd) cell.firstYmd = ymd;
     if (ymd > cell.lastYmd) cell.lastYmd = ymd;
   }
-  return { points, maxMm, cellsTouched: cells.size };
+  return { points, maxMm, cellsTouched: cells.size, year };
 }
 
 /**
- * Fetch one day and fold it into the accumulator.
+ * Fetch one day and fold it into that day's year bucket.
  * @param {string} ymd
- * @param {Map<string, object>} cells
+ * @param {Map<number, Map<string, object>>} cellsByYear
  * @returns {Promise<{ymd:string, ok:boolean, points:number, error?:string}>}
  */
-async function ingestDay(ymd, cells) {
-  const compact = ymd.slice(2);
+async function ingestDay(ymd, cellsByYear) {
   const key = `${PRODUCT}/${ymd}/MRMS_MESH_Max_1440min_00.50_${ymd}-000000.grib2.gz`;
   try {
     const body = await fetchBuffer(`${BUCKET}/${key}`);
-    const result = ingestMeshGz(body, ymd, cells);
+    const result = ingestMeshGz(body, ymd, cellsByYear);
     return { ymd, ok: true, points: result.points };
   } catch (error) {
     // A missing day (product not produced, outage, or a gap in the archive) is
@@ -230,6 +272,322 @@ async function pooled(items, limit, worker) {
 }
 
 // ---------------------------------------------------------------------------
+// Selection and partitioning (pure — no I/O, no clock, no network)
+// ---------------------------------------------------------------------------
+
+/**
+ * Total order over features: strongest hail first, grid index as the tiebreak.
+ *
+ * The tiebreak is not cosmetic. `[...cells.values()]` is Map insertion order,
+ * which under `pooled()` is whatever finished downloading first — so two runs
+ * over the same window produce different line order, and `slice(0, MAX_CELLS)`
+ * keeps a different *set* of cells each time. Sorting on `mx` alone would leave
+ * exact ties (rounded to 0.1 mm) to that same nondeterministic order, so the
+ * `i`/`j` tiebreak is what makes the emitted bytes reproducible.
+ *
+ * @param {{properties: {mx: number, i: number, j: number}}} a
+ * @param {{properties: {mx: number, i: number, j: number}}} b
+ * @returns {number}
+ */
+export function compareBySeverity(a, b) {
+  const byPeak = (b?.properties?.mx ?? 0) - (a?.properties?.mx ?? 0);
+  if (byPeak) return byPeak;
+  // Numeric, not lexical: `i`/`j` are signed grid indices and "-9" sorts after
+  // "-10" as a string.
+  return (
+    (a?.properties?.i ?? 0) - (b?.properties?.i ?? 0) ||
+    (a?.properties?.j ?? 0) - (b?.properties?.j ?? 0)
+  );
+}
+
+/**
+ * Rank features by hail severity and apply the MAX_CELLS ceiling.
+ *
+ * Ranking before slicing is load-bearing. The ceiling exists to keep a
+ * pathological window from emitting every CONUS cell, so what it discards must
+ * be the *weakest* hail: a cell with a 25 mm core may be dropped while a 200 mm
+ * core survives, which inverts the meaning of the artifact it produces. The
+ * pre-truncation count comes back with the kept set so the meta sidecar can
+ * record that a ceiling was applied at all — otherwise the file on disk is
+ * indistinguishable from a window that genuinely held only `maxCells` cells.
+ *
+ * @param {Array<object>} features
+ * @param {number} maxCells
+ * @returns {{kept: Array<object>, truncated: boolean, cellsBeforeTruncation: number}}
+ */
+export function selectKeptCells(features, maxCells) {
+  const ranked = [...(features ?? [])].sort(compareBySeverity);
+  const cellsBeforeTruncation = ranked.length;
+  const truncated = cellsBeforeTruncation > maxCells;
+  return {
+    kept: truncated ? ranked.slice(0, maxCells) : ranked,
+    truncated,
+    cellsBeforeTruncation,
+  };
+}
+
+/**
+ * One cell's worth of accumulated statistics, as the emitter sees it.
+ * @typedef {Object} RadarCell
+ * @property {number} i
+ * @property {number} j
+ * @property {number|null} maxMm
+ * @property {number} corePoints
+ * @property {Set<string>} days
+ * @property {string} firstYmd
+ * @property {string} lastYmd
+ */
+
+/**
+ * Emit one feature. The property shape (`i j d mx cp dy y0 y1`) is fixed by the
+ * consumers — `stormCrossReference.js` and `stormDatasets.js` index on `i:j` and
+ * read `mx`/`cp` — so it is built in one place and never varies, whether the
+ * feature describes one year or the whole archive.
+ *
+ * Rounding happens on the way out, not on the way in, so a merged cell's `mx`
+ * is the max of its per-year maxima rather than a max taken over already-rounded
+ * values. (Rounding is monotone, so the two agree — but only because the raw
+ * value is still in hand here.)
+ *
+ * @param {number} i
+ * @param {number} j
+ * @param {{mx: number, cp: number, dy: number, y0: number, y1: number}} stats
+ * @returns {object}
+ */
+export function cellFeature(i, j, stats) {
+  return {
+    type: 'Feature',
+    geometry: {
+      type: 'Point',
+      coordinates: [
+        Math.round((j * CELL_DEG + CELL_DEG / 2) * 100000) / 100000,
+        Math.round((i * CELL_DEG + CELL_DEG / 2) * 100000) / 100000,
+      ],
+    },
+    properties: {
+      i,
+      j,
+      d: CELL_DEG,
+      mx: Math.round(stats.mx * 10) / 10,
+      cp: stats.cp,
+      dy: stats.dy,
+      y0: stats.y0,
+      y1: stats.y1,
+    },
+  };
+}
+
+/**
+ * One accumulator bucket to one year's features, ranked strongest-first.
+ *
+ * `y0` and `y1` are both the bucket's year. That is not a simplification: the
+ * statistics in the feature only describe that year, so claiming the cell was
+ * active anywhere else would contradict the numbers printed beside it.
+ *
+ * @param {number} year
+ * @param {Map<string, RadarCell>} bucket
+ * @returns {Array<object>}
+ */
+export function yearFeatures(year, bucket) {
+  return [...bucket.values()]
+    .map((cell) =>
+      cellFeature(cell.i, cell.j, {
+        mx: cell.maxMm,
+        cp: cell.corePoints,
+        dy: cell.days.size,
+        y0: year,
+        y1: year,
+      }),
+    )
+    .sort(compareBySeverity);
+}
+
+/**
+ * Every accumulator bucket to per-year feature lists, ascending by year.
+ *
+ * @param {Map<number, Map<string, RadarCell>>} cellsByYear
+ * @returns {Map<number, Array<object>>}
+ */
+export function featuresByYear(cellsByYear) {
+  return new Map(
+    [...cellsByYear.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([year, bucket]) => [year, yearFeatures(year, bucket)]),
+  );
+}
+
+/**
+ * Fold the per-year features back into one whole-archive snapshot.
+ *
+ * This is the inverse of the partition, and it is derived *from* the per-year
+ * files rather than from a parallel accumulator, so the two can never disagree:
+ * `mx` is the strongest year, `cp` and `dy` sum (a distinct hail day falls in
+ * exactly one year, so summing per-year day counts reproduces the lifetime
+ * count), and `y0`/`y1` widen to the span the cell was active over. The property
+ * shape is unchanged, so the combined file reads the same as it always did.
+ *
+ * Output order follows first appearance across ascending years, which is stable;
+ * the caller sorts it through `selectKeptCells` anyway.
+ *
+ * @param {Map<number, Array<object>>} byYear
+ * @returns {Array<object>}
+ */
+export function mergeYearFeatures(byYear) {
+  /** @type {Map<string, {i:number,j:number,mx:number,cp:number,dy:number,y0:number,y1:number}>} */
+  const merged = new Map();
+  for (const [year, list] of [...(byYear ?? new Map())].sort(
+    (a, b) => a[0] - b[0],
+  )) {
+    for (const feature of list ?? []) {
+      const p = feature?.properties;
+      if (!p || p.i === undefined || p.j === undefined) continue;
+      const key = `${p.i}:${p.j}`;
+      const mx = Number(p.mx) || 0;
+      const cp = Number(p.cp) || 0;
+      const dy = Number(p.dy) || 0;
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, {
+          i: p.i,
+          j: p.j,
+          mx,
+          cp,
+          dy,
+          y0: year,
+          y1: year,
+        });
+        continue;
+      }
+      existing.mx = Math.max(existing.mx, mx);
+      existing.cp += cp;
+      existing.dy += dy;
+      existing.y0 = Math.min(existing.y0, year);
+      existing.y1 = Math.max(existing.y1, year);
+    }
+  }
+  return [...merged.values()].map((stats) =>
+    cellFeature(stats.i, stats.j, stats),
+  );
+}
+
+/**
+ * Restrict every year's feature list to the cells that survived the combined
+ * snapshot's ceiling.
+ *
+ * Truncation is decided once, globally, on the merged set — `MAX_CELLS` bounds
+ * the combined artefact, and re-deciding it per year would either let a year
+ * file exceed the ceiling the combined file honours or drop cells the combined
+ * file kept. Filtering by kept key keeps the union of the year files an exact
+ * partition of the combined file under every regime, truncated or not.
+ *
+ * @param {Map<number, Array<object>>} byYear
+ * @param {Set<string>} keptKeys `i:j` keys present in the combined snapshot.
+ * @returns {Map<number, Array<object>>}
+ */
+export function restrictYearsToKeys(byYear, keptKeys) {
+  const out = new Map();
+  for (const [year, list] of byYear ?? []) {
+    // `list` is already ranked; filtering preserves that total order.
+    out.set(
+      year,
+      (list ?? []).filter((f) =>
+        keptKeys.has(`${f.properties.i}:${f.properties.j}`),
+      ),
+    );
+  }
+  return out;
+}
+
+/**
+ * Write a gzipped GeoJSONL snapshot atomically, one feature per line.
+ *
+ * Mirrors `writeGeoJsonl` from `lib/storm-fetch.mjs` — same tmp-then-rename, so
+ * a crashed run cannot leave a half-written artefact that later reads as valid —
+ * but the payload goes through `gzipSync` at the level the rest of the storm
+ * builders use. `gzipSync` stamps no mtime into the header, which is what makes
+ * repeated runs byte-identical rather than merely equal in content.
+ *
+ * @param {string} file Absolute destination path.
+ * @param {Array<object>} features
+ * @returns {Promise<number>} Bytes on disk.
+ */
+export async function writeGeoJsonlGz(file, features) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  const chunks = [];
+  for (const feature of features) chunks.push(`${JSON.stringify(feature)}\n`);
+  await fs.writeFile(tmp, zlib.gzipSync(chunks.join(''), { level: 9 }));
+  await fs.rename(tmp, file);
+  const { size } = await fs.stat(file);
+  return size;
+}
+
+/**
+ * `20210629` -> `2021-06-29`, the ISO form the `window` field is written in.
+ * @param {string} ymd
+ * @returns {string}
+ */
+function isoDay(ymd) {
+  return `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
+}
+
+/**
+ * Assemble the provenance sidecar. One shape for the combined snapshot and for
+ * every per-year file, so a consumer that learns to read one has learned them
+ * all.
+ *
+ * @param {object} input
+ * @param {string} input.builtAt Injected rather than read from the clock so the
+ *   builder's only nondeterministic field is testable in isolation.
+ * @param {{from: string, to: string, days: number}} input.window
+ * @param {Array<{ymd: string, error: string}>} input.unavailableDays
+ * @param {number} input.cellCount
+ * @param {number} input.corePointCount
+ * @param {boolean} input.truncated
+ * @param {number} input.cellsBeforeTruncation
+ * @returns {object}
+ */
+export function radarMeta(input) {
+  return {
+    version: 1,
+    builtAt: input.builtAt,
+    builder: 'scripts/build-storm-radar-snapshots.mjs',
+    product: PRODUCT,
+    productLabel: PRODUCT_LABEL,
+    bucket: 's3://noaa-mrms-pds',
+    license: 'US Government public domain (NOAA/NWS/NSSL)',
+    attribution: 'NOAA/NWS/NSSL — Multi-Radar/Multi-Sensor (MRMS)',
+    commercialUse: true,
+    requiresKey: false,
+    units: 'millimetres',
+    hailCoreThresholdMm: HAIL_CORE_MM,
+    gridDeg: CELL_DEG,
+    window: input.window,
+    unavailableDays: input.unavailableDays,
+    cellCount: input.cellCount,
+    corePointCount: input.corePointCount,
+    maxCells: MAX_CELLS,
+    truncated: input.truncated,
+    cellsBeforeTruncation: input.cellsBeforeTruncation,
+    caveat:
+      'MESH is a radar estimate and is known to over-report relative to ground reports. Treat it as evidence of where hail fell, not as an exact stone size.',
+  };
+}
+
+/**
+ * Write a sidecar JSON atomically, with the trailing newline the other builders
+ * emit so the files stay diff- and prettier-friendly.
+ * @param {string} file
+ * @param {object} value
+ */
+export async function writeMetaJson(file, value) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  await fs.rename(tmp, file);
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -259,56 +617,63 @@ async function main() {
   const days = dateRange(from, to);
   step(`MRMS ${PRODUCT_LABEL}: ${days.length} days, ${from} to ${to}`);
 
-  const cells = new Map();
+  const cellsByYear = new Map();
+  /** Distinct cells across all year buckets — a cell active in two years counts twice. */
+  const ingestedCells = () => {
+    let total = 0;
+    for (const bucket of cellsByYear.values()) total += bucket.size;
+    return total;
+  };
   let done = 0;
   let failed = 0;
   let totalPoints = 0;
   const failures = [];
+  // Per-year day tallies, so a year's sidecar can report the window it was
+  // built from rather than inheriting the whole run's window.
+  const daysByYear = new Map();
+  const pointsByYear = new Map();
 
   await pooled(days, args.concurrency, async (ymd) => {
-    const result = await ingestDay(ymd, cells);
+    const result = await ingestDay(ymd, cellsByYear);
     done += 1;
-    if (result.ok) totalPoints += result.points;
-    else {
+    const year = Number(ymd.slice(0, 4));
+    daysByYear.set(year, (daysByYear.get(year) ?? 0) + 1);
+    if (result.ok) {
+      totalPoints += result.points;
+      pointsByYear.set(year, (pointsByYear.get(year) ?? 0) + result.points);
+    } else {
       failed += 1;
       failures.push({ ymd, error: result.error });
     }
     if (done % 5 === 0 || done === days.length) {
       step(
-        `  ${done}/${days.length} days · ${cells.size.toLocaleString()} cells · ${failed} unavailable`,
+        `  ${done}/${days.length} days · ${ingestedCells().toLocaleString()} cell-years · ${failed} unavailable`,
       );
     }
   });
 
-  if (cells.size === 0) {
+  if (ingestedCells() === 0) {
     throw new Error(
       'No radar hail cores were ingested. Check the date range — the MRMS archive begins 2020-10-14, and the 24-hour-maximum product is not produced for every day.',
     );
   }
 
-  const features = [...cells.values()].map((cell) => ({
-    type: 'Feature',
-    geometry: {
-      type: 'Point',
-      coordinates: [
-        Math.round((cell.j * CELL_DEG + CELL_DEG / 2) * 100000) / 100000,
-        Math.round((cell.i * CELL_DEG + CELL_DEG / 2) * 100000) / 100000,
-      ],
-    },
-    properties: {
-      i: cell.i,
-      j: cell.j,
-      d: CELL_DEG,
-      mx: Math.round(cell.maxMm * 10) / 10,
-      cp: cell.corePoints,
-      dy: cell.days.size,
-      y0: Number(cell.firstYmd.slice(0, 4)),
-      y1: Number(cell.lastYmd.slice(0, 4)),
-    },
-  }));
-
-  const truncated = features.length > MAX_CELLS;
-  const kept = truncated ? features.slice(0, MAX_CELLS) : features;
+  // Per-year files first: each cell carries only the statistics for the year it
+  // was active in, which is the only thing a year-scoped consumer can use. A
+  // cell that saw hail in 2021 and 2024 appears in both files, with 2021's peak
+  // in one and 2024's in the other.
+  const byYear = featuresByYear(cellsByYear);
+  // The combined snapshot is then folded back out of those per-year features, so
+  // it is a merge of the published partitions rather than a parallel aggregate
+  // that could drift from them.
+  const { kept, truncated, cellsBeforeTruncation } = selectKeptCells(
+    mergeYearFeatures(byYear),
+    MAX_CELLS,
+  );
+  const keptKeys = new Set(
+    kept.map((feature) => `${feature.properties.i}:${feature.properties.j}`),
+  );
+  const publishedByYear = restrictYearsToKeys(byYear, keptKeys);
 
   const outFile = path.join(args.out, 'storm_radar_hail.geojsonl');
   const bytes = await writeGeoJsonl(outFile, kept);
@@ -317,7 +682,7 @@ async function main() {
   );
   if (truncated) {
     step(
-      `Truncated to MAX_CELLS=${MAX_CELLS} from ${features.length.toLocaleString()}`,
+      `Truncated to MAX_CELLS=${MAX_CELLS} from ${cellsBeforeTruncation.toLocaleString()}, keeping the strongest hail (highest mx first)`,
     );
   }
   step(
@@ -331,42 +696,61 @@ async function main() {
     step(`Unavailable days: ${failures.length} — ${sample}`);
   }
 
-  const metaPath = path.join(args.out, 'storm-radar-sources.json');
-  await fs.writeFile(
-    metaPath,
-    `${JSON.stringify(
-      {
-        version: 1,
-        builtAt: new Date().toISOString(),
-        builder: 'scripts/build-storm-radar-snapshots.mjs',
-        product: PRODUCT,
-        productLabel: PRODUCT_LABEL,
-        bucket: 's3://noaa-mrms-pds',
-        license: 'US Government public domain (NOAA/NWS/NSSL)',
-        attribution: 'NOAA/NWS/NSSL — Multi-Radar/Multi-Sensor (MRMS)',
-        commercialUse: true,
-        requiresKey: false,
-        units: 'millimetres',
-        hailCoreThresholdMm: HAIL_CORE_MM,
-        gridDeg: CELL_DEG,
-        window: { from, to, days: days.length },
-        unavailableDays: failures,
-        cellCount: kept.length,
-        corePointCount: totalPoints,
-        caveat:
-          'MESH is a radar estimate and is known to over-report relative to ground reports. Treat it as evidence of where hail fell, not as an exact stone size.',
-      },
-      null,
-      2,
-    )}\n`,
+  const builtAt = new Date().toISOString();
+  await writeMetaJson(
+    path.join(args.out, 'storm-radar-sources.json'),
+    radarMeta({
+      builtAt,
+      window: { from, to, days: days.length },
+      unavailableDays: failures,
+      cellCount: kept.length,
+      corePointCount: totalPoints,
+      truncated,
+      cellsBeforeTruncation,
+    }),
   );
   step('Wrote storm-radar-sources.json');
+
+  // Per-year partitions of the *kept* set, so the union of the year files is
+  // exactly the combined snapshot and a truncation ceiling is never silently
+  // bypassed by a year file. Order is already total within each year.
+  for (const [year, list] of publishedByYear) {
+    const gzPath = path.join(args.out, `storm_radar_hail_${year}.geojsonl.gz`);
+    const gzBytes = await writeGeoJsonlGz(gzPath, list);
+    const yearDays = days.filter((ymd) => ymd.slice(0, 4) === String(year));
+    await writeMetaJson(
+      path.join(args.out, `storm-radar-sources_${year}.json`),
+      radarMeta({
+        builtAt,
+        window: {
+          from: yearDays.length ? isoDay(yearDays[0]) : null,
+          to: yearDays.length ? isoDay(yearDays[yearDays.length - 1]) : null,
+          days: daysByYear.get(year) ?? yearDays.length,
+        },
+        unavailableDays: failures.filter(
+          (f) => f.ymd.slice(0, 4) === String(year),
+        ),
+        cellCount: list.length,
+        corePointCount: pointsByYear.get(year) ?? 0,
+        // Truncation is global, not per year: MAX_CELLS bounds the combined
+        // snapshot, so a year file reports the same ceiling and pre-truncation
+        // count as the combined sidecar rather than an invented local one.
+        truncated,
+        cellsBeforeTruncation,
+      }),
+    );
+    step(
+      `Wrote storm_radar_hail_${year}.geojsonl.gz — ${list.length.toLocaleString()} cells, ${(gzBytes / 1e3).toFixed(1)} kB`,
+    );
+  }
   step(`Done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 }
 
-main().catch((error) => {
-  process.stderr.write(
-    `[storm-radar-etl] FAILED: ${error.stack || error.message}\n`,
-  );
-  process.exitCode = 1;
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    process.stderr.write(
+      `[storm-radar-etl] FAILED: ${error.stack || error.message}\n`,
+    );
+    process.exitCode = 1;
+  });
+}

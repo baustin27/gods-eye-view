@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "builtAt": "2026-10-15T18:02:40.631Z",
+  "builtAt": "2026-10-16T02:51:50.622Z",
   "builder": "scripts/build-storm-radar-snapshots.mjs",
   "product": "CONUS/MESH_Max_1440min_00.50",
   "productLabel": "MRMS MESH 24-hour maximum",
@@ -14,11 +14,14 @@
   "gridDeg": 0.25,
   "window": {
     "from": "2026-01-01",
-    "to": "2026-10-13",
-    "days": 286
+    "to": "2026-10-15",
+    "days": 288
   },
   "unavailableDays": [],
-  "cellCount": 14845,
-  "corePointCount": 1494383,
+  "cellCount": 14850,
+  "corePointCount": 1502861,
+  "maxCells": 40000,
+  "truncated": false,
+  "cellsBeforeTruncation": 21947,
   "caveat": "MESH is a radar estimate and is known to over-report relative to ground reports. Treat it as evidence of where hail fell, not as an exact stone size."
 }
