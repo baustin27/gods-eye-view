@@ -724,19 +724,26 @@ export function createIsolationLayer({ overlayHost } = {}) {
               notifyRowControls();
               return { ok: true, unchanged: true };
             }
-            return api.setIsolationText(query).then((result) => {
-              if (!result.ok) {
-                // Say why, and change nothing. Silently doing nothing is the
-                // failure this feature would otherwise ship.
-                _fieldMessage = `Could not find "${query}" — try a country, a state, or a city`;
-              } else {
-                // A stale rejection must not outlive the name that fixed it.
-                _fieldMessage = null;
-              }
-              publish();
-              notifyRowControls();
-              return result;
-            });
+            // The camera is the tie-break for names that legitimately belong to
+            // more than one place - five Springfields, a Denver in Colorado and
+            // one in North Carolina. `near` was documented and implemented all
+            // along and never supplied, which made the tie-break fiction.
+            const near = cameraCentre();
+            return api
+              .setIsolationText(query, near ? { near } : {})
+              .then((result) => {
+                if (!result.ok) {
+                  // Say why, and change nothing. Silently doing nothing is the
+                  // failure this feature would otherwise ship.
+                  _fieldMessage = `Could not find "${query}" — try a country, a state, or a city`;
+                } else {
+                  // A stale rejection must not outlive the name that fixed it.
+                  _fieldMessage = null;
+                }
+                publish();
+                notifyRowControls();
+                return result;
+              });
           },
         },
         chips: [
@@ -849,6 +856,24 @@ export function createIsolationLayer({ overlayHost } = {}) {
    * already drawn by the time this runs, and one bad listener cannot be allowed to
    * undo that or to stop the rest being told.
    */
+  /**
+   * The camera's view centre, in degrees, or null before `init`.
+   *
+   * This is the tie-break for names that legitimately belong to more than one
+   * place: five Springfields, a Denver in Colorado and one in North Carolina.
+   * `setIsolationText` accepted `near` and `places.js` implemented it, but
+   * nothing ever supplied one - so the tie-break was documented fiction.
+   */
+  function cameraCentre() {
+    const carto = _viewer?.camera?.positionCartographic;
+    if (!carto) return null;
+    const lat = carto.latitude;
+    const lon = carto.longitude;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    // Cartographic is radians; the lookup is degrees.
+    return { lat: (lat * 180) / Math.PI, lon: (lon * 180) / Math.PI };
+  }
+
   function safeNotify(listener) {
     try {
       listener(_area);

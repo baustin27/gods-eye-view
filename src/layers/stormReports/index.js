@@ -21,7 +21,6 @@
 
 import {
   hailBand,
-  HAIL_BANDS,
   isolationLine,
   magnitudeLabel,
   framingFor,
@@ -105,7 +104,7 @@ const OUTSIDE = 2;
 export const HAIL_FLOOR_IN = 1.0;
 
 /** How many report cards the overlay may show at once. */
-const OVERLAY_COHORT_LIMIT = 25;
+const OVERLAY_COHORT_LIMIT = 2;
 
 /**
  * Hard ceiling on the rows one comparison may look at.
@@ -1019,14 +1018,12 @@ export function createStormReportsLayer({
    *
    * @param {object} report
    * @param {object} band
-   * @param {boolean} [selected] Defaults to whether this report is the selected
-   *   one or falls inside the active isolation.
    */
-  function labelModelFor(report, band, selected = undefined) {
+  function labelModelFor(report, band) {
+    // A third `selected` argument used to exist here. Both call sites passed
+    // two, so the branch that honoured it was unreachable.
     const isSelected =
-      selected === undefined
-        ? _selectedReportId === entityIdFor(report) || isolationIsOn()
-        : selected;
+      _selectedReportId === entityIdFor(report) || isolationIsOn();
     return {
       title: magnitudeLabel(report),
       details: [
@@ -1259,13 +1256,18 @@ export function createStormReportsLayer({
    * which failed registration, and the only symptom was the manager's generic
    * "Could not enable the requested layer".
    *
-   * WHY SO FEW ENTRIES. This used to publish the worst `OVERLAY_COHORT_LIMIT`
-   * reports as cards, each titled "2.75 hail — Travis County". The colour bands
-   * are already drawn by the Cesium points, and clicking already picks through
+   * WHY SO FEW ENTRIES. This used to publish the worst 25 reports as cards,
+   * each titled "2.75 hail — Travis County". The colour bands are already
+   * drawn by the Cesium points, and clicking already picks through
    * `scene.pick` against those same points, so the cards were duplicating a
    * mark that already existed while adding a line of text to every one. The
    * legend carries the band colours; a card is for the report someone is
    * actually pointing at.
+   *
+   * `cohortLimit` below is the overlay's own per-domain BUDGET, not a cap on
+   * how many entries we may publish, so it no longer has to track the old
+   * 25-report cohort. It is 2 — the most this layer can ever publish — so the
+   * budget states what is true.
    */
   function publish(message = null) {
     // An explicit null clears a previous rejection; no argument leaves it.

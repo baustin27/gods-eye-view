@@ -42,10 +42,10 @@
 import { normaliseBbox } from '../../data/isolation.js';
 
 /** The whole world, as a rectangle's worth of edges. */
-export const WORLD_WEST = -180;
-export const WORLD_EAST = 180;
-export const WORLD_SOUTH = -90;
-export const WORLD_NORTH = 90;
+const WORLD_WEST = -180;
+const WORLD_EAST = 180;
+const WORLD_SOUTH = -90;
+const WORLD_NORTH = 90;
 
 /** Kilometres per degree of latitude. Mean radius, the usual compromise. */
 const KM_PER_DEGREE = 111.32;

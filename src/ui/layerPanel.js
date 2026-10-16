@@ -331,7 +331,8 @@ export class LayerPanel {
               (entry) => entry.id === button.dataset.chipId,
             );
             if (!chip || chip.disabled || !this.isEnabled(layer.id)) return;
-            if (typeof chip.onClick === 'function') chip.onClick();
+            if (typeof chip.onClick === 'function')
+              void Promise.resolve(chip.onClick()).catch(() => {});
             else if (chip.params)
               this.setLayerParams(layer.id, chip.params, { origin: 'user' });
           });
@@ -662,10 +663,10 @@ export class LayerPanel {
     input.value = String(field?.value ?? '');
     if (typeof field?.onCancel === 'function') field.onCancel();
     // Blurring fires focusout, which would commit the value we just restored.
-    // Without this the cancel is immediately undone by the very next tick.
-    container._rowFieldCancelling = true;
+    // `blur` is optional because the test fixture's inputs do not implement it;
+    // in a real browser it always fires focusout, and the layer's own
+    // short-circuit on an unchanged value is what makes the re-commit harmless.
     input.blur?.();
-    container._rowFieldCancelling = false;
   }
 
   /**
@@ -756,7 +757,10 @@ export class LayerPanel {
     const range = this._rowControlsFor(layerId)?.range;
     if (typeof range?.onInput === 'function') {
       const [from, to] = this._rowRangeValues(container, range);
-      range.onInput(from, to);
+      // Same contract as a chip: a row handler may be async, and a
+      // rejection must not escape as an uncaught error.
+
+      void Promise.resolve(range.onInput(from, to)).catch(() => {});
     }
   }
 
@@ -773,7 +777,10 @@ export class LayerPanel {
     const range = this._rowControlsFor(layerId)?.range;
     if (typeof range?.onCommit === 'function') {
       const [from, to] = this._rowRangeValues(container, range);
-      range.onCommit(from, to);
+      // Same contract as a chip: a row handler may be async, and a
+      // rejection must not escape as an uncaught error.
+
+      void Promise.resolve(range.onCommit(from, to)).catch(() => {});
     }
   }
 

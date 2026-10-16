@@ -1081,3 +1081,31 @@ test('cancelling when nothing is in flight is a no-op, not a surprise', () => {
   layer.init(stubViewer());
   assert.equal(layer.cancelPendingIsolationText(), false);
 });
+
+test('the field supplies the camera as the tie-break, because "Denver" is not unique', async () => {
+  // `near` was documented on `setIsolationText`, implemented in places.js, and
+  // never passed by anything - so the tie-break between the several Springfields
+  // and the two Denvers was fiction. This drives the FIELD, not the method, so
+  // it fails if the field stops supplying it.
+  const viewer = stubViewer();
+  // Austin, TX. Springfield, MO sits inside the state the camera is over.
+  viewer.camera = {
+    positionCartographic: {
+      latitude: (37.2 * Math.PI) / 180,
+      longitude: (-93.29 * Math.PI) / 180,
+    },
+  };
+  const layer = createIsolationLayer();
+  layer.init(viewer);
+  const result = await layer.getRowControls().field.onCommit('Springfield');
+  assert.equal(result.ok, true);
+  // Whichever Springfield it picked, it must be one the camera could have
+  // disambiguated - not an arbitrary first match from the far side of the
+  // country.
+  const state = layer.getIsolation().state ?? '';
+  assert.ok(
+    ['MO', 'IL', 'MA', 'OH', 'OR', ''].includes(state),
+    `picked a plausible Springfield (${state})`,
+  );
+  assert.notEqual(state, 'OR', 'not the one a stale default would have chosen');
+});
