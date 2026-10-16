@@ -867,3 +867,121 @@ describe_area_wiring: {
     assert.equal(layer.getIsolation(), null, 'and keeps no area');
   });
 }
+
+test('blurring the field does not destroy a live isolation', async () => {
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  await layer.setIsolationText('Denver');
+  const boxes = layer.getBoxes();
+  assert.ok(boxes.length, 'set up: an isolation exists');
+
+  // The panel commits on blur. A blur is what clicking a chip does, so an empty
+  // commit arriving right after a good one must not read as "clear".
+  const result = await layer.getRowControls().field.onCommit('');
+  assert.equal(result.ok, true);
+  assert.equal(result.unchanged, true, 'nothing was asked for');
+  assert.deepEqual(layer.getBoxes(), boxes, 'the isolation survived the blur');
+  assert.equal(layer.getIsolation().name, 'Denver');
+
+  // Clearing is still possible, and still explicit.
+  layer.clearIsolation();
+  assert.equal(layer.getIsolation(), null);
+});
+
+/**
+ * A stand-in for the real layer-state manager, tracking only what SOLO uses.
+ * `programmatic` is the load-bearing part: `isExplicitLayerStateOrigin` persists
+ * only `user`, `voice` and `tool`, so anything else cannot overwrite the layer
+ * set the person actually chose.
+ */
+function fakeManager(enabled) {
+  const state = new Set(enabled);
+  const calls = [];
+  return {
+    calls,
+    state,
+    getEnabledLayerIds: () => new Set(state),
+    async clearSelectedLayers({ origin } = {}) {
+      calls.push(['clear', origin]);
+      const cleared = [...state];
+      for (const id of cleared) state.delete(id);
+      return { targetIds: cleared, clearedIds: cleared, notClearedIds: [] };
+    },
+    async setEnabled(id, on, { origin } = {}) {
+      calls.push(['set', id, on, origin]);
+      if (on) state.add(id);
+      else state.delete(id);
+      return true;
+    },
+    async restoreEnabledLayerIds(ids, { origin } = {}) {
+      calls.push(['restore', [...ids], origin]);
+      for (const id of ids) state.add(id);
+      return true;
+    },
+  };
+}
+
+test('SOLO parks every other layer and puts them all back, programmatically', async () => {
+  const m = fakeManager([
+    'isolation',
+    'storms',
+    'traffic',
+    'cctv',
+    'satellites',
+  ]);
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  layer.attachDataManager(m);
+  await layer.setIsolationText('Denver');
+
+  const on = await layer.setSolo(true);
+  assert.equal(on.ok, true);
+  assert.equal(m.calls[0][1], 'programmatic', 'the clear is not persisted');
+  assert.equal(layer.isSolo(), true);
+
+  const off = await layer.setSolo(false);
+
+  // Isolation is never parked: taking the lens off must not take away the
+  // ability to take it off.
+  const restoreCall = m.calls.find((c) => c[0] === 'restore');
+  assert.ok(restoreCall, 'a snapshot was restored from');
+  assert.equal(
+    restoreCall[1].includes('isolation'),
+    false,
+    'isolation is not in its own snapshot',
+  );
+  assert.equal(off.ok, true);
+  assert.equal(off.restored, 4, 'four layers came back');
+  assert.equal(restoreCall[1].length, 4);
+  for (const id of ['storms', 'traffic', 'cctv', 'satellites'])
+    assert.equal(m.state.has(id), true, `${id} is back`);
+});
+
+test('SOLO refuses to engage without a manager rather than pretending', async () => {
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  await layer.setIsolationText('Denver');
+  const result = await layer.setSolo(true);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'no-manager');
+  const solo = layer
+    .getRowControls()
+    .chips.find((c) => c.id === 'isolation-solo');
+  assert.equal(solo.disabled, true, 'and the chip is inert, not misleading');
+});
+
+test('clearing the area releases SOLO, because parked layers are worse than SOLO', async () => {
+  const manager = fakeManager(['isolation', 'storms', 'traffic']);
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  layer.attachDataManager(manager);
+  await layer.setIsolationText('Denver');
+  await layer.setSolo(true);
+  assert.equal(manager.state.has('traffic'), false, 'parked');
+
+  layer.clearIsolation();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(manager.state.has('traffic'), true, 'put back on the way out');
+  assert.equal(manager.state.has('storms'), true);
+  assert.equal(layer.isSolo(), false);
+});

@@ -366,7 +366,10 @@ export class LayerPanel {
           this._bind(field, 'keydown', (event) => {
             if (event.key === 'Enter') {
               event.preventDefault();
-              this._commitRowField(field, layer.id);
+              // `_commitRowField` may await an async `onCommit`. An
+              // unhandled rejection here would surface as an uncaught error
+              // with no route back to the layer, so it is swallowed here.
+              void this._commitRowField(field, layer.id).catch(() => {});
             } else if (event.key === 'Escape') {
               event.preventDefault();
               this._cancelRowField(field, layer.id);
@@ -377,7 +380,7 @@ export class LayerPanel {
           this._bind(field, 'focusout', (event) => {
             if (event.relatedTarget && field.contains(event.relatedTarget))
               return;
-            this._commitRowField(field, layer.id);
+            void this._commitRowField(field, layer.id).catch(() => {});
           });
           row.appendChild(field);
           // A window control, same contract as the field: its own container and its
@@ -611,19 +614,38 @@ export class LayerPanel {
    * showing what was typed so it can be corrected rather than silently
    * reverted to a date nobody asked for.
    *
+   * WHY THIS AWAITS. `onCommit` may be asynchronous — resolving a typed place
+   * name to geometry is a lookup, not arithmetic. The previous version wrote the
+   * field's value back synchronously, so an async layer had not yet recorded what
+   * was typed and the panel replaced the input with `''`. That blank did not just
+   * look wrong: blurring the field then committed the blank, and a layer that
+   * treats empty text as "clear" destroyed a perfectly good selection. Awaiting
+   * makes the write-back observe the post-resolution value. A synchronous
+   * `onCommit` — every other caller — awaits to itself and is unchanged.
+   *
    * @param {HTMLElement} container The row's `.data-toggle-field` node.
    * @param {string} layerId
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
-  _commitRowField(container, layerId) {
+  async _commitRowField(container, layerId) {
     const input = container?._rowFieldInput;
     if (!input || input.disabled) return false;
     const field = this._rowControlsFor(layerId)?.field;
     if (!field) return false;
     let accepted = true;
-    if (typeof field.onCommit === 'function')
-      accepted = field.onCommit(input.value) !== false;
-    if (accepted)
+    if (typeof field.onCommit === 'function') {
+      const result = field.onCommit(input.value);
+      accepted =
+        typeof result?.then === 'function'
+          ? (await result) !== false
+          : result !== false;
+    }
+    // Only write back while the person is still in the field. A resolved async
+    // commit can land after focus has already moved on, and yanking the value
+    // back under someone who has clicked a chip is the bug this await fixed.
+    const ownerDoc = container.ownerDocument ?? globalThis.document;
+    const stillFocused = ownerDoc?.activeElement === input;
+    if (accepted && stillFocused)
       input.value = String(this._rowControlsFor(layerId)?.field?.value ?? '');
     return accepted;
   }

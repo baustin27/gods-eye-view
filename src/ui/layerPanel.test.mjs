@@ -264,7 +264,11 @@ test('an omitted source is visibly unavailable and cannot be toggled on', async 
  * controls may include the optional typed `field`. Returns the fixture too:
  * the test DOM answers class selectors on elements, not on the document.
  */
-async function panelWithField({ withField = true, reject = false } = {}) {
+async function panelWithField({
+  withField = true,
+  reject = false,
+  asyncField = false,
+} = {}) {
   const { LayerPanel } = await import('./layerPanel.js');
   const { railFixture } = await import('./railTestFixture.mjs');
   const f = railFixture();
@@ -298,6 +302,11 @@ async function panelWithField({ withField = true, reject = false } = {}) {
         // A rejected value leaves the field value alone, as the layer would.
         if (reject) return false;
         controls.field.value = raw;
+        // `asyncField` models a layer that must resolve text against data
+        // before it knows the value to echo back - resolving a place name to
+        // geometry. A synchronous layer returns `true` and is unaffected.
+        if (asyncField)
+          return new Promise((resolve) => setTimeout(() => resolve(true), 0));
         return true;
       },
       onCancel: () => cancelled.push(true),
@@ -362,6 +371,34 @@ test('Enter commits the typed value to the layer', async () => {
   input.value = '2026-08-11';
   key(h.row().querySelector('.data-toggle-field'), 'Enter');
   assert.deepEqual(h.committed, ['2026-08-11']);
+  h.close();
+});
+
+// THE REGRESSION. An async `onCommit` used to have its value overwritten by the
+// panel with the PRE-resolution field value, which was ''. The box would appear
+// for a second and then vanish, because blurring the field committed that blank
+// and the layer read it as "clear".
+test('an async commit echoes the resolved value, not the pre-resolution blank', async () => {
+  const h = await panelWithField({ asyncField: true });
+  const input = h.input();
+  input.value = 'Denver';
+  key(h.row().querySelector('.data-toggle-field'), 'Enter');
+  // The layer records its value synchronously here, but the panel's write-back
+  // happens a tick later - which is the whole point.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(h.committed, ['Denver']);
+  assert.equal(input.value, 'Denver', 'the typed text survived the round trip');
+  h.close();
+});
+
+test('an async rejection keeps the typed text so it can be corrected', async () => {
+  const h = await panelWithField({ reject: true, asyncField: true });
+  const input = h.input();
+  input.value = 'qqqzzz nowhere';
+  key(h.row().querySelector('.data-toggle-field'), 'Enter');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(h.committed, ['qqqzzz nowhere']);
+  assert.equal(input.value, 'qqqzzz nowhere', 'not reset to the old value');
   h.close();
 });
 

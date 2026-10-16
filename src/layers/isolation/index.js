@@ -105,6 +105,12 @@ export function createIsolationLayer({ overlayHost } = {}) {
   // Layers that honour the isolation. Not a broadcast bus and not an event
   // emitter: a Set of plain listeners, called with the area, cleared on destroy.
   const _areaListeners = new Set();
+  // SOLO support. The manager arrives late - `app/data.js` calls
+  // `attachDataManager` on every catalog layer once it exists - so without it
+  // this layer simply cannot solo, and says so rather than pretending.
+  let _manager = null;
+  let _soloSnapshot = null;
+  let _soloMessage = null;
   let _boxes = [];
   let _scrim = [];
   let _enabled = false;
@@ -485,6 +491,10 @@ export function createIsolationLayer({ overlayHost } = {}) {
 
     /** Remove the isolation and its scrim. @returns {boolean} */
     clearIsolation() {
+      // Clearing the area releases SOLO. Leaving thirty layers switched off
+      // because the area went away would be a far worse failure than SOLO
+      // itself, so the two are tied together deliberately.
+      void restoreSoloLayers({ ok: true, off: 0 });
       return api.setIsolation(null);
     },
 
@@ -568,6 +578,80 @@ export function createIsolationLayer({ overlayHost } = {}) {
      * `readout` stays falsy: truthy tells the panel to hide the chips and show a
      * count instead, which is the opposite of what this row is for.
      */
+    /**
+     * The layer-state manager, injected once the catalog is constructed.
+     *
+     * Late binding is deliberate: the isolation layer is built before the
+     * manager exists, and this is the seam every other layer that needs to
+     * drive layers uses (`src/app/data.js`).
+     */
+    attachDataManager(manager) {
+      _manager = manager ?? null;
+    },
+
+    /** Is SOLO engaged right now? */
+    isSolo() {
+      return _soloSnapshot !== null;
+    },
+
+    /**
+     * Turn every OTHER layer off, remembering exactly what was on.
+     *
+     * Two deliberate choices:
+     *
+     * 1. `origin: 'programmatic'`. `isExplicitLayerStateOrigin` persists only
+     *    `user`, `voice` and `tool`, so switching layers off here cannot
+     *    overwrite the layer set the person actually chose and has stored.
+     * 2. Isolation itself is never in the snapshot. Solo is a lens, and taking
+     *    the lens away must not take away the ability to take it off again.
+     *
+     * A failed restore is REPORTED rather than swallowed: this path switches off
+     * up to thirty layers, and silently leaving someone with none of them back is
+     * the worst outcome available.
+     *
+     * @param {boolean} on
+     * @returns {Promise<{ok:boolean, off:number, restored?:number, failed?:string[]}>}
+     */
+    async setSolo(on) {
+      if (!_manager) return { ok: false, off: 0, reason: 'no-manager' };
+      if (on) {
+        if (_soloSnapshot !== null) return { ok: true, off: 0, already: true };
+        // Snapshot BEFORE anything is switched off.
+        _soloSnapshot = [..._manager.getEnabledLayerIds()].filter(
+          (id) => id !== ISOLATION_LAYER_ID,
+        );
+        try {
+          const result = await _manager.clearSelectedLayers({
+            origin: 'programmatic',
+          });
+          // Put isolation back on if the clear took it with everything else.
+          if (!result.clearedIds.includes(ISOLATION_LAYER_ID)) {
+            await _manager.setEnabled(ISOLATION_LAYER_ID, true, {
+              origin: 'programmatic',
+            });
+          }
+          _soloMessage = null;
+          notifyRowControls();
+          return {
+            ok: true,
+            off: result.clearedIds?.length ?? _soloSnapshot.length,
+          };
+        } catch (error) {
+          // The clear failed partway. Put back whatever we can, then report.
+          await restoreSoloLayers({ ok: true, off: 0 });
+          return { ok: false, off: 0, reason: 'clear-failed' };
+        }
+      }
+      return restoreSoloLayers({ ok: true, off: 0 });
+    },
+
+    /**
+     * Put back exactly the layers SOLO switched off.
+     *
+     * Separate from `setSolo(false)` because the same thing must happen when the
+     * isolation is cleared or the layer is destroyed: leaving thirty layers off
+     * because the area went away would be a far worse failure than SOLO itself.
+     */
     getRowControls() {
       const ready = _boxes.length > 0;
       return {
@@ -584,9 +668,14 @@ export function createIsolationLayer({ overlayHost } = {}) {
           onCommit(raw) {
             const query = String(raw ?? '').trim();
             if (!query) {
+              // Empty text is NOT a request to clear. The panel commits on blur,
+              // and a blur is what happens when someone clicks a chip — so an
+              // empty commit used to arrive immediately after a perfectly good
+              // one and silently destroy it. Clearing is what the CLEAR chip is
+              // for, and it is visible.
               _fieldMessage = null;
-              api.clearIsolation();
-              return;
+              notifyRowControls();
+              return { ok: true, unchanged: true };
             }
             return api.setIsolationText(query).then((result) => {
               if (!result.ok) {
@@ -628,6 +717,19 @@ export function createIsolationLayer({ overlayHost } = {}) {
             active: false,
             onClick: () => api.clearIsolation(),
           },
+          {
+            id: 'isolation-solo',
+            label: 'SOLO',
+            // Opt-in, deliberately. Switching thirty layers off the moment
+            // someone types a place name would be destructive and surprising;
+            // this has to be a thing they ask for.
+            title: _soloSnapshot
+              ? 'Turn every other layer back on'
+              : 'Turn every other layer off, and remember them',
+            disabled: !_manager || (!_area && _soloSnapshot === null),
+            active: _soloSnapshot !== null,
+            onClick: () => api.setSolo(_soloSnapshot === null),
+          },
         ],
         legend: [
           {
@@ -659,6 +761,10 @@ export function createIsolationLayer({ overlayHost } = {}) {
 
     destroy() {
       clearEntities();
+      // Best-effort release, for the same reason: a destroyed isolation that
+      // took thirty layers with it would be unrecoverable from the panel.
+      if (_soloSnapshot !== null && _manager)
+        void restoreSoloLayers({ ok: true, off: 0 });
       // Dropped before the area is nulled, and without notifying: a destroyed
       // isolation must not push a final "no isolation" into layers that have
       // outlived it.
@@ -679,9 +785,15 @@ export function createIsolationLayer({ overlayHost } = {}) {
    */
   function infoLine() {
     if (_fieldMessage) return _fieldMessage;
+    // A partial restore outranks everything: the person is looking at a map
+    // that lost layers and has to know which.
+    if (_soloMessage) return _soloMessage;
     if (!_area) return 'No isolation. Everything on the map counts.';
+    const solo = _soloSnapshot
+      ? ` · SOLO on, ${_soloSnapshot.length} layers parked`
+      : '';
     const parts = [describeIsolation(_area), splitNote(_boxes)];
-    return parts.filter(Boolean).join(' · ');
+    return parts.filter(Boolean).join(' · ') + solo;
   }
 
   /**
@@ -695,6 +807,25 @@ export function createIsolationLayer({ overlayHost } = {}) {
       listener(_area);
     } catch (error) {
       console.error('[isolation] an area subscriber threw', error);
+    }
+  }
+
+  async function restoreSoloLayers(result) {
+    if (_soloSnapshot === null) return result;
+    const snapshot = _soloSnapshot;
+    _soloSnapshot = null;
+    try {
+      await _manager.restoreEnabledLayerIds(snapshot, {
+        origin: 'programmatic',
+      });
+      _soloMessage = null;
+      notifyRowControls();
+      return { ...result, ok: true, restored: snapshot.length, failed: [] };
+    } catch (error) {
+      const failed = error?.failedLayerIds ?? [];
+      _soloMessage = `Restored ${snapshot.length - failed.length} of ${snapshot.length} layers — ${failed.join(', ')}`;
+      notifyRowControls();
+      return { ...result, ok: false, failed };
     }
   }
 
