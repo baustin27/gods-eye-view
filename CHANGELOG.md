@@ -1,3 +1,26 @@
+- Make the storm map usable at national zoom, and fix two hover defects.
+
+  Report cards are summoned by pointing at them instead of being scattered
+  over the map: at most the one under the pointer and the one that was
+  clicked. The colour bands were already drawn by the markers and the legend
+  already carried them, so a line of text per report was duplicating a mark
+  that existed.
+
+  Hover works on **every** drawn report. It had been gated on the
+  tracked-readout cohort — the worst 40 — so on a day with 44,717 reports it
+  did almost nothing, which no test noticed because the test harness only ever
+  drove the click handler.
+
+  Markers are capped at the worst 2,000 of the current filter. The layer drew
+  one Cesium entity per visible report with no cap — 44,720 on a fresh load,
+  none of them occludable. Every reported number is unchanged: the cap bounds
+  what is drawn, and the panel says which subset it is showing.
+
+  The isolation scrim no longer uses Cesium's ground-classified path, which
+  extruded every world-scale rectangle into a shadow volume — 66,067 vertices
+  for a flat dark wash. The layer's bounding boxes also split the width of
+  what is typed rather than guessing.
+
 - Add the **Isolation Mode** layer: narrow the whole app to a named place.
 
   Type `Texas`, `New York State`, `Denver` or `Japan` into the row and

@@ -133,9 +133,64 @@ clicked, never the same one twice. The bands stay on the points and in the
 legend, which is what the legend is for. Hover reuses the click's own pick, so
 there is no second geometry to keep in sync.
 
+**Hover is valid for any report the layer drew, not only the tracked cohort.**
+It was originally gated on `_contextIds`, which holds the worst
+`STORM_CONTEXT_LIMIT` (40) reports — so on a 44,717-report day hover summoned a
+card for forty of them and nothing for the rest. `publish()` builds a card from
+the report object rather than from `gevLabelModel`, so the cohort was never
+needed. Summoning and dismissal are gated separately: a tool owning the pointer
+must stop us _summoning_, but must never stop us taking a card _away_, or a card
+summoned before a tool took over could never be dismissed.
+
 `setHoveredReportId` is public because pointing at something is not only a mouse
 gesture — keyboard navigation and voice want the same card without synthesising
 a mouse move.
+
+### What the renderer wedge turned out to be
+
+The renderer has twice stopped answering the browser entirely. Measured on the
+app's own floor, one variable at a time:
+
+| configuration                               | fps                                         |
+| ------------------------------------------- | ------------------------------------------- |
+| baseline, Google Photorealistic 3D Tiles on | **4.2**                                     |
+| the same, 3D Tiles hidden                   | **11.3**                                    |
+| + 44,720 report markers                     | **2.6**                                     |
+| + the isolation scrim                       | **3.5** against **4.0** without — about 12% |
+
+So it is a **software-rendering ceiling** — SwiftShader plus photoreal 3D Tiles
+— not an isolation defect. It never reproduced at a consistent altitude, which
+is the signature of main-thread saturation rather than a tessellation cliff: one
+occurrence at 1.5 km, one clean run at 120 km. Twice the diagnosis blamed the
+wrong thing, and once the "leaked continuous-render hold" was not a leak at all
+but a layer that was simply enabled.
+
+Two things were still worth fixing on their own merits.
+
+**The scrim was expensive regardless.** Cesium routes a rectangle with an
+_undefined_ height to the ground-classified path (`index.js:148334` — true for
+undefined, false for defined), where every rectangle is extruded into a shadow
+volume spanning the global approximate-terrain range, the colour pass runs with
+`depthTest: false`, and a stencil pass with no early-Z precedes it. For Denver
+that measured **66,067 vertices and 130,320 triangles** for a flat dark wash,
+one rectangle being 46,931 of them on its own. An explicit `height: 0` leaves
+all of that behind; `granularity: 5°` then takes what remains to **2,851**, a 23×
+reduction.
+
+**The marker count was the real problem, and it was ours.** `render()` drew one
+Cesium Entity per visible report with no cap — **44,720** on a fresh load with
+no date filter, each carrying `disableDepthTestDistance: INFINITY` so none could
+be occluded or rejected by early-Z. The cap takes the worst **2,000** of the
+current filter using `worstFirst`, which already answers that question.
+
+Every count is unchanged. The filter, the totals, the storm list, the radar
+comparison and the isolation maths all read `_visible`, which is never
+truncated; only the drawn markers are bounded, and the panel says
+`showing the 2,000 worst on the map` so a map with 2,000 dots never reads as
+"there are 2,000 here". Verified live: 44,720 entities became 2,003.
+
+The honest summary is that the entity count fell 22× while the frame stayed
+slow, because SwiftShader and the 3D Tiles dominate everything above them.
 
 ### Two defects the test suite could not have caught
 
