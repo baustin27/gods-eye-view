@@ -257,9 +257,32 @@ test('the drawn box is the area bounding box, drawn to scale', async () => {
   await layer.update();
   const [entity] = boxes(viewer);
   assert.deepEqual(rectOf(entity), TEXAS.bbox);
-  assert.equal(value(entity.rectangle.outline), true, 'a drawn outline');
-  assert.ok(value(entity.rectangle.outlineColor), 'a colour for the outline');
-  assert.ok(Number.isFinite(value(entity.rectangle.outlineWidth)));
+  // The frame is a polyline, because Cesium silently drops
+  // `rectangle.outline` on ground-clamped geometry and reports nothing. A
+  // regression to `rectangle.outline` would draw nothing and pass a naive
+  // "is there a rectangle" check, so this asserts the mechanism explicitly.
+  const frame = value(entity.polyline);
+  assert.ok(frame, 'the frame is drawn as a polyline');
+  assert.equal(value(frame.width) > 0, true, 'a visible frame width');
+  assert.ok(value(frame.material), 'a colour for the frame');
+  assert.equal(value(frame.clampToGround), true, 'the frame follows terrain');
+  // Five positions, and the fifth repeats the first: an unclosed frame draws
+  // three sides of a box, which reads as a rendering fault.
+  const positions = frame.positions.getValue
+    ? frame.positions.getValue(0)
+    : frame.positions;
+  assert.equal(positions.length, 5, 'four corners plus the repeated first');
+  for (const [i, p] of positions.entries()) {
+    assert.ok(
+      [p.x, p.y, p.z].every(Number.isFinite),
+      `position ${i} is a real cartesian`,
+    );
+  }
+  assert.deepEqual(
+    [positions[4].x, positions[4].y, positions[4].z],
+    [positions[0].x, positions[0].y, positions[0].z],
+    'the frame closes',
+  );
   assert.ok(
     Number.isFinite(value(entity.rectangle.material).color.alpha),
     'a translucent fill, not an opaque one',
@@ -726,3 +749,121 @@ test('SHARE: a share link carries the area as the text it was named by', async (
     assert.deepEqual(layer.getParams(), { area: 'Texas' });
   });
 });
+
+test('a rejected name is reported in the panel and the next good name clears it', async () => {
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+
+  // A miss leaves the info line saying so, rather than the ordinary
+  // "no isolation" text that would hide the fact nothing happened.
+  const miss = await layer.getRowControls().field.onCommit('qqqzzz nowhere');
+  assert.equal(miss.ok, false);
+  assert.match(layer.getRowControls().info, /Could not find "qqqzzz nowhere"/);
+
+  // A hit must not leave the previous rejection sitting on screen.
+  const hit = await layer.getRowControls().field.onCommit('Texas');
+  assert.equal(hit.ok, true);
+  assert.doesNotMatch(layer.getRowControls().info, /Could not find/);
+  assert.match(layer.getRowControls().info, /Texas/);
+});
+
+test('the area field is the only way to start an isolation, and the chips wait for it', async () => {
+  const layer = createIsolationLayer();
+  layer.init(stubViewer());
+  const before = layer.getRowControls();
+  assert.ok(
+    before.field,
+    'without a field the row offers no way to name an area',
+  );
+  // Every chip is inert with no area: they are controls ON an isolation, not
+  // ways to create one.
+  for (const chip of before.chips) assert.equal(chip.disabled, true, chip.id);
+
+  await layer.getRowControls().field.onCommit('Texas');
+  const after = layer.getRowControls();
+  assert.equal(
+    after.chips.find((c) => c.id === 'isolation-clear').disabled,
+    false,
+  );
+  assert.equal(
+    after.chips.find((c) => c.id === 'isolation-frame').disabled,
+    false,
+  );
+  // The field keeps the name, so the panel shows what the person typed.
+  assert.equal(after.field.value, 'Texas');
+});
+
+describe_area_wiring: {
+  // A listener that subscribes is told the current area immediately, so it
+  // never has to ask separately and cannot miss an area set before it arrived.
+  test('a subscriber is told the current area on subscribe', async () => {
+    const layer = createIsolationLayer();
+    layer.init(stubViewer());
+    const seen = [];
+    layer.onAreaChange((area) => seen.push(area));
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0], null, 'no area yet');
+  });
+
+  test('subscribers hear about a change and not about a repeat', async () => {
+    const layer = createIsolationLayer();
+    layer.init(stubViewer());
+    const seen = [];
+    layer.onAreaChange((area) => seen.push(area?.kind ?? null));
+
+    await layer.setIsolationText('Texas');
+    assert.deepEqual(seen, [null, 'state']);
+    // The same area again must not re-filter a layer with 44,717 rows behind it.
+    await layer.setIsolationText('Texas');
+    assert.equal(seen.length, 2, 'a repeat is not a change');
+  });
+
+  test('one throwing subscriber does not stop the others or the isolation', async () => {
+    const layer = createIsolationLayer();
+    layer.init(stubViewer());
+    const seen = [];
+    layer.onAreaChange(() => {
+      throw new Error('subscriber is broken');
+    });
+    layer.onAreaChange((area) => seen.push(area));
+    const changed = await layer.setIsolationText('Texas');
+    assert.equal(changed.ok, true);
+    assert.equal(
+      seen[0],
+      null,
+      'the healthy subscriber saw the empty area first',
+    );
+    assert.equal(seen.length, 2, 'and still heard the change');
+    assert.equal(
+      seen[1],
+      layer.getIsolation(),
+      'with the very area the layer holds',
+    );
+    assert.ok(layer.getBoxes().length, 'the dimming still exists');
+  });
+
+  test('unsubscribing stops the notifications, and destroy drops every subscriber', async () => {
+    const layer = createIsolationLayer();
+    layer.init(stubViewer());
+    let count = 0;
+    const off = layer.onAreaChange(() => {
+      count += 1;
+    });
+    await layer.setIsolationText('Texas');
+    const afterFirst = count;
+    off();
+    await layer.setIsolationText('California');
+    assert.equal(count, afterFirst, 'an unsubscribed listener stays quiet');
+
+    let afterDestroy = 0;
+    layer.onAreaChange(() => {
+      afterDestroy += 1;
+    });
+    const before = afterDestroy;
+    layer.destroy();
+    // A destroyed isolation must not push a final "no isolation" into layers
+    // that have outlived it.
+    assert.equal(afterDestroy, before, 'destroy notifies nobody');
+    assert.equal(layer.getIsolation(), null, 'and keeps no area');
+  });
+}

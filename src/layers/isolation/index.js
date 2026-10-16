@@ -97,7 +97,14 @@ export function createIsolationLayer({ overlayHost } = {}) {
   // polygon would put kilobytes of coordinates in a URL; re-resolving a name
   // costs one lookup and is deterministic.
   let _areaText = null;
+  // Set when a name could not be resolved. A rejected area outranks the normal
+  // info line, because the person is still looking at the PREVIOUS isolation and
+  // needs to know their typing did not take.
+  let _fieldMessage = null;
   let _pendingText = null;
+  // Layers that honour the isolation. Not a broadcast bus and not an event
+  // emitter: a Set of plain listeners, called with the area, cleared on destroy.
+  const _areaListeners = new Set();
   let _boxes = [];
   let _scrim = [];
   let _enabled = false;
@@ -173,6 +180,12 @@ export function createIsolationLayer({ overlayHost } = {}) {
     });
     _boxes.forEach((box, index) => {
       const [west, south, east, north] = box;
+      const corners = [
+        [west, south],
+        [east, south],
+        [east, north],
+        [west, north],
+      ];
       _dataSource.entities.add(
         new Cesium.Entity({
           id: `isolation-box:${index}`,
@@ -182,10 +195,23 @@ export function createIsolationLayer({ overlayHost } = {}) {
               Cesium.Color.fromCssColorString(OUTLINE_COLOR).withAlpha(
                 OUTLINE_FILL_ALPHA,
               ),
-            outline: true,
-            outlineColor: Cesium.Color.fromCssColorString(OUTLINE_COLOR),
-            outlineWidth: 2,
+            // Clamped to the ground, NOT a fixed height: the box has to sit on
+            // the imagery rather than float over it.
             heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          },
+          // The frame is a polyline, not `rectangle.outline`. Cesium silently
+          // disables outlines on ground-clamped geometry, so asking for one
+          // here drew nothing at all and left no error — the frame is the
+          // whole visual affordance, so it is drawn the way that survives
+          // terrain.
+          polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArray([
+              ...corners.flat(),
+              ...corners[0],
+            ]),
+            width: 3,
+            material: Cesium.Color.fromCssColorString(OUTLINE_COLOR),
+            clampToGround: true,
           },
           properties: {
             isolation: true,
@@ -349,12 +375,39 @@ export function createIsolationLayer({ overlayHost } = {}) {
       render();
       publish();
       notifyRowControls();
+      // Subscribers learn about the area only when it actually changed, so a
+      // repeated set with the same area does not re-filter a storm layer that
+      // has 44,717 rows behind it.
+      if (changed) notifyAreaListeners();
       return changed;
     },
 
     /** The current isolation area, or null. */
     getIsolation() {
       return _area;
+    },
+
+    /**
+     * Subscribe to area changes. This is how the storm layer learns to filter:
+     * the isolation layer owns the area, and the layers that want to honour it
+     * ask to be told. The alternative - the isolation layer reaching for the
+     * storm layer - would make it know another layer's id and couple the two
+     * lifetimes together.
+     *
+     * @param {(area: object|null) => void} listener called immediately with the
+     *   current area, so a subscriber never has to ask separately
+     * @returns {() => void} unsubscribe
+     */
+    onAreaChange(listener) {
+      if (typeof listener !== 'function')
+        throw new TypeError('onAreaChange needs a function');
+      _areaListeners.add(listener);
+      // Told immediately, and told through the same guard as every later
+      // notification: a broken subscriber must not fail the subscription that
+      // introduced it, which would read as "isolation is broken" rather than
+      // "your listener was".
+      safeNotify(listener);
+      return () => _areaListeners.delete(listener);
     },
 
     /**
@@ -376,6 +429,10 @@ export function createIsolationLayer({ overlayHost } = {}) {
         api.setIsolation(null);
         return { ok: true };
       }
+      // The same name again is not a change. Re-resolving would build a fresh
+      // area object, read as a change by identity, and re-filter a storm layer
+      // holding tens of thousands of rows to arrive at the answer it already had.
+      if (_area && _areaText === query) return { ok: true, area: _area };
       const result = await resolveIsolation(query, { near, findPlace });
       if (!result.ok) {
         // A miss must not silently clear a working isolation, and must not throw
@@ -515,6 +572,37 @@ export function createIsolationLayer({ overlayHost } = {}) {
       const ready = _boxes.length > 0;
       return {
         readout: null,
+        // The only way to START an isolation. Everything above this row is a
+        // control on an area that does not exist yet, so a panel that showed
+        // them without this field would offer three disabled buttons and no
+        // way to enable the feature at all.
+        field: {
+          id: 'isolation-area',
+          value: _areaText || '',
+          placeholder: 'Type an area - Texas, Denver, Japan',
+          ariaLabel: 'Isolate the map to one country, state or city',
+          onCommit(raw) {
+            const query = String(raw ?? '').trim();
+            if (!query) {
+              _fieldMessage = null;
+              api.clearIsolation();
+              return;
+            }
+            return api.setIsolationText(query).then((result) => {
+              if (!result.ok) {
+                // Say why, and change nothing. Silently doing nothing is the
+                // failure this feature would otherwise ship.
+                _fieldMessage = `Could not find "${query}" — try a country, a state, or a city`;
+              } else {
+                // A stale rejection must not outlive the name that fixed it.
+                _fieldMessage = null;
+              }
+              publish();
+              notifyRowControls();
+              return result;
+            });
+          },
+        },
         chips: [
           {
             id: 'isolation-frame',
@@ -571,6 +659,10 @@ export function createIsolationLayer({ overlayHost } = {}) {
 
     destroy() {
       clearEntities();
+      // Dropped before the area is nulled, and without notifying: a destroyed
+      // isolation must not push a final "no isolation" into layers that have
+      // outlived it.
+      _areaListeners.clear();
       _area = null;
       _enabled = false;
       _dirty = true;
@@ -586,9 +678,28 @@ export function createIsolationLayer({ overlayHost } = {}) {
    * The panel's info line: what is isolated, and what the shape is not.
    */
   function infoLine() {
+    if (_fieldMessage) return _fieldMessage;
     if (!_area) return 'No isolation. Everything on the map counts.';
     const parts = [describeIsolation(_area), splitNote(_boxes)];
     return parts.filter(Boolean).join(' · ');
+  }
+
+  /**
+   * Tell every subscriber the current area. A throwing subscriber must not take
+   * the others down with it, or leave the isolation half-applied: the dimming is
+   * already drawn by the time this runs, and one bad listener cannot be allowed to
+   * undo that or to stop the rest being told.
+   */
+  function safeNotify(listener) {
+    try {
+      listener(_area);
+    } catch (error) {
+      console.error('[isolation] an area subscriber threw', error);
+    }
+  }
+
+  function notifyAreaListeners() {
+    for (const listener of [..._areaListeners]) safeNotify(listener);
   }
 
   return api;

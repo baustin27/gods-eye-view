@@ -105,6 +105,23 @@ export function createApplicationCatalog({
     const satellites = createApplicationSatellites({
       source: sources.satellites,
     });
+    const satellite_placeholder = null;
+    // Isolation and Storm Reports are built here rather than inline because
+    // they are two halves of one feature: the isolation layer owns the area,
+    // and the storm layer has to be told to filter to it. Constructing them
+    // independently is what left the storm layer's ISOLATE chip permanently
+    // disabled and the dimming unrelated to the reports.
+    const isolation = createApplicationIsolation({});
+    const stormReports = createApplicationStormReports({
+      source: sources['storm-reports'],
+    });
+    // The storm layer subscribes rather than the isolation layer reaching for
+    // it, so the dependency points one way and neither layer knows the other's
+    // id. A storm layer that has been destroyed unsubscribes on its own.
+    if (typeof isolation?.onAreaChange === 'function')
+      isolation.onAreaChange((area) => {
+        stormReports.setIsolation(area);
+      });
     const catalog = createLayerCatalog(
       [
         createBhoteKoshiEventLayer(),
@@ -130,11 +147,11 @@ export function createApplicationCatalog({
         // is absent, resolveCatalogSources substitutes a stub that throws, and
         // the layer reports unavailable rather than vanishing from a catalog
         // whose metadata already declares it.
-        createApplicationStormReports({ source: sources['storm-reports'] }),
+        stormReports,
         // Isolation owns no source: the areas come from the bundled
         // boundaries and places, so there is nothing for the source resolver
         // to substitute or go missing.
-        createApplicationIsolation({}),
+        isolation,
         createApplicationAlpr({ surface, source: sources.alpr }),
         createApplicationStreetLevel({
           surface,
