@@ -334,10 +334,24 @@ test('the scrim is dark, translucent, and clamped to the ground', async () => {
   await layer.update();
   const [entity] = scrims(viewer);
   assert.equal(entity.position, undefined, 'a rectangle, not a point entity');
+  // This used to assert CLAMP_TO_GROUND, which is what made the scrim cost
+  // 66,067 vertices and a stencil pass with no early-Z. A rectangle with an
+  // UNDEFINED height is treated as on-the-ground by Cesium regardless of
+  // `heightReference` (index.js:148334), so the assertion that mattered was
+  // that a height is DEFINED - that is what routes it off the ground path.
   assert.equal(
-    value(entity.rectangle.heightReference),
-    Cesium.HeightReference.CLAMP_TO_GROUND,
-    'clamped to the ground, so the imagery is dimmed rather than covered',
+    value(entity.rectangle.heightReference) ?? null,
+    null,
+    'no ground clamping',
+  );
+  assert.equal(
+    value(entity.rectangle.height),
+    0,
+    'an explicit height, which is what keeps it off the ground-classified path',
+  );
+  assert.ok(
+    Number(value(entity.rectangle.granularity)) > 0,
+    'coarsened, because one degree over a global rectangle is 361 columns',
   );
   const colour = value(entity.rectangle.material).color;
   assert.ok(colour, 'a material, or the scrim dims nothing');

@@ -58,6 +58,18 @@ const LAYER_NAME = 'Isolation Mode';
  */
 const ISOLATION_SOURCE_BADGE = 'BUNDLED BOUNDARIES · OFFLINE';
 
+/**
+ * Tessellation coarseness for the scrim and the box fill, in radians.
+ *
+ * Cesium's default is one degree, which for a rectangle spanning the globe is a
+ * 361-column grid - 66,067 vertices across the four rectangles a Denver
+ * isolation needs. Five degrees gives 2,851, a 23x reduction, for a wash that
+ * has no detail to preserve. Deliberately not coarser: Cesium's ground path
+ * grows the shadow volume with the granularity, so past roughly five degrees a
+ * coarser grid starts costing more than it saves.
+ */
+const SCRIM_GRANULARITY = Cesium.Math.toRadians(5);
+
 /** The box outline. */
 const OUTLINE_COLOR = '#ffd166';
 const OUTLINE_FILL_ALPHA = 0.14;
@@ -184,7 +196,25 @@ export function createIsolationLayer({ overlayHost } = {}) {
             // Clamped to the ground rather than at a fixed height: the scrim has
             // to dim the imagery, not float over it, and a fixed height punches
             // holes in it wherever the terrain rises.
-            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            // An explicit height, NOT `CLAMP_TO_GROUND`, and this is the whole
+            // reason the scrim used to be expensive.
+            //
+            // Cesium routes a rectangle with an UNDEFINED height to
+            // `GroundGeometryUpdater._isOnTerrain` (Cesium index.js:148334),
+            // which is true for undefined and false for a defined one. On the
+            // ground path the batch becomes a GroundPrimitive: every rectangle
+            // is extruded into a shadow volume spanning the global approximate
+            // terrain range (about -10.9km to +8.8km), the colour pass runs with
+            // `depthTest: false`, and a stencil depth pass with no early-Z
+            // precedes it. Measured for Denver: 66,067 vertices and 130,320
+            // triangles for a flat dark wash, one rectangle of which was 46,931
+            // vertices on its own.
+            //
+            // A defined height leaves all of that behind and draws an ordinary
+            // depth-tested primitive. Coarsening to 5 degrees then takes what
+            // remains from 66,067 vertices to 2,851.
+            height: 0,
+            granularity: SCRIM_GRANULARITY,
           },
         }),
       );
@@ -208,7 +238,11 @@ export function createIsolationLayer({ overlayHost } = {}) {
               ),
             // Clamped to the ground, NOT a fixed height: the box has to sit on
             // the imagery rather than float over it.
-            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            // Same reasoning as the scrim: a defined height keeps this off the
+            // ground-classified path. It is a translucent fill beneath an opaque
+            // frame, so it has no need to hug the terrain.
+            height: 0,
+            granularity: SCRIM_GRANULARITY,
           },
           // The frame is a polyline, not `rectangle.outline`. Cesium silently
           // disables outlines on ground-clamped geometry, so asking for one

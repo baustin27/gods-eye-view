@@ -2345,3 +2345,76 @@ test('hover works on ANY drawn report, not only the tracked cohort', async () =>
     'and leaving dismisses',
   );
 });
+
+test('markers are capped to the worst N, and the panel says so', async () => {
+  // A fresh load with no date filter draws 44,720 markers, each a Cesium
+  // Entity with `disableDepthTestDistance: INFINITY` so none can be occluded.
+  // Measured: that halves an already-4fps frame. The cap takes the worst of
+  // the filter; every number the panel shows must stay the TRUE count.
+  const rows = Array.from({ length: 2500 }, (_, i) =>
+    REPORT(1 + (i % 40) * 0.25),
+  );
+  const { layer, overlayHost } = makeLayer(rows);
+  const viewer = stubViewer();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+
+  const markers = drawn(viewer);
+  assert.ok(markers.length > 0, 'markers were drawn');
+  assert.ok(
+    markers.length < rows.length,
+    `drawn markers are capped, not every report (drew ${markers.length} of ${rows.length})`,
+  );
+
+  // The counts are NOT capped. This is the whole point: the cap bounds pixels,
+  // not data.
+  const info = layer.getRowControls().info;
+  assert.match(info, /2,500 reports/, 'the true total is still reported');
+  assert.match(
+    info,
+    /showing the [\d,]+ worst on the map/,
+    'and the shortfall is stated rather than silent',
+  );
+  assert.equal(layer.getStats().count, rows.length, 'getStats counts them all');
+  assert.equal(
+    layer.getStats().drawnCount,
+    markers.length,
+    'and reports what it drew',
+  );
+});
+
+test('the cap keeps the WORST reports, not the first ones', async () => {
+  // REPORT returns a PACKED row, so magnitude is index 3, not `.size`.
+  const small = REPORT(1);
+  const big = REPORT(3);
+  const rows = [small, big];
+  const { layer } = makeLayer(rows);
+  const viewer = stubViewer();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  const ids = drawn(viewer).map((e) => String(e.id));
+  // Only two reports, so the cap cannot bite - but the ORDER must still be
+  // worst-first, which is what the cap relies on.
+  assert.equal(ids.length, 2);
+  assert.ok(
+    ids[0].includes(`-${big[3]}`),
+    `the worst report is drawn first (${ids[0]})`,
+  );
+});
+
+test('a small result set is not capped and makes no claim', async () => {
+  const rows = [REPORT(2), REPORT(1.75)];
+  const { layer } = makeLayer(rows);
+  const viewer = stubViewer();
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  assert.equal(drawn(viewer).length, 2, 'everything drawn');
+  assert.doesNotMatch(
+    layer.getRowControls().info,
+    /showing the/,
+    'and the panel does not mention a cap that did not apply',
+  );
+});

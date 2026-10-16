@@ -104,6 +104,24 @@ const OUTSIDE = 2;
 export const HAIL_FLOOR_IN = 1.0;
 
 /** How many report cards the overlay may show at once. */
+/**
+ * The most markers this layer will draw at once.
+ *
+ * Measured on the app's own floor - Google Photorealistic 3D Tiles on
+ * SwiftShader software GL, which renders at about 4 fps with NOTHING of ours
+ * enabled - the scene runs 2.6 fps with all 44,720 reports drawn and 3.5 fps
+ * with this layer off. So the markers roughly halve an already-slow frame, and
+ * every one is a Cesium Entity carrying `disableDepthTestDistance: INFINITY`,
+ * which means none of them can be occluded or rejected by an early-Z test.
+ *
+ * `worstFirst` already answers "which of these matter most", so the cap takes
+ * the worst of the current filter rather than the first few. Every report still
+ * counts: the filter, the totals, the storm list, the radar comparison and the
+ * isolation maths all read `_visible`, which is untouched. Only the DRAWN
+ * markers are bounded, and the panel says so when they are.
+ */
+const STORM_MAX_MARKERS = 2000;
+
 const OVERLAY_COHORT_LIMIT = 2;
 
 /**
@@ -308,6 +326,8 @@ export function createStormReportsLayer({
   let _eventsByYear = new Map();
   let _eventBase = new Map();
   let _visible = [];
+  // How many markers the last render actually drew. Drawn <= visible, always.
+  let _drawnCount = 0;
   let _enabled = false;
   let _loading = false;
   let _lastError = null;
@@ -974,7 +994,12 @@ export function createStormReportsLayer({
     if (!_dataSource) return;
     _dataSource.entities.removeAll();
     _outlineEntity = null;
-    for (const report of _visible) {
+    // The WORST of the current filter, capped. `_visible` itself is never
+    // truncated - it is what the count, the storm list, the radar comparison
+    // and the isolation maths all read. Only the DRAWN markers are bounded.
+    const drawn = worstFirst(_visible, _options.hazard, STORM_MAX_MARKERS);
+    _drawnCount = drawn.length;
+    for (const report of drawn) {
       const band =
         report.hazard === 'hail'
           ? hailBand(report.size)
@@ -1432,6 +1457,13 @@ export function createStormReportsLayer({
     const count = _visible.length.toLocaleString();
     const worst = _stats?.worst;
     const parts = [`${count} report${count === '1' ? '' : 's'}`];
+    // When the marker cap bites, say so. Every number here is still the
+    // true count - the cap bounds only what is DRAWN - but a map showing
+    // 2,000 dots for 44,717 reports must not read as "there are 2,000 here".
+    if (_drawnCount > 0 && _drawnCount < _visible.length)
+      parts.push(
+        `showing the ${_drawnCount.toLocaleString()} worst on the map`,
+      );
     if (worst?.size != null) parts.push(`largest ${magnitudeLabel(worst)}`);
     if (_stats?.storms) parts.push(`${_stats.storms.toLocaleString()} storms`);
     // Read the options directly: getDateRange is an api method, and this
@@ -1777,6 +1809,7 @@ export function createStormReportsLayer({
     getStats() {
       return {
         count: _stats?.total ?? 0,
+        drawnCount: _drawnCount,
         lastUpdate: _lastUpdate,
         error: _lastError?.message ?? null,
         loading: Boolean(_loading),
