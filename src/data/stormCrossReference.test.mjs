@@ -232,10 +232,40 @@ test('an empty comparison summarises to zero rather than dividing by zero', () =
     both: 0,
     radarOnly: 0,
     reportOnly: 0,
+    reportsWithCore: 0,
+    reportsWithoutCore: 0,
+    reportsCompared: 0,
     radarOnlyShare: 0,
     reportOnlyShare: 0,
     artefacts: 0,
   });
+});
+
+test('the report-weighted counts follow reportCount, not cell count', () => {
+  // The class counts are cells. A 0.25 degree cell is 25 miles across, so a
+  // county's reports collapse into one or two of them; the number a canvasser
+  // can act on is how many REPORTS sat in a cell that had a core.
+  const radar = new Map([
+    ['140:-384', { mx: 45, cores: 12 }],
+    ['140:-383', { mx: 40, cores: 9 }],
+  ]);
+  // 140:-384 takes two reports, 140:-383 takes one, and 141:-383 has a report
+  // and no radar. Chosen to straddle cell boundaries deliberately: 0.25 degrees
+  // is 25 miles, and coordinates that look spread out often share a cell.
+  const rows = [
+    HAIL(35.125, -95.875, 2),
+    HAIL(35.13, -95.87, 1.5),
+    HAIL(35.125, -95.6, 1.25),
+    HAIL(35.3, -95.6, 1.75), // no radar behind this one
+  ];
+  const cells = crossReference(rows, radar);
+  const s = summariseAgreement(cells);
+  assert.equal(s.both, 2, 'two cells had a core');
+  assert.equal(s.reportsWithCore, 3, 'and they hold three reports');
+  assert.equal(s.reportOnly, 1, 'one cell had reports and no core');
+  assert.equal(s.reportsWithoutCore, 1);
+  assert.equal(s.reportsCompared, 4);
+  assert.equal(s.reportsWithCore + s.reportsWithoutCore, rows.length);
 });
 
 test('an unreported core has to clear the named core threshold to count', () => {

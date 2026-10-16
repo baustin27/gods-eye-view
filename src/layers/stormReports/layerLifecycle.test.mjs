@@ -913,12 +913,12 @@ test('the panel carries the radar split for a selected day', async () => {
   assert.equal(split.total, 3);
   assert.deepEqual(asked, [['2026']], 'asked for the years in the window');
   const info = layer.getRowControls().info;
-  assert.match(info, /1 unreported radar core,/);
-  assert.match(info, /1 confirmed/);
+  assert.match(info, /1 of 2 reports sat in a cell with a radar core/);
+  assert.match(info, /1 sat outside one/);
   assert.match(
     info,
-    /estimate, not a measured stone/,
-    'radar hail is never read as a measured stone',
+    /an estimate, and an annual one/,
+    'radar is never read as a measured stone, nor as a same-day reading',
   );
 });
 
@@ -1498,7 +1498,7 @@ test('the storm view reports the storm, not the day', async () => {
   assert.match(info, /supercell/, 'and its narrative');
   assert.match(
     info,
-    /estimate, not a measured stone/,
+    /an estimate, and an annual one/,
     'the radar caveat stays',
   );
   assert.match(
@@ -1524,4 +1524,39 @@ test('a storm with no reports at this threshold says so instead of looking empty
     layer.getRowControls().info,
     /no reports at the current hail and size filter/,
   );
+});
+
+test('a thin day never quotes the whole year as unreported hail', async () => {
+  // The radar snapshot is a per-year climatology: peak millimetres, core points
+  // and a distinct-day count per cell, with no per-day detail. So "a core with
+  // no report" enumerates every cell that had hail that year. Quoting that
+  // next to a 2-report day produced "14,832 unreported radar cores" - not a
+  // finding about that day, just the year, and a list a roofer would drive to.
+  const cells = new Map();
+  for (let i = 0; i < 500; i += 1)
+    cells.set(`${300 + i}:${400 + i}`, { mx: 30, cores: 4 });
+  const reports = [REPORT(2, { lat: 35.11 }), REPORT(1.5, { lat: 35.61 })];
+  const radarSource = { cellsFor: async () => ({ cells }) };
+  const { layer } = makeLayer(reports, [], { radarSource });
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+
+  const info = layer.getRowControls().info;
+  assert.doesNotMatch(
+    info,
+    /\b\d{3,} unreported radar core/,
+    'the year-wide radar-only count is not a same-day finding',
+  );
+  assert.doesNotMatch(info, /500 unreported/);
+  assert.match(
+    info,
+    /an annual one/,
+    'and the line says what radar actually is',
+  );
+  assert.match(info, /not on this day/);
+  // The figure is still available for the question it is valid for.
+  assert.equal(layer.getComparison().radarOnly, 500);
 });

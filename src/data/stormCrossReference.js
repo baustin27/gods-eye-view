@@ -213,12 +213,22 @@ export function summariseAgreement(cells) {
   let radarOnly = 0;
   let reportOnly = 0;
   let artefacts = 0;
+  // The class counts are CELLS. A 0.25 degree cell is 25 miles across, so eight
+  // reports in one county collapse to one cell, and reporting the cell count
+  // as though it were a report count understates it several-fold.
+  let reportsWithCore = 0;
+  let reportsWithoutCore = 0;
   for (const cell of cells) {
-    if (cell.agreement === 'both') both += 1;
-    else if (cell.agreement === 'radar-only') {
+    if (cell.agreement === 'both') {
+      both += 1;
+      reportsWithCore += cell.reportCount || 0;
+    } else if (cell.agreement === 'radar-only') {
       radarOnly += 1;
       if (cell.implausible) artefacts += 1;
-    } else if (cell.agreement === 'report-only') reportOnly += 1;
+    } else if (cell.agreement === 'report-only') {
+      reportOnly += 1;
+      reportsWithoutCore += cell.reportCount || 0;
+    }
   }
   const total = both + radarOnly + reportOnly;
   return {
@@ -226,6 +236,11 @@ export function summariseAgreement(cells) {
     both,
     radarOnly,
     reportOnly,
+    // Report-weighted, which is the number a canvasser can act on: how many of
+    // the reports in front of me had a radar core behind them.
+    reportsWithCore,
+    reportsWithoutCore,
+    reportsCompared: reportsWithCore + reportsWithoutCore,
     radarOnlyShare: total ? radarOnly / total : 0,
     reportOnlyShare: total ? reportOnly / total : 0,
     artefacts,

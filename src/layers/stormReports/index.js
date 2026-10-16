@@ -1123,17 +1123,43 @@ export function createStormReportsLayer({
    *
    * @returns {string|null}
    */
+  /**
+   * The radar line for the current day.
+   *
+   * It quotes ONLY the two figures an annual radar snapshot can honestly answer
+   * about one day: how many of that day's reports sit in a cell that had a
+   * core that year, and how many sit outside one.
+   *
+   * It deliberately does NOT quote the radar-only count. The snapshot is a
+   * per-year climatology - peak millimetres, core points and a distinct-day
+   * count per cell - so "a core with no report" enumerates every cell that ever
+   * had hail that year. Against a 33-report day in a 14,850-cell year that
+   * produced "14,832 unreported radar cores", which is not a finding about that
+   * day, it is the year. A roofer would read it as a list of streets.
+   *
+   * The radar-only figure is still meaningful for the question it was built
+   * for - canvassing across the whole record - and {@link getComparison} keeps
+   * exposing it for that.
+   */
   function comparisonLine() {
     const split = _comparison;
     if (!split) return null;
+    // Report-weighted, not cell-weighted. A 0.25 degree cell is 25 miles across,
+    // so eight reports in one county collapse into a single cell and quoting
+    // the cell count would understate a day's reports several-fold.
+    const compared = split.reportsCompared ?? 0;
+    const withCore = split.reportsWithCore ?? 0;
     const parts = [
-      `${split.both} confirmed`,
-      `${split.radarOnly} unreported radar core${split.radarOnly === 1 ? '' : 's'}`,
+      `${withCore} of ${compared} report${compared === 1 ? '' : 's'} sat in a cell with a radar core in ${String(split.day).slice(0, 4)}`,
     ];
+    if (split.reportsWithoutCore)
+      parts.push(`${split.reportsWithoutCore} sat outside one`);
     if (split.artefacts)
-      parts.push(`${split.artefacts} of those cores read as artefacts`);
-    parts.push(`${split.reportOnly} reported with no core`);
-    return `radar ${parts.join(', ')} — an estimate, not a measured stone`;
+      parts.push(`${split.artefacts} cells read as radar artefacts`);
+    return (
+      `radar ${parts.join(', ')} — an estimate, and an annual one: this is where ` +
+      'hail was seen at some point that year, not on this day'
+    );
   }
 
   /**
@@ -1150,13 +1176,16 @@ export function createStormReportsLayer({
     const reports = reportsForStorm(storm.id);
     const count = reports.length;
     const lines = [];
+    const headline = stormHeadline(storm, count);
     lines.push(
       count
-        ? `${storm.date} · storm · ${stormHeadline(storm, count)}`
+        ? `${storm.date} · storm · ${headline}`
         : `${storm.date} · storm · no reports at the current ${_options.hazard} and size filter`,
     );
+    // The headline already carries the places, so only add the line when it
+    // would say something the headline does not.
     const places = stormPlaces(storm);
-    if (places && count) lines.push(places);
+    if (places && count && !headline.includes(places)) lines.push(places);
     const window = stormTimeRange(storm);
     if (window) lines.push(`reported ${window}`);
     if (storm.narrative) lines.push(storm.narrative);
