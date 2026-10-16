@@ -1,19 +1,24 @@
 #!/usr/bin/env node
 /**
  * Build the bundled administrative-boundary packs read by
- * `src/data/adminBoundaries.js`:
+ * `src/data/adminBoundaries.js`, and the populated-places point pack read by
+ * `src/data/places.js`:
  *
  *   src/data/local_data/natural_earth/states_provinces.json
  *     Natural Earth 10m admin-1 states and provinces (public domain).
  *   src/data/local_data/us_census_counties/counties.json
  *     US Census Bureau cartographic boundary counties (public domain).
+ *   src/data/local_data/natural_earth/places.json
+ *     Natural Earth 10m populated places — points, not outlines (public domain).
  *
- * Both sources are pinned by URL and SHA-256, so a rerun reproduces the packs
+ * Every source is pinned by URL and SHA-256, so a rerun reproduces the packs
  * byte for byte. Downloads are cached outside the repository (default: the
- * system temp directory) and are never committed.
+ * system temp directory) and are never committed. `ne_10m_populated_places`
+ * is read twice by the same run — once to mark ambiguous state names, once to
+ * build the place pack — and the second read is a local cache hit.
  *
  * Usage:
- *   node scripts/build-admin-packs.mjs [--cache <dir>] [--only countries|admin1|counties]
+ *   node scripts/build-admin-packs.mjs [--cache <dir>] [--only countries|admin1|counties|places]
  *
  * The provenance READMEs beside each pack record these parameters.
  */
@@ -100,6 +105,22 @@ export const PARAMS = Object.freeze({
     insideMinPopulation: 200_000,
     elsewhereMinPopulation: 50_000,
     cityStateMaxKm2: 1_000,
+  },
+  // A point pack, so none of the geometry rules apply. Natural Earth's
+  // `ne_10m_populated_places_simple` holds 7,342 rows spanning megacities down
+  // to single-farm settlements, and two rows whose `pop_max` is Natural Earth's
+  // `-99` "population unknown" sentinel. `minPopulation` drops the small end —
+  // a few hundred people is a village, not somewhere anyone isolates to —
+  // while keeping every county seat of a small county, so a rural map is not
+  // left empty: at 5,000 the pack holds 6,488 of the 7,340 real rows and 668
+  // of the 769 US ones. A national capital is kept however small
+  // (`keepNationalCapitals`): Vatican City has 832 people in this data and is
+  // still a place people name. `decimals` rounds the point (3 ≈ 110 m, far
+  // finer than any city isolation).
+  places: {
+    minPopulation: 5_000,
+    keepNationalCapitals: true,
+    decimals: 3,
   },
 });
 
@@ -682,6 +703,122 @@ async function buildAdmin1() {
   };
 }
 
+async function buildPlaces() {
+  const params = PARAMS.places;
+  const source = await fetchPinned('places');
+  // Every Springfield in this data is in the United States, so a qualifier is
+  // the only thing that settles the name other than the camera. The
+  // subdivision codes come from the admin-1 source, which is already pinned,
+  // already cached and already fetched by this script's admin1 pass.
+  const admin1 = await fetchPinned('admin1');
+  const codes = subdivisionCodes(admin1.bytes);
+  const factor = 10 ** params.decimals;
+  const features = [];
+  for (const { properties: p } of JSON.parse(source.bytes.toString('utf8'))
+    .features) {
+    // `-99` is Natural Earth's "population unknown" sentinel, not a number.
+    const population =
+      Number.isFinite(p.pop_max) && p.pop_max > 0 ? p.pop_max : 0;
+    const capital = params.keepNationalCapitals && p.adm0cap === 1;
+    if (population < params.minPopulation && !capital) continue;
+    // Natural Earth writes some names with an invisible left-to-right mark.
+    const name = String(p.name || '')
+      .replace(/[\u200e\u200f\u00ad]/g, '')
+      .trim();
+    if (!name || !Number.isFinite(p.longitude) || !Number.isFinite(p.latitude))
+      continue;
+    const adm1code = codes.get(
+      `${normalizeAdminName(p.adm0name)}/${normalizeAdminName(p.adm1name)}`,
+    );
+    features.push({
+      name,
+      lat: Math.round(p.latitude * factor) / factor,
+      lon: Math.round(p.longitude * factor) / factor,
+      population,
+      country: p.adm0name || null,
+      region: p.adm1name || null,
+      scale: Number.isFinite(p.scalerank) ? p.scalerank : null,
+      iso: p.adm0_a3 || null,
+      iso2: p.iso_a2 || null,
+      ...(adm1code ? { adm1code } : {}),
+      id: '',
+    });
+  }
+  features.sort(
+    (a, b) =>
+      a.name.localeCompare(b.name) ||
+      (a.country || '').localeCompare(b.country || '') ||
+      (a.region || '').localeCompare(b.region || ''),
+  );
+  assignPlaceIds(features);
+  return {
+    meta: {
+      title: 'Natural Earth populated places',
+      source: 'ne_10m_populated_places_simple',
+      url: SOURCES.places.url,
+      sha256: source.digest,
+      subdivisionSource: SOURCES.admin1.url,
+      subdivisionSha256: admin1.digest,
+      commit: NE_COMMIT,
+      license:
+        'Public domain (https://www.naturalearthdata.com/about/terms-of-use/)',
+      schema:
+        "features[]: name, lat, lon, population (pop_max, the row's largest published figure; 0 where the source is unknown), country (adm0name), region (adm1name, null where the source has none), scale (scalerank: Natural Earth's label prominence for the place, lower is more prominent), iso (ISO 3166-1 alpha-3), iso2, adm1code? (the subdivision's two-letter code from the admin-1 source: 'MO', 'ON', 'BY'; absent where the source has no code for the region), id",
+      // A city has no boundary in this dataset, and the pack does not invent
+      // one: it holds a point and a population. Anything drawn around a place
+      // from it is an approximation — see src/data/places.js.
+      approximate:
+        'A POINT, NOT AN OUTLINE. ne_10m_populated_places_simple carries no city geometry, so this pack cannot say where a city ends. Isolating to a city means a box scaled by population around this point; that box is an estimate, not a boundary.',
+      decimals: params.decimals,
+      curation: params,
+      script: 'scripts/build-admin-packs.mjs',
+    },
+    features,
+  };
+}
+
+/**
+ * Two-letter subdivision codes keyed by "country/region", from the admin-1
+ * source, so a place can carry the code its own people write ("Springfield, MO"
+ * and not only "Springfield, Missouri"). Only the ISO 3166-2 / postal shape is
+ * taken, and the first code wins where a region name repeats in a country.
+ */
+function subdivisionCodes(bytes) {
+  const codes = new Map();
+  for (const { properties: p } of JSON.parse(bytes.toString('utf8')).features) {
+    const postal = String(p.postal || '').trim();
+    if (!/^[A-Z]{2}$/.test(postal)) continue;
+    for (const name of [p.name, p.name_en]) {
+      if (!name) continue;
+      const key = `${normalizeAdminName(p.admin)}/${normalizeAdminName(name)}`;
+      if (!codes.has(key)) codes.set(key, postal);
+    }
+  }
+  return codes;
+}
+
+/**
+ * A stable, readable id per place: `denver-usa`, then `salem-usa-oregon` for a
+ * second Salem in the same country, then a counter for what is left. Readable
+ * because an id is something a URL, a saved view or a log line carries.
+ */
+function assignPlaceIds(features) {
+  const taken = new Set();
+  const slug = (value) => normalizeAdminName(value).replace(/\s+/g, '-');
+  for (const feature of features) {
+    const base = [slug(feature.name), slug(feature.iso || feature.country)]
+      .filter(Boolean)
+      .join('-');
+    const spaced = [base, slug(feature.region)].filter(Boolean).join('-');
+    let id = base;
+    if (taken.has(id)) id = spaced;
+    // `taken.size` strictly grows, so the last resort cannot collide either.
+    if (taken.has(id)) id = `${spaced}-${taken.size}`;
+    feature.id = id;
+    taken.add(id);
+  }
+}
+
 async function buildCounties() {
   const params = PARAMS.counties;
   const source = await fetchPinned('counties');
@@ -727,18 +864,33 @@ async function buildCounties() {
   };
 }
 
-async function writePack(relative, pack) {
-  const file = path.join(ROOT, relative);
-  await mkdir(path.dirname(file), { recursive: true });
-  const text = JSON.stringify(pack) + '\n';
-  await writeFile(file, text);
+/** Parts and vertices of an outline pack, for the build log. */
+function outlineSummary(pack) {
   const parts = pack.features.reduce((n, f) => n + f.polygons.length, 0);
   const vertices = pack.features.reduce(
     (n, f) => n + f.polygons.flat().reduce((m, ring) => m + ring.length / 2, 0),
     0,
   );
+  return `${pack.features.length} features, ${parts} parts, ${vertices} vertices`;
+}
+
+/** People covered and the largest settlement, for a point pack. */
+function pointSummary(pack) {
+  const people = pack.features.reduce((n, f) => n + f.population, 0);
+  const largest = pack.features.reduce(
+    (best, f) => (f.population > (best?.population ?? -1) ? f : best),
+    null,
+  );
+  return `${pack.features.length} places, ${people.toLocaleString('en-US')} people at or above the floor, largest ${largest.name} (${largest.population.toLocaleString('en-US')})`;
+}
+
+async function writePack(relative, pack, summarize = outlineSummary) {
+  const file = path.join(ROOT, relative);
+  await mkdir(path.dirname(file), { recursive: true });
+  const text = JSON.stringify(pack) + '\n';
+  await writeFile(file, text);
   console.log(
-    `${relative}: ${pack.features.length} features, ${parts} parts, ${vertices} vertices, ${Buffer.byteLength(text)} bytes`,
+    `${relative}: ${summarize(pack)}, ${Buffer.byteLength(text)} bytes`,
   );
 }
 
@@ -751,6 +903,12 @@ if (!only || only === 'admin1')
   await writePack(
     'src/data/local_data/natural_earth/states_provinces.json',
     await buildAdmin1(),
+  );
+if (!only || only === 'places')
+  await writePack(
+    'src/data/local_data/natural_earth/places.json',
+    await buildPlaces(),
+    pointSummary,
   );
 if (!only || only === 'counties')
   await writePack(

@@ -10,6 +10,7 @@ range geometry with no network dependency.
 | `marine.json` | `ne_10m_geography_marine_polys` (seas, gulfs, straits, bays, …) | 292 named |
 | `countries.json` | `ne_10m_admin_0_countries` (countries) | 256 |
 | `states_provinces.json` | `ne_10m_admin_1_states_provinces` (states, provinces and other first-level units) | 4,587 named |
+| `places.json` | `ne_10m_populated_places_simple` (city and town points — no outlines) | 6,491 places |
 
 **Source:** Natural Earth 10m physical vectors, via the canonical
 [nvkelso/natural-earth-vector](https://github.com/nvkelso/natural-earth-vector)
@@ -103,3 +104,53 @@ Includes England, Scotland, Wales and Northern Ireland from
 `ne_10m_admin_0_map_units.geojson` at the same commit (SHA-256
 `57da82be755f4afccd8f3b14251bb2752f5df1395f47d2d86f817470c4a48862`).
 Result: 945,843 bytes; 260 features, 2,088 parts, 122,788 vertices.
+
+## Populated places (`places.json`)
+
+Worldwide city and town POINTS, so "isolate to Denver" resolves a city with no
+network lookup and "cities in Oklahoma" can list a box. Read by
+`src/data/places.js`.
+
+**A city has no boundary in this dataset.** `ne_10m_populated_places_simple`
+carries no city geometry at all, so the pack holds a point and a population and
+nothing else. Isolating to a city means a box scaled by population around the
+point; that box is an approximation — a guess at how far out to frame a camera,
+not a surveyed edge — and the module says so on every result
+(`boundary: null`, `approxRadiusKm`).
+
+**Source:** `geojson/ne_10m_populated_places_simple.geojson` at the same pinned
+commit; SHA-256
+`fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f` — the same
+file `states_provinces.json` already reads to mark ambiguous names, now read a
+second time for the pack itself. `geojson/ne_10m_admin_1_states_provinces.geojson`
+at the same commit (SHA-256 `22d0e3ad85eb3e27f17cabf8ba2d50e554fbc27a87796ff891d958185da62fb5`)
+supplies each place's two-letter subdivision code.
+
+**License:** public domain, as above.
+
+**Regenerate:** `node scripts/build-admin-packs.mjs --only places`.
+
+**Schema:** `meta` (source, URLs, hashes, license, curation, and the
+`approximate` warning) and `features[]` with `name`, `lat`, `lon`, `population`
+(`pop_max`, the row's largest published figure), `country` (`adm0name`),
+`region` (`adm1name`, `null` where the source has none), `scale` (`scalerank`,
+Natural Earth's label prominence — lower is more prominent), `iso`, `iso2`,
+`adm1code?` (the subdivision's two-letter code, absent where the source has none)
+and `id`.
+
+**Curation:**
+
+- Rows under **5,000** people are dropped, except a national capital, which is
+  kept however small (Vatican City has 832 people in this data and is still a
+  place people name). The source spans 7,342 rows from megacities down to
+  single-farm settlements, and the tail below 5,000 is where the noise lives;
+  the floor keeps 6,488 of the 7,340 real rows, including 668 of the 769 US ones
+  and every county seat of a small county, so a rural map is not left empty.
+  6,491 rows survive (7,340 → 6,488 by population, plus 3 small capitals).
+- Two rows whose `pop_max` is Natural Earth's `-99` "population unknown"
+  sentinel are dropped; it is not a population.
+- Names are stripped of the invisible marks Natural Earth writes some with, and
+  coordinates are rounded to 3 decimals (~110 m).
+- `id` is the name slug plus the ISO alpha-3 country (`denver-usa`), plus the
+  region where one country has two of that name (`springfield-usa-oregon`).
+- Result: 1,146,305 bytes (254,347 with gzip -9).

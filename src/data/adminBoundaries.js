@@ -354,9 +354,11 @@ async function countryCandidates(parsed) {
   if (!['any', 'country'].includes(parsed.kind)) return [];
   const { index } = await loadCountries();
   const key = COUNTRY_TARGET_ALIASES.get(parsed.name) || parsed.name;
-  return (index.get(key) || []).filter(({ entry }) =>
-    parsed.qualifiers.every((q) => qualifierMatches(entry, q)),
-  );
+  return (index.get(key) || [])
+    .filter(({ entry }) =>
+      parsed.qualifiers.every((q) => qualifierMatches(entry, q)),
+    )
+    .map((item) => ({ ...item, specificity: key.length }));
 }
 
 /** Country target aliases never broaden constituent-country requests. */
@@ -502,12 +504,19 @@ function qualifierMatches(entry, qualifier) {
 }
 
 /**
- * Rank candidates: a unit containing `near` first, then the match tier,
- * then distance from `near`, then larger area. Returns the ranked list.
+ * Rank candidates: a unit containing `near` first, then the match tier, then
+ * distance from `near`, then the more specific matched key, then larger area.
+ * Returns the ranked list.
+ *
+ * Order matters. Distance outranks specificity because the camera is the
+ * tie-break between same-named units ("Kent County" while looking at England
+ * is not a Kent County in Delaware); specificity outranks area because area is
+ * only ever a last resort, and "New York County" keys both the county and the
+ * state of New York.
  */
 function rank(candidates, near) {
   const hasNear = Number.isFinite(near?.lat) && Number.isFinite(near?.lon);
-  const scored = candidates.map(({ entry, tier }) => {
+  const scored = candidates.map(({ entry, tier, specificity }) => {
     const geometry = geometryOf(entry);
     const contains = hasNear
       ? polygonsContain(geometry.polygons, near.lat, near.lon)
@@ -517,13 +526,21 @@ function rank(candidates, near) {
         ? 0
         : boxDistanceKm(geometry.bbox, near.lat, near.lon)
       : 0;
-    return { entry, tier, contains, distanceKm, areaKm2: geometry.areaKm2 };
+    return {
+      entry,
+      tier,
+      specificity: specificity ?? 0,
+      contains,
+      distanceKm,
+      areaKm2: geometry.areaKm2,
+    };
   });
   scored.sort(
     (a, b) =>
       Number(b.contains) - Number(a.contains) ||
       a.tier - b.tier ||
       a.distanceKm - b.distanceKm ||
+      b.specificity - a.specificity ||
       b.areaKm2 - a.areaKm2,
   );
   return scored;
@@ -577,13 +594,19 @@ async function countyCandidates(parsed) {
   // name with ANY county-equivalent word ("Anchorage Borough" finds
   // Anchorage Municipality). An independent city is only ever its full name
   // ("Fairfax city", "Carson City").
-  let list = parsed.countyWord
-    ? [
-        ...(byFull.get(parsed.full || `${parsed.name} ${parsed.countyWord}`) ||
-          byName.get(parsed.name) ||
-          []),
-      ]
-    : [...(byFull.get(parsed.name) || [])];
+  const fullKey = parsed.countyWord
+    ? parsed.full || `${parsed.name} ${parsed.countyWord}`
+    : parsed.name;
+  const exact = byFull.get(fullKey);
+  const matchedKey = exact
+    ? fullKey
+    : parsed.countyWord
+      ? parsed.name
+      : fullKey;
+  const source = exact || (parsed.countyWord ? byName.get(parsed.name) : null);
+  let list = source
+    ? source.map((item) => ({ ...item, specificity: matchedKey.length }))
+    : [];
   if (!list.length) return [];
   // Every qualifier must be a state or the US: "Travis County, TX, USA"
   // qualifies, "Travis County Courthouse, Texas" names something else.
@@ -617,7 +640,17 @@ async function stateCandidates(parsed, { allowAmbiguous = false } = {}) {
     for (const item of index.get(key) || []) {
       if (seen.has(item.entry)) continue;
       seen.add(item.entry);
-      list.push({ ...item, key, tier: key === parsed.full ? 0 : item.tier });
+      // `specificity` is how much of the ask the matched key accounts for. It
+      // breaks the tie that tier cannot: "New York County" also keys the state
+      // of New York under the bare name "new york", and both are tier 0, so
+      // without this the larger area (the state) won a county ask. The longer
+      // key is the more specific reading of the words.
+      list.push({
+        ...item,
+        key,
+        tier: key === parsed.full ? 0 : item.tier,
+        specificity: key.length,
+      });
     }
   }
   // Every qualifier must place the unit: "Bavaria, Germany", "Washington,
