@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { gridCell } from '../../data/stormCrossReference.js';
 import {
   HAIL_FLOOR_IN,
   STORM_REPORTS_DEFAULTS,
@@ -12,12 +13,12 @@ let reportSeq = 0;
 const REPORT = (size, over = {}) => {
   const seq = reportSeq++;
   return [
-    '2026-08-10',
+    over.date || '2026-08-10',
     600 + seq * 5,
-    0,
+    over.hazard ?? 0,
     size,
-    35.1 + seq * 0.02,
-    -97.4,
+    over.lat ?? 35.1 + seq * 0.02,
+    over.lon ?? -97.4,
     over.fips || '40027',
     over.state || 'OK',
     over.county || 'Cleveland',
@@ -25,8 +26,23 @@ const REPORT = (size, over = {}) => {
     over.comment || '',
     'spc-bulk,ncei',
     0,
+    over.ref ?? -1,
   ];
 };
+
+/** The storm-event row a report's `stormRef` points into. */
+const STORM = (id, date, over = {}) => ({
+  id,
+  date,
+  maxHailIn: over.maxHailIn ?? 2,
+  maxWindKt: over.maxWindKt ?? 40,
+  reportCount: over.reportCount ?? 1,
+  narrative: over.narrative ?? `${id} narrative`,
+  identitySource: over.identitySource || 'ncei',
+});
+
+/** The grid key a report attributes to, so radar fixtures cannot drift. */
+const cellKey = (lat, lon) => `${gridCell(lat)}:${gridCell(lon)}`;
 function stubViewer() {
   const sources = [];
   return {
@@ -81,10 +97,10 @@ function host() {
   };
 }
 
-function makeLayer(rows, events = []) {
+function makeLayer(rows, events = [], options = {}) {
   const source = {
     getSnapshot: async () => ({
-      years: ['2026'],
+      years: options.years || ['2026'],
       days: {
         '2026-08-10': { hail: rows.length, wind: 0, total: rows.length },
       },
@@ -95,10 +111,29 @@ function makeLayer(rows, events = []) {
     eventsFor: async () => events,
   };
   const overlayHost = host();
-  const layer = createStormReportsLayer({ source, overlayHost });
+  const layer = createStormReportsLayer({
+    source,
+    overlayHost,
+    radarSource: options.radarSource,
+  });
   layer._testReports = rows;
   layer._testEvents = events;
   return { layer, overlayHost };
+}
+
+/**
+ * Wait for the radar comparison, which is fire-and-forget by design.
+ *
+ * A layer that awaited it would block its own repaint on a radar file, so the
+ * test waits for it instead — the same thing the panel does when it re-reads
+ * the info line.
+ */
+async function settled(layer) {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (layer.getComparison()) return layer.getComparison();
+  }
+  return layer.getComparison();
 }
 
 test('update before enable does nothing and says so', async () => {
@@ -569,4 +604,320 @@ test('GO does nothing when there is no day, or the day is empty', async () => {
   layer.setDate('2026-01-01');
   assert.equal(layer.frameSelectedStorm(), false, 'a day with no reports');
   assert.equal(viewer.camera.__flownTo, null, 'and the camera stayed put');
+});
+
+/**
+ * A day that carried two storms, with a previous year's storm loaded ahead of
+ * them so an ordinal read as a flat array index lands on the wrong year.
+ */
+function twoStormDay(options = {}) {
+  const north = STORM('ep-north', '2026-08-10', {
+    maxHailIn: 3.25,
+    reportCount: 41,
+    narrative: 'A discrete supercell tracked across northern Oklahoma.',
+  });
+  const south = STORM('ep-south', '2026-08-10', {
+    maxHailIn: 1.25,
+    reportCount: 9,
+    narrative: 'Scattered pulse storms over the southern counties.',
+  });
+  const previousYear = STORM('ep-2025', '2025-08-10', {
+    maxHailIn: 1.75,
+    reportCount: 22,
+    narrative: 'Last year entirely: a different storm on a different day.',
+  });
+  // Flat order is what eventsFor produces: 2025 first, then 2026.
+  const events = options.events || [previousYear, north, south];
+  const rows = [
+    REPORT(3.25, { lat: 35.11, ref: 0, county: 'Noble' }),
+    REPORT(1.25, { lat: 35.61, ref: 1, county: 'Caddo' }),
+  ];
+  if (!options.singleYear)
+    rows.push(REPORT(1.75, { date: '2025-08-10', lat: 36.4, ref: 0 }));
+  const { layer, overlayHost } = makeLayer(rows, events, {
+    years: options.singleYear ? ['2026'] : ['2025', '2026'],
+  });
+  return { layer, overlayHost, north, south, previousYear, rows };
+}
+
+test('two storms on one day each keep their own reports', async () => {
+  // The defect: the reports were selected by date, so asking about either storm
+  // returned both storms' reports, and a card opened on a southern storm report
+  // was handed the northern supercell's narrative.
+  const { layer, north, south } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+
+  const forNorth = layer.getStormReports(north.id);
+  const forSouth = layer.getStormReports(south.id);
+  assert.equal(forNorth.length, 1, 'the supercell has one report, not two');
+  assert.equal(forSouth.length, 1, 'and so does the southern storm');
+  assert.equal(forNorth[0].county, 'Noble', 'the right one');
+  assert.equal(forSouth[0].county, 'Caddo');
+  assert.equal(forNorth[0].size, 3.25);
+  assert.equal(forSouth[0].size, 1.25);
+  assert.ok(
+    !forNorth.some((r) => r.county === 'Caddo'),
+    'no storm borrows the other storm reports',
+  );
+  assert.ok(!south.narrative.includes('supercell'), 'the storms differ');
+});
+
+test('a report card carries its own storm, not the first of the day', async () => {
+  const { layer, rows } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+
+  const northCard = layer.describeReport(layer.getStormReports('ep-north')[0]);
+  const southCard = layer.describeReport(layer.getStormReports('ep-south')[0]);
+  assert.match(northCard.storm.narrative, /supercell/);
+  assert.equal(northCard.storm.reportCount, 41);
+  assert.equal(northCard.storm.resolvedBy, 'ordinal');
+  assert.match(
+    southCard.storm.narrative,
+    /pulse storms/,
+    'not the first storm on the date',
+  );
+  assert.equal(southCard.storm.reportCount, 9);
+  assert.ok(
+    northCard.storm.narrative !== southCard.storm.narrative,
+    'the fixture genuinely distinguishes the two storms',
+  );
+  assert.equal(rows.length, 3, 'three reports, one of them from 2025');
+});
+
+test('an ordinal is read within its own year, not the whole list', async () => {
+  // 2026's first storm is flat index 1. Reading stormRef straight into the flat
+  // array answers with the 2025 storm, on a day that has nothing to do with it.
+  const { layer } = twoStormDay();
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDateRange('2025-08-10', '2026-08-10');
+
+  const from2026 = layer.getStormReports('ep-north');
+  assert.equal(from2026.length, 1);
+  assert.equal(from2026[0].date, '2026-08-10', 'not the 2025 report');
+  const card2026 = layer.describeReport(from2026[0]);
+  assert.equal(card2026.storm.id, 'ep-north');
+  assert.equal(card2026.storm.resolvedBy, 'ordinal');
+
+  const from2025 = layer.getStormReports('ep-2025');
+  assert.equal(from2025.length, 1);
+  assert.equal(from2025[0].date, '2025-08-10');
+  assert.equal(layer.describeReport(from2025[0]).storm.id, 'ep-2025');
+});
+
+test('reports still resolve when only one year is loaded', async () => {
+  // base is 0 here rather than 1, which is the whole difference: the resolution
+  // cannot be a hard-coded offset into the flat list.
+  const { layer } = twoStormDay({ singleYear: true });
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  const forNorth = layer.getStormReports('ep-north');
+  const forSouth = layer.getStormReports('ep-south');
+  assert.equal(forNorth.length, 1);
+  assert.equal(forSouth.length, 1);
+  assert.equal(layer.describeReport(forNorth[0]).storm.id, 'ep-north');
+  assert.equal(layer.describeReport(forSouth[0]).storm.id, 'ep-south');
+});
+
+test('a report with no storm ordinal falls back instead of throwing', async () => {
+  // Every row in a snapshot built before the ordinal existed reads -1, so this
+  // is the shipped state, not an edge case. The fallback is the day's first
+  // storm: on a multi-storm day that is the wrong storm, and it is labelled
+  // rather than hidden, because a dated narrative beats none.
+  const { layer } = makeLayer(
+    [REPORT(3.25, { lat: 35.11, ref: 0 }), REPORT(1.5, { lat: 35.21 })],
+    [
+      STORM('ep-north', '2026-08-10', {
+        narrative: 'the first storm of the day',
+      }),
+      STORM('ep-south', '2026-08-10', {
+        narrative: 'the second storm of the day',
+      }),
+    ],
+  );
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+
+  const legacy = layer.describeReport({
+    date: '2026-08-10',
+    stormRef: -1,
+    hazard: 'hail',
+    size: 1.5,
+    lat: 35.21,
+    lon: -97.4,
+  });
+  assert.ok(legacy.storm, 'a narrative is still attached');
+  assert.equal(legacy.storm.resolvedBy, 'date', 'and says how it was found');
+  assert.equal(legacy.storm.id, 'ep-north');
+  assert.equal(
+    layer.describeReport({ date: '2026-08-10', stormRef: 7 }).storm,
+    null,
+    'an ordinal that resolves to nothing is null, not some other storm',
+  );
+  assert.equal(
+    layer.describeReport({ date: '2026-08-10' }).storm.id,
+    'ep-north',
+    'a row with no ordinal field at all is treated as -1',
+  );
+});
+
+test('a snapshot with no ordinals anywhere still answers by date', async () => {
+  // The real shape of the shipped files: every row -1. Both storms then claim
+  // the day's reports, which is the honest ceiling of a date match, and no
+  // exception is thrown on the way there.
+  const { layer } = makeLayer(
+    [REPORT(3.25, { lat: 35.11 }), REPORT(1.5, { lat: 35.21 })],
+    [
+      STORM('ep-north', '2026-08-10', {
+        narrative: 'the first storm of the day',
+      }),
+      STORM('ep-south', '2026-08-10', {
+        narrative: 'the second storm of the day',
+      }),
+    ],
+  );
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  assert.equal(layer.getStormReports('ep-north').length, 2);
+  assert.equal(layer.getStormReports('ep-south').length, 2);
+  const card = layer.describeReport(layer.getStormReports('ep-north')[1]);
+  assert.equal(card.storm.resolvedBy, 'date');
+  assert.equal(card.storm.id, 'ep-north');
+});
+
+test('without a radar source the layer behaves exactly as before', async () => {
+  const { layer } = makeLayer([REPORT(2), REPORT(1.5)]);
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  assert.doesNotThrow(() => layer.setDate('2026-08-10'));
+  assert.equal(layer.getComparison(), null, 'no comparison to show');
+  const info = layer.getRowControls().info;
+  assert.doesNotMatch(info, /radar/i, 'and no comparison text in the panel');
+  assert.match(info, /2 reports/, 'the ordinary line still reads');
+});
+
+test('the panel carries the radar split for a selected day', async () => {
+  const north = REPORT(2, { lat: 35.11 });
+  const marginal = REPORT(1.75, { lat: 35.61 });
+  const cells = new Map([
+    [cellKey(35.11, -97.4), { mx: 45, cores: 12 }],
+    [cellKey(36.9, -98.1), { mx: 60, cores: 3 }],
+  ]);
+  const asked = [];
+  const radarSource = {
+    cellsFor: async (years) => {
+      asked.push(years);
+      return { cells };
+    },
+  };
+  const { layer } = makeLayer([north, marginal], [], { radarSource });
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  const split = await settled(layer);
+
+  assert.ok(split, 'a comparison arrived');
+  assert.equal(split.day, '2026-08-10');
+  assert.equal(split.both, 1, 'the reported cell with a core agrees');
+  assert.equal(
+    split.radarOnly,
+    1,
+    'the unreported core is the canvassing lead',
+  );
+  assert.equal(
+    split.reportOnly,
+    1,
+    'the reported cell with no core is counted',
+  );
+  assert.equal(split.total, 3);
+  assert.deepEqual(asked, [['2026']], 'asked for the years in the window');
+  const info = layer.getRowControls().info;
+  assert.match(info, /1 unreported radar core,/);
+  assert.match(info, /1 confirmed/);
+  assert.match(
+    info,
+    /estimate, not a measured stone/,
+    'radar hail is never read as a measured stone',
+  );
+});
+
+test('a radar source may hand back the builder GeoJSONL', async () => {
+  const rows = [REPORT(2, { lat: 35.11 })];
+  const line = (i, j, mx) =>
+    JSON.stringify({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [0, 0] },
+      properties: { i, j, d: 0.25, mx, cp: 5, dy: 1 },
+    });
+  const radarSource = {
+    cellsFor: async () => ({
+      cells: [line(140, -390, 45), line(200, -384, 60)].join('\n'),
+    }),
+  };
+  const { layer } = makeLayer(rows, [], { radarSource });
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  const split = await settled(layer);
+  assert.equal(split.both, 1, 'the text form indexes onto the same grid keys');
+  assert.equal(split.radarOnly, 1);
+});
+
+test('the comparison stays off a window wider than one day', async () => {
+  const cells = new Map([[cellKey(35.11, -97.4), { mx: 45, cores: 12 }]]);
+  const radarSource = { cellsFor: async () => ({ cells }) };
+  const { layer } = makeLayer([REPORT(2), REPORT(1.5)], [], { radarSource });
+  layer.init(stubViewer());
+  layer.enable();
+  await layer.update();
+  assert.equal(layer.getComparison(), null, 'all dates compares nothing');
+  layer.setDateRange('2026-08-01', '2026-08-10');
+  assert.equal(layer.getComparison(), null, 'nor does a ten-day window');
+  assert.doesNotMatch(layer.getRowControls().info, /radar/i);
+  layer.setHazard('wind');
+  layer.setDate('2026-08-10');
+  assert.equal(
+    layer.getComparison(),
+    null,
+    'hail cores say nothing about a wind day',
+  );
+});
+
+test('a radar source that fails costs the line, not the layer', async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const radarSource = {
+      cellsFor: async () => {
+        throw new Error('radar file missing');
+      },
+    };
+    const { layer, overlayHost } = makeLayer([REPORT(2)], [], { radarSource });
+    layer.init(stubViewer());
+    layer.enable();
+    assert.equal(await layer.update(), true, 'the layer still rendered');
+    layer.setDate('2026-08-10');
+    assert.equal(await settled(layer), null);
+    assert.equal(layer.getComparison(), null);
+    assert.match(layer.getRowControls().info, /1 report\b/);
+    assert.equal(
+      overlayHost.entries.at(-1).list.length,
+      1,
+      'cards still there',
+    );
+  } finally {
+    console.warn = warn;
+  }
 });

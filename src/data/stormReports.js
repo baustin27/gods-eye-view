@@ -6,6 +6,11 @@
  * 155,737-report record. The index is the only thing loaded up front, and it is
  * small enough to keep: 1,571 days of counts, about 11 KB compressed.
  *
+ * The radar cores split the same way, one gzipped file per year, and are loaded
+ * the same lazy way: {@link loadRadarForYear} costs one year's 130-175 kB rather
+ * than the 3.6 MB combined file, whose per-cell statistics span all six years
+ * and so cannot answer a single storm day.
+ *
  * Loading is lazy and memoised. A year already in memory is served from cache;
  * a year requested twice while the first load is still in flight joins that
  * load rather than starting a second.
@@ -33,6 +38,7 @@ const BASE = `${import.meta.url.replace(/[^/]*$/, '')}local_data/storm/`;
 const indexPromise = new Map();
 const reportYears = new Map();
 const eventYears = new Map();
+const radarYears = new Map();
 
 /**
  * A snapshot fetch that never answers must fail, not park. An unbounded fetch
@@ -42,12 +48,18 @@ const eventYears = new Map();
 const LOAD_TIMEOUT_MS = 20000;
 
 /**
- * Fetch and inflate one gzipped JSON file.
+ * Fetch one snapshot file, with the timeout and the error wording both shared.
+ *
+ * Split out of {@link loadGzJson} because the radar snapshots are GeoJSONL, not
+ * JSON: they need the same fetch, the same 20s cap and the same gzip sniff, but
+ * parsing a hundred thousand newline-delimited objects is not `JSON.parse` of
+ * one big document.
+ *
  * @param {string} file
  * @param {AbortSignal} [signal]
- * @returns {Promise<object>}
+ * @returns {Promise<{url: string, text: string}>}
  */
-async function loadGzJson(file, signal) {
+async function loadSnapshotText(file, signal) {
   const timeout = AbortSignal.timeout(LOAD_TIMEOUT_MS);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const url = new URL(file, BASE);
@@ -71,10 +83,27 @@ async function loadGzJson(file, signal) {
   if (!response.body)
     throw new Error(`Storm snapshot: ${file} returned no body`);
   try {
-    return JSON.parse(await inflateMaybeAlreadyInflated(response));
+    return { url: url.href, text: await inflateMaybeAlreadyInflated(response) };
   } catch (error) {
     throw new Error(
       `Storm snapshot: ${file} at ${url.href} could not be read — ${error?.message || error}`,
+    );
+  }
+}
+
+/**
+ * Fetch and inflate one gzipped JSON file.
+ * @param {string} file
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<object>}
+ */
+async function loadGzJson(file, signal) {
+  const { url, text } = await loadSnapshotText(file, signal);
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `Storm snapshot: ${file} at ${url} could not be read — ${error?.message || error}`,
     );
   }
 }
@@ -172,6 +201,142 @@ export function loadStormEvents(year, signal) {
     },
     signal,
   );
+}
+
+/**
+ * @typedef {Object} RadarCell
+ * @property {number} mx    Peak hail millimetres this cell recorded.
+ * @property {number} cores Count of 1km cores at or above the 25mm threshold.
+ * @property {number} days  Distinct hail days the cell saw.
+ * @property {number} y0    First year the cell appears in.
+ * @property {number} y1    Last year the cell appears in.
+ */
+
+/**
+ * Read one year of GeoJSONL radar cores into the cell lookup the rest of the
+ * radar pipeline uses.
+ *
+ * Keys are `i:j`, floored grid indices, exactly as
+ * `data/stormCrossReference.indexRadarCells` keys them — a report attributes to
+ * a cell through the same `i:j`, and the two only join if the strings are
+ * identical. This does not call that function because it summarises `days` as a
+ * single maximum across the payload; a year-scoped caller needs each cell's own
+ * count.
+ *
+ * A line that will not parse is skipped rather than thrown on. The dev server
+ * answers a missing asset with the app's HTML shell and a 200, so "this year
+ * has no file" arrives as a payload of unparseable text, and treating that as a
+ * hard error would mean the newest year breaks the layer until a build produces
+ * it.
+ *
+ * @param {string} text GeoJSONL, one Feature per line.
+ * @returns {Map<string, RadarCell>}
+ */
+export function indexRadarYear(text) {
+  const cells = new Map();
+  for (const line of String(text ?? '').split('\n')) {
+    if (!line.trim()) continue;
+    let feature;
+    try {
+      feature = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const p = feature?.properties;
+    if (!p || p.i === undefined || p.j === undefined) continue;
+    cells.set(`${p.i}:${p.j}`, {
+      mx: Number(p.mx) || 0,
+      cores: Number(p.cp) || 0,
+      days: Number(p.dy) || 0,
+      y0: Number(p.y0) || 0,
+      y1: Number(p.y1) || 0,
+    });
+  }
+  return cells;
+}
+
+/**
+ * One year of radar hail cores, keyed `i:j`.
+ *
+ * Lazy and memoised the same way the year report loaders are: a year already in
+ * memory costs nothing, and a year requested twice while the first load is in
+ * flight joins that load rather than starting a second.
+ *
+ * Year-scoped on purpose. The combined `storm_radar_hail.geojsonl` covers
+ * 2021-2026 in one 3.6 MB file, and in it a cell's `mx`/`cp`/`dy` are
+ * lifetime aggregates across all six years — so it cannot answer "was there a
+ * core in this cell on the day this report was filed". A single year is
+ * 130-175 kB and its statistics belong to that year alone.
+ *
+ * The returned map is the cached instance, shared with every other caller.
+ * Treat it as read-only; a caller that needs to edit cells must copy it first.
+ *
+ * A year with no file resolves to an empty map rather than throwing, for the
+ * same reason {@link loadStormEvents} does.
+ *
+ * @param {string|number} year
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<Map<string, RadarCell>>}
+ */
+export function loadRadarForYear(year, signal) {
+  const key = String(year);
+  return once(
+    radarYears,
+    key,
+    async () => {
+      try {
+        const { text } = await loadSnapshotText(
+          `storm_radar_hail_${key}.geojsonl.gz`,
+          signal,
+        );
+        return indexRadarYear(text);
+      } catch (error) {
+        if (error?.message?.includes('404')) return new Map();
+        throw error;
+      }
+    },
+    signal,
+  );
+}
+
+/**
+ * Several years of radar cores in one map.
+ *
+ * Merging is by `i:j`, and a cell in two year files is one cell holding two
+ * years of hail: `mx` takes the larger peak, and `cp`/`dy` add. That double
+ * count is real and is the reason this is a separate function rather than a
+ * default — for a caller comparing reports against radar on one storm day it
+ * does not matter, because a single day's reports only ever join cells whose
+ * year they belong to and the day-level peak is the one the file reports. For a
+ * caller asking "how bad was this cell over 2021-2026" it matters a great deal,
+ * and that question should be answered by the combined file, not by summing the
+ * year files here.
+ *
+ * @param {Array<string|number>} years
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<Map<string, RadarCell>>}
+ */
+export async function loadRadarForYears(years, signal) {
+  const wanted = [...new Set(years.map(String))].sort();
+  const merged = new Map();
+  for (const year of wanted) {
+    const cells = await loadRadarForYear(year, signal);
+    for (const [key, cell] of cells) {
+      const seen = merged.get(key);
+      if (!seen) {
+        merged.set(key, { ...cell });
+        continue;
+      }
+      merged.set(key, {
+        mx: Math.max(seen.mx, cell.mx),
+        cores: seen.cores + cell.cores,
+        days: seen.days + cell.days,
+        y0: Math.min(seen.y0, cell.y0),
+        y1: Math.max(seen.y1, cell.y1),
+      });
+    }
+  }
+  return merged;
 }
 
 /**
@@ -319,4 +484,5 @@ export function rankStorms(events, options = {}) {
 export function clearStormReportCache() {
   reportYears.clear();
   eventYears.clear();
+  radarYears.clear();
 }

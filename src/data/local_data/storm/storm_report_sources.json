@@ -1,5 +1,5 @@
 {
-  "builtAt": "2026-10-15T16:16:58.175Z",
+  "builtAt": "2026-10-16T03:23:56.779Z",
   "hazards": [
     "hail",
     "wind"
@@ -29,11 +29,11 @@
     },
     "spc-daily": {
       "base": "https://www.spc.noaa.gov/climo/reports",
-      "days": 287,
-      "kept": 15403,
+      "days": 288,
+      "kept": 15404,
       "window": [
         "2026-01-01",
-        "2026-10-14"
+        "2026-10-15"
       ]
     }
   },
@@ -41,7 +41,7 @@
     "through": 2026,
     "events": 162244,
     "joined": 137537,
-    "unmatched": 18200,
+    "unmatched": 18201,
     "storms": 18617,
     "narrativeCoverage": 100
   },
@@ -68,7 +68,7 @@
     },
     "2026": {
       "hail": 8281,
-      "wind": 7122
+      "wind": 7123
     }
   }
 }

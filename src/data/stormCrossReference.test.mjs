@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  HAIL_CORE_MM,
   RADAR_IMPLAUSIBLE_MM,
   canvassTargets,
   crossReference,
@@ -163,6 +164,36 @@ test('wind is never cross-referenced against hail radar cores', () => {
   );
 });
 
+test('a report with no radar core is kept, and classed report-only', () => {
+  // The defect this pins: the report side of the join was built, then thrown
+  // away for want of a radar core, so the cell never appeared at all and the
+  // headline share was computed over a sample with a class missing from it.
+  const radar = indexRadarCells(RADAR(200, -384, 60)).cells;
+  const cells = crossReference([HAIL(35.125, -95.875, 2)], radar);
+  const only = cells.filter((c) => c.agreement === 'report-only');
+  assert.equal(only.length, 1, 'the cell 140:-384 survives with no core');
+  assert.equal(only[0].key, '140:-384');
+  assert.equal(only[0].radarMaxMm, null, 'no core means no estimate at all');
+  assert.equal(
+    only[0].implausible,
+    false,
+    'with no radar value there is nothing to be beyond what hail does',
+  );
+  assert.equal(only[0].reportCount, 1, 'the report is still counted');
+  assert.equal(only[0].reportMax, 2, 'and its measured size survives');
+});
+
+test('report-only cells are never canvass targets', () => {
+  // Low priority by documentation, not by accident: there is no radar value to
+  // rank them by, and somebody in the cell already telephoned it in.
+  const cells = crossReference(
+    [HAIL(35.125, -95.875, 3)],
+    indexRadarCells('').cells,
+  );
+  assert.equal(cells[0].agreement, 'report-only');
+  assert.deepEqual(canvassTargets(cells), []);
+});
+
 test('the summary separates agreement from artefacts', () => {
   const radar = indexRadarCells(
     [RADAR(140, -384, 45), RADAR(200, -384, 60), RADAR(210, -384, 300)].join(
@@ -173,8 +204,25 @@ test('the summary separates agreement from artefacts', () => {
   const s = summariseAgreement(cells);
   assert.equal(s.both, 1);
   assert.equal(s.radarOnly, 2);
+  assert.equal(s.reportOnly, 0);
   assert.equal(s.artefacts, 1);
   assert.equal(s.total, 3);
+  assert.equal(s.total, s.both + s.radarOnly + s.reportOnly);
+});
+
+test('the headline share counts every class, not just the flattering two', () => {
+  // One cell each way. Reporting 3 of 3 as radar-above-report evidence would
+  // be 0%, not 33% — the number moves purely because of the dropped class.
+  const radar = indexRadarCells(RADAR(200, -384, 60)).cells;
+  const s = summariseAgreement(
+    crossReference([HAIL(35.125, -95.875, 2)], radar),
+  );
+  assert.equal(s.total, 2);
+  assert.equal(s.both, 0);
+  assert.equal(s.radarOnly, 1);
+  assert.equal(s.reportOnly, 1);
+  assert.equal(s.radarOnlyShare, 0.5);
+  assert.equal(s.reportOnlyShare, 0.5);
 });
 
 test('an empty comparison summarises to zero rather than dividing by zero', () => {
@@ -183,9 +231,32 @@ test('an empty comparison summarises to zero rather than dividing by zero', () =
     total: 0,
     both: 0,
     radarOnly: 0,
+    reportOnly: 0,
     radarOnlyShare: 0,
+    reportOnlyShare: 0,
     artefacts: 0,
   });
+});
+
+test('an unreported core has to clear the named core threshold to count', () => {
+  // The threshold is the one number shared with the radar builder, so it is
+  // named rather than inlined twice - and a cell a millimetre under it is not
+  // evidence of hail, so it is absent rather than present-and-weak.
+  const radar = indexRadarCells(
+    [RADAR(1, 1, HAIL_CORE_MM - 1), RADAR(2, 2, HAIL_CORE_MM)].join('\n'),
+  ).cells;
+  const cells = crossReference([], radar);
+  assert.equal(HAIL_CORE_MM, 25, 'tracks HAIL_CORE_MM in the radar builder');
+  assert.deepEqual(
+    cells.map((c) => c.radarMaxMm),
+    [HAIL_CORE_MM],
+  );
+  assert.deepEqual(
+    canvassTargets(cells, { minRadarMm: HAIL_CORE_MM }).map(
+      (c) => c.radarMaxMm,
+    ),
+    [HAIL_CORE_MM],
+  );
 });
 
 test('canvass targets rank by core strength and respect a limit', () => {

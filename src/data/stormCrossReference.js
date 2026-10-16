@@ -11,9 +11,14 @@
  *   radar core, no report   hail fell and nobody called it in. No homeowner
  *                            knows they have damage. This is the canvassing
  *                            map.
- *   report, no radar core    likely marginal hail, or a cell the 25mm core
- *                            threshold missed. Low priority.
+ *   report, no radar core    likely marginal hail, or a cell the core threshold
+ *                            missed. Low priority.
  *   both                    confirmed.
+ *
+ * All three classes are emitted. A report-only cell used to be dropped on the
+ * way out, which did not merely lose the cell: the headline share counted only
+ * `both` and `radar-only`, so the denominator quietly shrank and the one number
+ * this module exists to produce was computed over a biased sample.
  *
  * Both datasets share the 0.25-degree grid, floored rather than rounded, so a
  * report and a radar core attribute to the same `i,j`. Rounding shifts a
@@ -100,12 +105,25 @@ export function indexRadarCells(text) {
 export const RADAR_IMPLAUSIBLE_MM = 100;
 
 /**
+ * The core strength, in millimetres, at which a radar cell is a hail core at
+ * all.
+ *
+ * This is the read side of `HAIL_CORE_MM` in
+ * `scripts/build-storm-radar-snapshots.mjs`. The builder decides which cells are
+ * written; this decides which written cells count as evidence. The two must
+ * track each other: if the builder is lowered without this, a 20mm core lands
+ * in the file and this module calls it no hail at all, and the radar-only count
+ * — the canvassing map — goes quietly blank.
+ */
+export const HAIL_CORE_MM = 25;
+
+/**
  * Join reports onto radar cores and classify every cell either side touched.
  *
- * Only cells that at least one source knows about appear, so a quiet month
- * produces an empty list rather than a sparse one. `lat`/`lon` are the cell
- * centre, because that is where the hail actually fell as far as the grid is
- * concerned.
+ * All three classes are returned: `both`, `report-only` and `radar-only`. Only
+ * cells that at least one source knows about appear, so a quiet month produces
+ * an empty list rather than a sparse one. `lat`/`lon` are the cell centre,
+ * because that is where the hail actually fell as far as the grid is concerned.
  *
  * @param {Array} packedReports From {@link module:data/stormReports.loadStormReports}.
  * @param {Map<string, {mx: number, cores: number}>} radarCells
@@ -128,7 +146,6 @@ export function crossReference(packedReports, radarCells, filter = {}) {
         lon: gridCell(lon) * GRID_DEG + GRID_DEG / 2,
         reportCount: 0,
         reportMax: null,
-        radar: null,
       };
       byCell.set(key, cell);
     }
@@ -136,26 +153,31 @@ export function crossReference(packedReports, radarCells, filter = {}) {
     if (size > (cell.reportMax ?? 0)) cell.reportMax = size;
   }
   const out = [];
-  for (const [key, cell] of byCell) {
-    const radar = radarCells.get(key);
-    if (!radar) continue;
-    cell.radar = radar;
+  for (const cell of byCell.values()) {
+    const radar = radarCells.get(cell.key);
+    // A cell a person telephoned in about and the radar has no core for is
+    // still an observation, and dropping it biases the very comparison this
+    // module exists to make: the headline share divides by the number of cells
+    // that survived, so a missing class does not just vanish, it inflates what
+    // is left. It is emitted as `report-only`, with `radarMaxMm: null` so an
+    // absent estimate is never read as a small one, and never implausible —
+    // there is no radar value here to be beyond what hail does.
     out.push({
       key: cell.key,
       lat: cell.lat,
       lon: cell.lon,
-      radarMaxMm: radar.mx,
+      radarMaxMm: radar ? radar.mx : null,
       reportCount: cell.reportCount,
       reportMax: cell.reportMax,
-      agreement: 'both',
-      implausible: radar.mx >= RADAR_IMPLAUSIBLE_MM,
+      agreement: radar ? 'both' : 'report-only',
+      implausible: radar ? radar.mx >= RADAR_IMPLAUSIBLE_MM : false,
     });
   }
   // Radar-only cells have no report at all, so they cannot come from the report
   // side of the join; they are found by walking the radar index directly.
   for (const [key, radar] of radarCells) {
     if (byCell.has(key)) continue;
-    if (radar.mx < 25) continue;
+    if (radar.mx < HAIL_CORE_MM) continue;
     const [i, j] = key.split(':').map(Number);
     out.push({
       key,
@@ -173,27 +195,39 @@ export function crossReference(packedReports, radarCells, filter = {}) {
 
 /**
  * The headline: how much of the radar hail never reached a report.
+ *
+ * `total` is the union of all three classes, which is the only denominator that
+ * does not flatter the radar. Dividing by `both + radarOnly` alone makes the
+ * share of unreported hail a function of how many report-only cells were thrown
+ * away, so the number moved for a reason that had nothing to do with hail.
+ *
+ * `artefacts` counts implausible radar-only cells and nothing else: an
+ * implausible core with a report in it is a disagreement the report already
+ * speaks to, and a cell with no radar value cannot be an artefact at all.
  * @param {CrossCell[]} cells
- * @returns {{total: number, both: number, radarOnly: number, radarOnlyShare: number,
- *            artefacts: number}}
+ * @returns {{total: number, both: number, radarOnly: number, reportOnly: number,
+ *            radarOnlyShare: number, reportOnlyShare: number, artefacts: number}}
  */
 export function summariseAgreement(cells) {
   let both = 0;
   let radarOnly = 0;
+  let reportOnly = 0;
   let artefacts = 0;
   for (const cell of cells) {
     if (cell.agreement === 'both') both += 1;
     else if (cell.agreement === 'radar-only') {
       radarOnly += 1;
       if (cell.implausible) artefacts += 1;
-    }
+    } else if (cell.agreement === 'report-only') reportOnly += 1;
   }
-  const total = both + radarOnly;
+  const total = both + radarOnly + reportOnly;
   return {
     total,
     both,
     radarOnly,
+    reportOnly,
     radarOnlyShare: total ? radarOnly / total : 0,
+    reportOnlyShare: total ? reportOnly / total : 0,
     artefacts,
   };
 }
@@ -203,14 +237,22 @@ export function summariseAgreement(cells) {
  *
  * A radar-only cell with a strong core and no report is a street where hail
  * fell, nobody telephoned it in, and no homeowner is looking at their roof.
+ *
+ * Report-only cells are excluded deliberately, not incidentally. There, the
+ * radar estimate is below the core threshold or absent, which usually means the
+ * hail was marginal — and a cell where somebody already called it in needs no
+ * canvassing, because someone already knows. Offering them here would put a
+ * visit on the map for no new information.
  * @param {CrossCell[]} cells
  * @param {{limit?: number, minRadarMm?: number}} [options]
  * @returns {CrossCell[]}
  */
 export function canvassTargets(cells, options = {}) {
-  const { limit = 200, minRadarMm = 25 } = options;
+  const { limit = 200, minRadarMm = HAIL_CORE_MM } = options;
   return (
     cells
+      // `report-only` never qualifies: it has no radar value to rank by, and
+      // its absence of a core is not evidence of damage.
       .filter((c) => c.agreement === 'radar-only' && c.radarMaxMm >= minRadarMm)
       // Artefacts are excluded rather than ranked low: a cell whose only evidence
       // is an impossible radar value is not a lead, it is a false one.

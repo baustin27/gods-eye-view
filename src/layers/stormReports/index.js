@@ -24,6 +24,11 @@ import {
   worstFirst,
 } from './model.js';
 import * as Cesium from 'cesium';
+import {
+  crossReference,
+  indexRadarCells,
+  summariseAgreement,
+} from '../../data/stormCrossReference.js';
 import { stormDays } from '../../data/stormReports.js';
 import { STORM_SOURCE_BADGE } from '../../data/stormAttribution.js';
 
@@ -43,6 +48,39 @@ export const HAIL_FLOOR_IN = 1.0;
 
 /** How many report cards the overlay may show at once. */
 const OVERLAY_COHORT_LIMIT = 25;
+
+/**
+ * Hard ceiling on the rows one comparison may look at.
+ *
+ * The largest day on record holds 1,135 reports, so this is a guard rather than
+ * a budget: it exists so that a future window widening by accident cannot turn
+ * a canvassing question into a national join. Past it, no line is shown at all,
+ * which is the honest answer.
+ */
+const COMPARISON_ROW_LIMIT = 5000;
+
+/**
+ * Read a radar payload into the cell lookup the comparison joins on.
+ *
+ * Deliberately permissive about shape — a Map, the builder's GeoJSONL text, or
+ * `{cells}` wrapping either — so a per-year loader and a whole-record index can
+ * both be handed in unchanged. An unrecognised shape is an empty Map, which
+ * reads as "no cores that day" rather than as a failure.
+ *
+ * @param {Map<string, {mx: number, cores: number}>|{cells?: Map|string|Array}|string} raw
+ * @returns {Map<string, {mx: number, cores: number}>}
+ */
+function normaliseRadarCells(raw) {
+  if (raw instanceof Map) return raw;
+  if (typeof raw === 'string') return indexRadarCells(raw).cells;
+  if (Array.isArray(raw)) return indexRadarCells(raw.join('\n')).cells;
+  const cells = raw?.cells ?? raw?.radarCells;
+  if (cells instanceof Map) return cells;
+  if (typeof cells === 'string' || Array.isArray(cells))
+    return indexRadarCells(Array.isArray(cells) ? cells.join('\n') : cells)
+      .cells;
+  return new Map();
+}
 
 /** The hail threshold rungs offered, inches. */
 export const HAIL_THRESHOLDS_IN = Object.freeze([1, 1.5, 2, 2.5, 3]);
@@ -85,7 +123,20 @@ export const STORM_REPORTS_DEFAULTS = Object.freeze({
 });
 
 /**
- * @param {{source: object, overlayHost?: object}} deps
+ * @param {{source: object, overlayHost?: object, radarSource?: object}} deps
+ *
+ * `radarSource` is optional and the layer is complete without it: no radar
+ * dependency means no cross-reference and no error, which is the only safe
+ * default for a feature that was previously unreachable. When one is supplied it
+ * must offer
+ *
+ *   cellsFor(years, signal) -> Promise<Map<'i:j', {mx: number, cores: number}>
+ *                              | {cells: Map} | {cells: string}
+ *
+ * where the string is the GeoJSONL the radar builder emits and
+ * {@link module:data/stormCrossReference.indexRadarCells} reads it. It is asked
+ * only for a single selected hail day, so a lazily-loading per-year radar pays
+ * for one year and never for the record.
  */
 /**
  * The chip handlers are called detached from the row, so they need a handle on
@@ -99,7 +150,72 @@ function self() {
   return _instance;
 }
 
-export function createStormReportsLayer({ source, overlayHost } = {}) {
+/** The snapshot keys years as strings, and so does every date. */
+function yearOf(value) {
+  const text = String(value ?? '');
+  return /^\d{4}-/.test(text) ? text.slice(0, 4) : null;
+}
+
+/**
+ * A report's storm ordinal, or -1 when it has none.
+ *
+ * The shipped snapshot files predate the ordinal and pack 13 slots, so every row
+ * in them reads as undefined. That is the same thing as -1: the row belongs to
+ * no storm we can address, and every path below has to survive it.
+ * @param {object} report
+ * @returns {number}
+ */
+function stormRefOf(report) {
+  const ref = report?.stormRef;
+  return Number.isInteger(ref) && ref >= 0 ? ref : -1;
+}
+
+/**
+ * Index the flat event list by year, and record where each year begins.
+ *
+ * `eventsFor` returns one array per year concatenated together, so a report's
+ * `stormRef` — the row's ordinal inside *its own* year's event file — is not an
+ * index into the list the layer was handed. Using it as one silently reads a
+ * 2026 report's storm out of 2025. The base map is where each year's run
+ * begins, and a lookup is `base[year] + stormRef`.
+ *
+ * Contiguity is derived, not assumed: a year whose events do not occupy one
+ * unbroken run gets no base, and the reverse lookup for that year degrades to
+ * matching on date rather than resolving to a storm that may not exist.
+ *
+ * @param {object[]} events
+ * @returns {{byYear: Map<string, object[]>, base: Map<string, number|null>}}
+ */
+function groupEventsByYear(events) {
+  const byYear = new Map();
+  const base = new Map();
+  const list = events || [];
+  list.forEach((event, index) => {
+    const year = yearOf(event?.date);
+    if (!year) return;
+    if (!byYear.has(year)) {
+      byYear.set(year, []);
+      base.set(year, index);
+    }
+    byYear.get(year).push(event);
+  });
+  for (const [year, group] of byYear) {
+    const start = base.get(year);
+    for (let i = 0; i < group.length; i += 1) {
+      if (list[start + i] !== group[i]) {
+        base.set(year, null);
+        break;
+      }
+    }
+  }
+  return { byYear, base };
+}
+
+export function createStormReportsLayer({
+  source,
+  overlayHost,
+  radarSource,
+} = {}) {
   if (typeof source?.getSnapshot !== 'function')
     throw new TypeError('Storm Reports layer requires a snapshot source');
   if (!overlayHost)
@@ -110,6 +226,8 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
   let _request = null;
   let _snapshot = null;
   let _events = [];
+  let _eventsByYear = new Map();
+  let _eventBase = new Map();
   let _visible = [];
   let _enabled = false;
   let _loading = false;
@@ -124,6 +242,10 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
   let _packed = null;
   let _fieldMessage = null;
   let _previouslyEmpty = true;
+  let _comparison = null;
+  let _comparisonKey = null;
+  let _comparisonToken = 0;
+  let _ordinalYears = new Set();
 
   /**
    * Durable option intent from the manager, replayed once data lands. The
@@ -180,6 +302,9 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       ]);
       if (_request?.signal?.aborted) return;
       _events = events;
+      const grouped = groupEventsByYear(events);
+      _eventsByYear = grouped.byYear;
+      _eventBase = grouped.base;
       _packed = packed;
       applyFilter(packed);
     } catch (error) {
@@ -226,6 +351,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
         }),
       );
     _visible = rows.map(({ row, index }) => unpack(row, index));
+    indexOrdinalYears();
     _stats = {
       total: _visible.length,
       hail: _visible.filter((r) => r.hazard === 'hail').length,
@@ -235,6 +361,111 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     };
     render();
     publish();
+    refreshComparison();
+  }
+
+  /**
+   * Which years have reports carrying a storm ordinal at all.
+   *
+   * A snapshot built before the ordinal existed has none, and asking by ordinal
+   * there returns nothing at all — an empty list is not a worse answer than the
+   * day's reports, it is a wrong one. Recomputed per repaint because the visible
+   * set is what any of this is asked about.
+   */
+  function indexOrdinalYears() {
+    _ordinalYears = new Set();
+    for (const report of _visible) {
+      if (stormRefOf(report) >= 0) _ordinalYears.add(yearOf(report.date));
+    }
+  }
+
+  /**
+   * Whether the radar comparison can honestly be computed right now.
+   *
+   * One selected hail day, and nothing broader. The cross-reference joins
+   * reports to radar cores cell by cell, and a window of "all dates" is 155,737
+   * rows and a radar index for six years: it is a national aggregate wearing the
+   * costume of a canvassing answer, and it is not what the panel line would
+   * read as. A day is also the question the line is for — hail fell here, and
+   * how much of it did nobody notice.
+   */
+  function comparisonEligible() {
+    const { fromDate, toDate, hazard } = _options;
+    if (!radarSource) return false;
+    if (hazard !== 'hail') return false;
+    if (!fromDate || fromDate !== toDate) return false;
+    if (!_visible.length || !_packed) return false;
+    return _visible.length <= COMPARISON_ROW_LIMIT;
+  }
+
+  /** What the current selection compares, or null when it compares nothing. */
+  function comparisonKey() {
+    if (!comparisonEligible()) return null;
+    return [
+      _options.fromDate,
+      _options.hazard,
+      _options.minHailIn,
+      _visible.length,
+      String(_eventBase.get(yearOf(_options.fromDate))),
+    ].join('|');
+  }
+
+  /**
+   * Re-run the radar comparison for the selected day, if there is one.
+   *
+   * Fire-and-forget: the panel line is additive and the layer is already
+   * correct without it, so a radar source that is absent, slow, or broken must
+   * never be able to fail a load or block a repaint. Every failure ends with no
+   * comparison and the layer exactly as it was.
+   */
+  async function refreshComparison() {
+    const key = comparisonKey();
+    if (key === null) {
+      _comparisonToken += 1;
+      _comparison = null;
+      _comparisonKey = null;
+      return;
+    }
+    if (key === _comparisonKey) return;
+    _comparisonKey = key;
+    _comparison = null;
+    const token = ++_comparisonToken;
+    // The visible rows are already filtered by hazard, size bar and window, so
+    // they are the whole population for this day. `ordinal` is the row's index
+    // in the packed array, which is how the tuples are recovered for the join.
+    const rows = _visible.map((r) => _packed[r.ordinal]);
+    try {
+      const cells = await radarCellsFor(yearsInWindow(), _request?.signal);
+      // The window can move while radar is in flight; a stale split for a day
+      // nobody is looking at is worse than no line at all.
+      if (token !== _comparisonToken) return;
+      _comparison = {
+        day: _options.fromDate,
+        ...summariseAgreement(crossReference(rows, cells)),
+      };
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      // Logged rather than swallowed: silence here is how a wired-up radar
+      // source ends up looking like an unwired one.
+      console.warn(
+        '[Storm Reports] radar cross-reference unavailable:',
+        error?.message || error,
+      );
+      return;
+    }
+    publish();
+  }
+
+  /**
+   * Ask the injected radar source for the window's cells, in whatever shape it
+   * keeps them. Anything else is a Map of nothing, which reads as "no cores",
+   * not as a failure — see the caveat in `normaliseRadarCells`.
+   */
+  async function radarCellsFor(years, signal) {
+    const call = radarSource?.cellsFor || radarSource?.radarFor;
+    if (typeof call !== 'function')
+      throw new TypeError('radarSource needs a cellsFor(years, signal) method');
+    return normaliseRadarCells(await call.call(radarSource, years, signal));
   }
 
   /**
@@ -275,6 +506,7 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       comment,
       sources,
       trace,
+      stormRef,
     ] = row;
     return {
       date,
@@ -293,7 +525,47 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
         .split(',')
         .filter(Boolean),
       trace: Boolean(trace),
+      // Slot 13: the row's ordinal into its own year's storm events. Carried
+      // here because it is the only thing that identifies a report's storm on
+      // a day that carried more than one.
+      stormRef: stormRefOf({ stormRef }),
     };
+  }
+
+  /**
+   * The storm a report belongs to.
+   *
+   * By ordinal when the row has one, which is the only resolution that is
+   * correct on a multi-storm day: a date matches every storm that day, and the
+   * first of them is arbitrary. By date only as the fallback for a snapshot with
+   * no ordinals, where the day's first storm is at least a storm that happened.
+   *
+   * @param {object} report
+   * @returns {object|null}
+   */
+  function resolveStorm(report) {
+    const ref = stormRefOf(report);
+    if (ref >= 0) {
+      const storm = _eventsByYear.get(yearOf(report?.date))?.[ref];
+      // A storm cannot sit on another day than the report naming it, so this
+      // catches a stale events file whose ordinals no longer line up. Guessing
+      // there would put the wrong storm's narrative on the card.
+      if (storm && storm.date === report.date) return storm;
+      return null;
+    }
+    return _events.find((e) => e.date === report?.date) || null;
+  }
+
+  /**
+   * A storm's own ordinal, or null when it cannot be addressed as one.
+   * @param {object} storm
+   * @returns {number|null}
+   */
+  function ordinalOf(storm) {
+    const base = _eventBase.get(yearOf(storm?.date));
+    if (base === undefined || base === null) return null;
+    const ref = _events.indexOf(storm) - base;
+    return ref >= 0 ? ref : null;
   }
 
   /** Paint the visible reports. */
@@ -385,6 +657,29 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     _stats = { ...(_stats || {}), visibleCount: _visible.length };
   }
 
+  /**
+   * The radar split for the selected day, as one line.
+   *
+   * Radar hail is a vertically-integrated estimate derived from reflectivity.
+   * It is not a measurement of a stone, and putting it in the same sentence as
+   * a reported size without saying so is how someone ends up driving after a
+   * radar artefact. The caveat travels with the number.
+   *
+   * @returns {string|null}
+   */
+  function comparisonLine() {
+    const split = _comparison;
+    if (!split) return null;
+    const parts = [
+      `${split.both} confirmed`,
+      `${split.radarOnly} unreported radar core${split.radarOnly === 1 ? '' : 's'}`,
+    ];
+    if (split.artefacts)
+      parts.push(`${split.artefacts} of those cores read as artefacts`);
+    parts.push(`${split.reportOnly} reported with no core`);
+    return `radar ${parts.join(', ')} — an estimate, not a measured stone`;
+  }
+
   /** One line describing what is on screen right now. */
   function panelInfo() {
     // A rejected date outranks everything: the person is still looking at the
@@ -403,7 +698,9 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
     const from = _options.fromDate;
     const to = _options.toDate;
     if (from) parts.push(from === to ? from : `${from} to ${to}`);
-    return parts.join(' \u00b7 ');
+    const radar = comparisonLine();
+    if (radar) parts.push(radar);
+    return parts.join(' · ');
   }
   const api = {
     id: STORM_REPORTS_ID,
@@ -449,6 +746,9 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       _request?.abort();
       _request = null;
       _visible = [];
+      _comparison = null;
+      _comparisonKey = null;
+      _comparisonToken += 1;
       _loaded = false;
       _optionsDirty = true;
       if (_dataSource) {
@@ -718,19 +1018,47 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
       return [..._events].sort((a, b) => (a.date < b.date ? 1 : -1));
     },
 
-    /** The reports belonging to one storm. */
+    /**
+     * The radar-versus-report split for the selected day, or null.
+     *
+     * Null is the normal answer: no radar source injected, no single day
+     * selected, the wind hazard, or a radar load that failed. The panel line
+     * reads it; this is here so the numbers are reachable without scraping a
+     * sentence.
+     */
+    getComparison() {
+      return _comparison;
+    },
+
+    /**
+     * The reports belonging to one storm.
+     *
+     * By ordinal within the storm's own year, which is what separates two storms
+     * on the same day. Matching on date returned both storms' reports for either
+     * storm, and a day like 2025-05-16 carried sixty-five.
+     *
+     * Where the snapshot has no ordinals at all, or this year's events do not
+     * form one run in the list we were handed, it falls back to the day: every
+     * report that day is at least a report that day, which is a wider answer
+     * than the ordinal but never a narrower one.
+     */
     getStormReports(stormId) {
       const storm = _events.find((e) => e.id === stormId);
       if (!storm) return [];
-      return _visible
-        .filter((r) => r.date === storm.date)
-        .filter((r) => worstFirst([r], r.hazard, 1).length >= 0)
-        .sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
+      const year = yearOf(storm.date);
+      const ref = _ordinalYears.has(year) ? ordinalOf(storm) : null;
+      const matched =
+        ref === null
+          ? _visible.filter((r) => r.date === storm.date)
+          : _visible.filter(
+              (r) => yearOf(r.date) === year && stormRefOf(r) === ref,
+            );
+      return matched.sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
     },
 
     /** The card a click opens. */
     describeReport(report) {
-      const storm = _events.find((e) => e.date === report.date);
+      const storm = resolveStorm(report);
       return {
         ...report,
         magnitude: magnitudeLabel(report),
@@ -745,6 +1073,10 @@ export function createStormReportsLayer({ source, overlayHost } = {}) {
               reportCount: storm.reportCount,
               narrative: storm.narrative,
               identitySource: storm.identitySource,
+              // How this storm was found. `date` is the old snapshot's fallback
+              // and is the day's first storm, which is the wrong one on a day
+              // that carried two.
+              resolvedBy: stormRefOf(report) >= 0 ? 'ordinal' : 'date',
             }
           : null,
       };
