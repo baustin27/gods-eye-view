@@ -359,10 +359,16 @@ export function createStormReportsLayer({
   let _flagsArea = null;
   let _contextIds = new Set();
   let _selectedReportId = null;
+  // The report under the pointer, or null. Cards are summoned rather than
+  // scattered: at 44,717 reports an always-on card per report is an unreadable
+  // sheet of text, and the colour bands are already drawn by the Cesium points,
+  // so the cards were duplicating a mark that exists and adding words to it.
+  let _hoveredReportId = null;
   let _outlineVisible = false;
   let _outlineEntity = null;
   let _rowControlsListener = null;
   let _clickHandler = null;
+  let _moveHandler = null;
 
   /**
    * Repaint the panel row.
@@ -1204,29 +1210,66 @@ export function createStormReportsLayer({
       }
       clearReportContext();
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    // Hover summons a card. This is the same pick the click uses, against the
+    // same Cesium points, so there is nothing to hit-test separately and no
+    // second geometry to keep in sync with the markers.
+    _moveHandler = makeInputHandler(_viewer.scene.canvas);
+    _moveHandler.setInputAction((move) => {
+      if (!isPointerFree() || !_enabled) return;
+      const picked = _viewer.scene.pick?.(move.endPosition);
+      const id = typeof picked?.id?.id === 'string' ? picked.id.id : null;
+      const next = id && _contextIds.has(id) ? id : null;
+      if (next === _hoveredReportId) return;
+      _hoveredReportId = next;
+      publish();
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
   }
 
   function releaseInteraction() {
     _clickHandler?.destroy();
     _clickHandler = null;
+    _moveHandler?.destroy();
+    _moveHandler = null;
+    // A summoned card must not outlive the pointer leaving the layer.
+    if (_hoveredReportId) {
+      _hoveredReportId = null;
+      publish();
+    }
   }
 
   /**
-   * Hand the worst reports to the world overlay as clickable cards.
+   * Hand the reports that deserve a card to the world overlay.
    *
    * `setOverlayEntries` throws unless given an array of entries in its own
    * shape, and this call runs inside `init()`. Passing an object threw there,
    * which failed registration, and the only symptom was the manager's generic
    * "Could not enable the requested layer".
+   *
+   * WHY SO FEW ENTRIES. This used to publish the worst `OVERLAY_COHORT_LIMIT`
+   * reports as cards, each titled "2.75 hail — Travis County". The colour bands
+   * are already drawn by the Cesium points, and clicking already picks through
+   * `scene.pick` against those same points, so the cards were duplicating a
+   * mark that already existed while adding a line of text to every one. The
+   * legend carries the band colours; a card is for the report someone is
+   * actually pointing at.
    */
   function publish(message = null) {
     // An explicit null clears a previous rejection; no argument leaves it.
     if (message !== undefined) _fieldMessage = message;
     if (!_viewer) return;
     _lastUpdate = Date.now();
+    // At most two cards: the one under the pointer, and the one someone
+    // clicked. Hover wins when they are the same report, so a card is never
+    // drawn twice. The colour bands stay on the Cesium points and in the
+    // legend; a card is for the report someone is actually pointing at.
+    const summoned = new Set(
+      [_hoveredReportId, _selectedReportId].filter(Boolean),
+    );
     const entries = _enabled
-      ? worstFirst(_visible, _options.hazard, OVERLAY_COHORT_LIMIT).map(
-          (report) => {
+      ? _visible
+          .filter((report) => summoned.has(entityIdFor(report)))
+          .map((report) => {
             const band =
               report.hazard === 'hail'
                 ? hailBand(report.size)
@@ -1265,8 +1308,7 @@ export function createStormReportsLayer({
               selected:
                 _selectedReportId === entityIdFor(report) || isolationIsOn(),
             };
-          },
-        )
+          })
       : [];
     overlayHost.setEntries(STORM_REPORTS_ID, entries, {
       cohortLimit: OVERLAY_COHORT_LIMIT,
@@ -1705,6 +1747,28 @@ export function createStormReportsLayer({
     /** The context id of the clicked report, or null. */
     getSelectedReportId() {
       return _selectedReportId;
+    },
+
+    /**
+     * Point at a report, summoning its card. `null` sends the pointer away.
+     *
+     * Public rather than hover-only because the gesture is not the only way to
+     * point at something: keyboard navigation and voice both want to summon
+     * the same card without synthesising a mouse move.
+     *
+     * @param {string|null} id a `gev` context id, or null
+     * @returns {boolean} whether the pointed-at report changed
+     */
+    setHoveredReportId(id) {
+      // Trusted, not validated. The pointer handler has already checked
+      // `_contextIds` before calling, and re-checking here would make the
+      // setter depend on the tracked-readout registry, which is not what
+      // "point at this report" should mean.
+      const next = id ? String(id) : null;
+      if (next === _hoveredReportId) return false;
+      _hoveredReportId = next;
+      publish();
+      return true;
     },
 
     /**

@@ -99,6 +99,20 @@ function drawn(viewer) {
   return viewer.__sources.flatMap((s) => s.entities.values ?? []);
 }
 
+/**
+ * Cards are summoned, not scattered: point at the first drawn report and hand
+ * back the id that was pointed at. Tests inspecting a card's shape call this
+ * rather than reaching into a resting publish, which is empty on purpose.
+ */
+function summonCard(layer, viewer) {
+  const id = drawn(viewer)
+    .map((e) => e.id)
+    .find((entityId) => String(entityId).startsWith('storm-report-'));
+  assert.ok(id, 'the layer drew a report to point at');
+  assert.equal(layer.setHoveredReportId(id), true, 'the point registered');
+  return id;
+}
+
 function host() {
   const entries = [];
   const visible = [];
@@ -451,9 +465,22 @@ test('the overlay is handed cards in the shape it demands', async () => {
   assert.doesNotThrow(() => layer.init(viewer), 'init must not throw');
   layer.enable();
   await layer.update();
+  // Cards are SUMMONED, not scattered: at most the hovered report and the
+  // selected one. The colour bands live on the Cesium points and in the legend.
+  const rested = overlayHost.entries.at(-1);
+  assert.ok(Array.isArray(rested.list));
+  assert.equal(
+    rested.list.length,
+    0,
+    'nothing is pointed at, so no cards are drawn at all',
+  );
+
+  // Pointing at a report summons exactly its card. The id is whatever the
+  // layer minted, so this reads it back off the drawn entity rather than
+  // guessing the format.
+  summonCard(layer, viewer);
   const last = overlayHost.entries.at(-1);
-  assert.ok(Array.isArray(last.list));
-  assert.equal(last.list.length, 3, 'one card per report at or above 1 inch');
+  assert.equal(last.list.length, 1, 'exactly the hovered report gets a card');
   const card = last.list[0];
   assert.ok(card.id, 'a card has an id');
   assert.ok(card.position, 'and a position to anchor to');
@@ -474,6 +501,7 @@ test('a card names the place and the size', async () => {
   layer.init(viewer);
   layer.enable();
   await layer.update();
+  summonCard(layer, viewer);
   const [card] = overlayHost.entries.at(-1).list;
   assert.match(card.title, /1\.75 hail/);
   assert.match(card.title, /Cleveland/);
@@ -977,7 +1005,8 @@ test('a radar source that fails costs the line, not the layer', async () => {
       },
     };
     const { layer, overlayHost } = makeLayer([REPORT(2)], [], { radarSource });
-    layer.init(stubViewer());
+    const viewer = stubViewer();
+    layer.init(viewer);
     layer.enable();
     assert.equal(await layer.update(), true, 'the layer still rendered');
     layer.setDate('2026-08-10');
@@ -986,8 +1015,16 @@ test('a radar source that fails costs the line, not the layer', async () => {
     assert.match(layer.getRowControls().info, /1 report\b/);
     assert.equal(
       overlayHost.entries.at(-1).list.length,
+      0,
+      'no cards, because cards are summoned rather than scattered',
+    );
+    // The layer survived the radar failure, so pointing at its one report
+    // still works: the card path is independent of the comparison line.
+    summonCard(layer, viewer);
+    assert.equal(
+      overlayHost.entries.at(-1).list.length,
       1,
-      'cards still there',
+      'and exactly one on demand',
     );
   } finally {
     console.warn = warn;
@@ -1437,6 +1474,7 @@ test('an overlay card carries the fields the overlay actually reads', async () =
   layer.init(viewer);
   layer.enable();
   await layer.update();
+  summonCard(layer, viewer);
   const [card] = overlayHost.entries.at(-1).list;
 
   // normalizeOverlayEntry is an explicit field pick: a name it does not read is
@@ -2200,4 +2238,49 @@ test('the approximate outline still draws under an isolation', async () => {
     'the outline is an axis of its own and the isolation did not swallow it',
   );
   assert.match(layer.getRowControls().info, /[Aa]pproximate/);
+});
+
+test('cards are summoned by pointing, not scattered over the map', async () => {
+  const viewer = stubViewer();
+  const overlayHost = host();
+  const source = {
+    getSnapshot: async () => ({
+      years: ['2026'],
+      days: { '2026-08-10': { hail: 3, wind: 0, total: 3 } },
+    }),
+    reportsFor: async () => [REPORT(2), REPORT(1.75), REPORT(1)],
+    eventsFor: async () => [],
+  };
+  const layer = createStormReportsLayer({ source, overlayHost });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+
+  // THE POINT. Three reports above the hail floor used to mean three cards,
+  // each titled "2.75 hail — Travis County". The colour bands are already on
+  // the points and in the legend, so that was a line of text per report.
+  assert.equal(
+    overlayHost.entries.at(-1).list.length,
+    0,
+    'a loaded layer with nobody pointing at it draws no cards at all',
+  );
+
+  const first = summonCard(layer, viewer);
+  const summoned = overlayHost.entries.at(-1).list;
+  assert.equal(summoned.length, 1, 'exactly the pointed-at report');
+  assert.match(summoned[0].title, /hail/, 'the card still names the size');
+
+  // Pointing at the same report again is not a change, so it does not republish
+  // and does not churn the overlay.
+  const before = overlayHost.entries.length;
+  assert.equal(
+    layer.setHoveredReportId(first),
+    false,
+    'a repeat is not a change',
+  );
+  assert.equal(overlayHost.entries.length, before, 'and publishes nothing');
+
+  // Pointing away sends the card with it.
+  assert.equal(layer.setHoveredReportId(null), true, 'the pointer left');
+  assert.equal(overlayHost.entries.at(-1).list.length, 0, 'the card went too');
 });
