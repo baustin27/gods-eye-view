@@ -66,6 +66,13 @@ const PANEL_GROUPS = [
     ],
   },
   {
+    // Isolation is not weather and not a utility - it is a lens applied over
+    // everything else, so it gets its own group at the top rather than
+    // borrowing Utilities and implying it belongs to one domain.
+    label: 'Focus',
+    ids: ['isolation'],
+  },
+  {
     label: 'Weather',
     ids: [
       'wind',

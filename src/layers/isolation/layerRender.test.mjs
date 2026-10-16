@@ -666,3 +666,63 @@ test('every scrim rectangle the layer draws contains no part of the isolation', 
         );
   }
 });
+
+test('SHARE: a share link carries the area as the text it was named by', async () => {
+  test('SHARE: a named area round-trips through getParams/setParams', async () => {
+    const layer = createIsolationLayer();
+    layer.init(stubViewer());
+    const first = await layer.setIsolationText('Texas');
+    assert.equal(first.ok, true);
+
+    // The link carries a name, never a polygon.
+    assert.deepEqual(layer.getParams(), { area: 'Texas' });
+
+    // A link handed to a fresh layer resolves to the same boxes.
+    const opened = createIsolationLayer();
+    opened.init(stubViewer());
+    opened.setParams({ area: 'Texas' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(opened.getBoxes(), layer.getBoxes());
+  });
+
+  test('SHARE: an unknown name is reported and leaves the current isolation alone', async () => {
+    const layer = createIsolationLayer();
+    layer.init(stubViewer());
+    await layer.setIsolationText('Texas');
+    const before = layer.getBoxes();
+
+    const miss = await layer.setIsolationText('qqqzzz nowhere at all');
+    assert.equal(miss.ok, false);
+    assert.ok(miss.reason, 'a miss must carry a reason the panel can show');
+    // Not a throw, and not a silent clear.
+    assert.deepEqual(layer.getBoxes(), before);
+  });
+
+  test('SHARE: clearing the isolation clears the name a link would read', async () => {
+    const layer = createIsolationLayer();
+    layer.init(stubViewer());
+    await layer.setIsolationText('Texas');
+    layer.clearIsolation();
+    assert.deepEqual(layer.getParams(), {});
+    assert.equal(layer.getIsolationText(), null);
+  });
+
+  test('SHARE: a link that arrives before the scene resolves on init', async () => {
+    const layer = createIsolationLayer();
+    // No init() yet — this is the order a share link takes.
+    layer.setParams({ area: 'Texas' });
+    assert.deepEqual(
+      layer.getParams(),
+      {},
+      'not resolved yet, so not encoded yet',
+    );
+
+    layer.init(stubViewer());
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(
+      layer.getBoxes().length,
+      'the pending area resolved once the scene existed',
+    );
+    assert.deepEqual(layer.getParams(), { area: 'Texas' });
+  });
+});

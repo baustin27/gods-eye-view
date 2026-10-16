@@ -44,7 +44,10 @@ test('the complete Realtime tool payload pins the manifest-generated layer relea
     // payload enumerates field NAMES and units, never field types, so the
     // shorthand fix is digest-neutral by construction. Verified by reverting
     // only that edit (identical digest) and by renaming a field (digest moves).
-    '45fcec3d2f80f4b7ac5e3737eab695fc3ecc4ddfd8eddf212caaad8f3e1d26a4',
+    // Re-derived for Isolation: a new manifest entry adds one value to the
+    // generated layer enum and four aliases to the generated alias hint, and
+    // this digest is deliberately sensitive to both.
+    'df87b36630811b40e4757a5339921c4d26127309b8c29b2befc8fac641154fb1',
   );
 });
 

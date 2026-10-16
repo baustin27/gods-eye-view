@@ -287,6 +287,14 @@ const layers = [
     },
   },
   {
+    id: 'isolation',
+    aliases: ['isolation', 'isolate', 'isolate area', 'focus area'],
+    context: false,
+    toggle: true,
+    // A lens, not a subject: there is nothing to count and nothing to ask.
+    noQuery: 'map overlay; no countable records',
+  },
+  {
     id: 'weather-radar',
     aliases: ['weather radar', 'radar', 'rain', 'weather'],
     context: false,

@@ -37,8 +37,8 @@ test('every acquisition source can be omitted without losing catalog membership'
 
 test('all acquisition sources may be absent, and enable fails before initializing or fetching', async (t) => {
   const actual = catalog({}, t);
-  // 30 published on main, plus the three Storm surfaces.
-  assert.equal(actual.layers.length, 33);
+  // 30 published on main, plus the three Storm surfaces and Isolation.
+  assert.equal(actual.layers.length, 34);
   const manager = new LayerLifecycle(
     {},
     { getSourceAvailability: actual.getSourceAvailability },

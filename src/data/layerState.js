@@ -635,6 +635,10 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
     disposition: 'enabled+options',
     optionOwner: 'flights',
   }),
+  // Isolation carries no option groups. The area a share link names is encoded
+  // as the text the person typed and re-resolved on load, so the option codec
+  // would only be carrying a second spelling of something already in the link.
+  Object.freeze({ id: 'isolation', token: '6', disposition: 'enabled-only' }),
   Object.freeze({ id: 'local-dams', token: 'q', disposition: 'enabled-only' }),
   Object.freeze({
     id: 'local-datacenters',

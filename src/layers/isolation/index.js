@@ -40,7 +40,8 @@ import {
   scrimRectangles,
   splitNote,
 } from './model.js';
-import { describeIsolation } from '../../data/isolation.js';
+import { describeIsolation, resolveIsolation } from '../../data/isolation.js';
+import { findPlace } from '../../data/places.js';
 
 /** The layer id, and the token reserved for it in the layer-state ledger. */
 export const ISOLATION_LAYER_ID = 'isolation';
@@ -91,6 +92,12 @@ export function createIsolationLayer({ overlayHost } = {}) {
   let _viewer = null;
   let _dataSource = null;
   let _area = null;
+  // The text the person actually typed, kept beside the resolved area because
+  // that text - not the geometry - is what a share link carries. Encoding a
+  // polygon would put kilobytes of coordinates in a URL; re-resolving a name
+  // costs one lookup and is deterministic.
+  let _areaText = null;
+  let _pendingText = null;
   let _boxes = [];
   let _scrim = [];
   let _enabled = false;
@@ -255,6 +262,13 @@ export function createIsolationLayer({ overlayHost } = {}) {
       // the first `update()` — which for a layer the manager enables with an
       // isolation already in hand would be one repaint too late.
       render();
+      // A share link's area arrives through `setParams` before the scene exists.
+      // Resolution is async, so it is flushed here rather than blocking `init`.
+      if (_pendingText) {
+        const pending = _pendingText;
+        _pendingText = null;
+        api.setIsolationText(pending);
+      }
       overlayHost?.setVisible(ISOLATION_LAYER_ID, false);
       publish();
     },
@@ -318,6 +332,9 @@ export function createIsolationLayer({ overlayHost } = {}) {
       const next = boxes.length ? unit : null;
       const changed = next !== _area || !sameBoxes(boxes, _boxes);
       _area = next;
+      // Clearing the area clears the name with it. A link must never be able to
+      // read out a stale area after the person has taken the isolation off.
+      if (!next) _areaText = null;
       // Repainted eagerly when the scene is live, because a person who has just
       // named a place should see the box now rather than at the next tick. The
       // dirty flag is deliberately left SET: the manager judges an enable by
@@ -338,6 +355,65 @@ export function createIsolationLayer({ overlayHost } = {}) {
     /** The current isolation area, or null. */
     getIsolation() {
       return _area;
+    },
+
+    /**
+     * Resolve free text to an area and isolate it — "Texas", "New York State",
+     * "Denver". This is the only entry point the panel uses, because the panel
+     * has text and not an area object.
+     *
+     * @param {string|null} text
+     * @param {{near?: {lat:number, lon:number}|null}} [opts] `near` breaks ties
+     *   the way the geocoder does: several Springfields, one camera.
+     * @returns {Promise<{ok:boolean, reason?:string}>} `ok:false` carries the
+     *   reason so the panel can say "couldn't find that" instead of doing
+     *   nothing, which is the failure mode this feature would otherwise ship.
+     */
+    async setIsolationText(text, { near = null } = {}) {
+      const query = typeof text === 'string' ? text.trim() : '';
+      if (!query) {
+        _pendingText = null;
+        api.setIsolation(null);
+        return { ok: true };
+      }
+      const result = await resolveIsolation(query, { near, findPlace });
+      if (!result.ok) {
+        // A miss must not silently clear a working isolation, and must not throw
+        // either: the person gets told, and the previous area stays put.
+        return { ok: false, reason: result.reason };
+      }
+      _pendingText = null;
+      _areaText = query;
+      api.setIsolation(result.area);
+      return { ok: true, area: result.area };
+    },
+
+    /** The text that produced the current isolation, for a share link. */
+    getIsolationText() {
+      return _areaText;
+    },
+
+    /**
+     * Shareable intent. The area is carried as the text it was resolved from, so
+     * the link survives a rebuild of the boundaries pack and stays readable.
+     */
+    getParams() {
+      return _areaText ? { area: _areaText } : {};
+    },
+
+    /**
+     * Apply a share link's intent. Held until `init` if the layer is not up yet,
+     * for the same reason the storm layer holds its params.
+     */
+    setParams(params) {
+      const area =
+        params && typeof params.area === 'string' ? params.area : null;
+      if (!area) return;
+      if (_viewer) {
+        api.setIsolationText(area);
+        return;
+      }
+      _pendingText = area;
     },
 
     /** The current boxes, copied so a caller cannot mutate the layer's state. */
