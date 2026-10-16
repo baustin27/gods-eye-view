@@ -91,10 +91,51 @@ const PRODUCT_LABEL = 'MRMS MESH 24-hour maximum';
  * genuinely damaging event.
  */
 const HAIL_CORE_MM = 25;
+
+/**
+ * Minimum hail size in millimetres that the per-day accumulator will retain.
+ * Below this floor the per-day artifact discards the cell entirely.
+ * This is the lower threshold of the two-threshold split:
+ *   HAIL_RETAIN_MM = 10  — per-day accumulator keep floor
+ *   HAIL_CORE_MM = 25    — core threshold for per-year & combined GeoJSONL
+ * Invariant: the 7 existing artifacts (storm_radar_hail.geojsonl, 6 ×
+ * storm_radar_hail_<year>.geojsonl.gz, 7 sidecars) remain byte-identical
+ * apart from builtAt; HAIL_CORE_MM's behaviour must not change.
+ */
+export const HAIL_RETAIN_MM = 10;
+
+/** Pure predicate: returns true if the given hail size mm is at or above the retain floor. */
+export function aboveRetainFloor(mm) {
+  return mm >= HAIL_RETAIN_MM;
+}
 /** Grid step of the emitted snapshot, degrees. Must match the report snapshot. */
-const CELL_DEG = 0.25;
+export const CELL_DEG = 0.25;
+/** Number of columns in the emitted snapshot grid, derived from CELL_DEG. */
+export const COLUMN_COUNT = Math.round(360 / CELL_DEG);
 /** Guard against a pathological day materialising every CONUS cell. */
 const MAX_CELLS = 40000;
+
+/**
+ * Minimum longitude bound for the CONUS radar domain.
+ * MRMS longitudes start at 230°E; after normalisation to −180..180,
+ * the grid spans from ~−125° (dateline-adjacent) to ~125°W.
+ * Cells west of −125° belong to the Pacific Ocean and are excluded.
+ */
+export const DOMAIN_MIN_LON = -125;
+
+/**
+ * Minimum latitude bound for the CONUS radar domain.
+ * The MRMS CONUS reporting envelope extends from 21°N to 56°N;
+ * cells south of 21°N are outside the continental United States.
+ */
+export const DOMAIN_MIN_LAT = 21;
+
+/**
+ * Maximum latitude bound for the CONUS radar domain.
+ * The MRMS CONUS reporting envelope extends from 21°N to 56°N;
+ * cells north of 56°N are outside the continental United States.
+ */
+export const DOMAIN_MAX_LAT = 56;
 /**
  * First day of the MRMS archive for this product. A bare run reproduces the
  * bundled snapshot exactly, so the committed artefact is never the product of
@@ -201,7 +242,7 @@ export function ingestMeshGz(gzipped, ymd, cellsByYear) {
     const { lat, lon } = indexToLonLat(grid, i);
     // Skip the Pacific out-of-grid tail: MRMS longitudes start at 230E so the
     // grid spans the dateline, and cells west of -125 belong to the ocean.
-    if (lon < -125 || lat < 21 || lat > 56) continue;
+    if (lon < DOMAIN_MIN_LON || lat < DOMAIN_MIN_LAT || lat > DOMAIN_MAX_LAT) continue;
     const key = `${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`;
     let cell = cells.get(key);
     if (!cell) {

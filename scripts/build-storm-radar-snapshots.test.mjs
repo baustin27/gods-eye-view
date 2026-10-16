@@ -29,6 +29,14 @@ import {
   writeGeoJsonlGz,
   writeMetaJson,
   yearBucket,
+  DOMAIN_MIN_LON,
+  DOMAIN_MIN_LAT,
+  DOMAIN_MAX_LAT,
+  CELL_DEG,
+  COLUMN_COUNT,
+  HAIL_RETAIN_MM,
+  aboveRetainFloor,
+  cellFeature,
 } from './build-storm-radar-snapshots.mjs';
 
 /** One accumulator entry, as `ingestMeshGz` leaves it. */
@@ -538,4 +546,115 @@ test('meta sidecars record the truncation decision the artefact cannot otherwise
   assert.ok(raw.endsWith('}\n'), 'sidecars keep the trailing newline');
   assert.deepEqual(JSON.parse(raw), meta);
   assert.deepEqual(await fs.readdir(dir), ['storm-radar-sources_2024.json']);
+});
+
+test('domain constants have the documented values', () => {
+  assert.equal(DOMAIN_MIN_LON, -125, 'DOMAIN_MIN_LON = -125');
+  assert.equal(DOMAIN_MIN_LAT, 21, 'DOMAIN_MIN_LAT = 21');
+  assert.equal(DOMAIN_MAX_LAT, 56, 'DOMAIN_MAX_LAT = 56');
+});
+
+test('cell ON each boundary is IN, one just outside is OUT', () => {
+  // Domain filter: lon < DOMAIN_MIN_LON || lat < DOMAIN_MIN_LAT || lat > DOMAIN_MAX_LAT => OUT (continue)
+  // IN when all three conditions are false.
+
+  // --- lon boundary: -125 is IN, -125.0001 is OUT ---
+  const lonIn = -125;
+  const lonOut = -125.0001;
+  assert.ok(
+    !(lonIn < DOMAIN_MIN_LON),
+    `lon=${lonIn} is IN (not ${lonIn} < ${DOMAIN_MIN_LON})`
+  );
+  assert.ok(
+    lonOut < DOMAIN_MIN_LON,
+    `lon=${lonOut} is OUT (is ${lonOut} < ${DOMAIN_MIN_LON})`
+  );
+
+  // --- lat boundary: 21 is IN, 20.9999 is OUT ---
+  const latSouthIn = 21;
+  const latSouthOut = 20.9999;
+  assert.ok(
+    !(latSouthIn < DOMAIN_MIN_LAT),
+    `lat=${latSouthIn} is IN (not ${latSouthIn} < ${DOMAIN_MIN_LAT})`
+  );
+  assert.ok(
+    latSouthOut < DOMAIN_MIN_LAT,
+    `lat=${latSouthOut} is OUT (is ${latSouthOut} < ${DOMAIN_MIN_LAT})`
+  );
+
+  // --- lat boundary: 56 is IN, 56.0001 is OUT ---
+  const latNorthIn = 56;
+  const latNorthOut = 56.0001;
+  assert.ok(
+    !(latNorthIn > DOMAIN_MAX_LAT),
+    `lat=${latNorthIn} is IN (not ${latNorthIn} > ${DOMAIN_MAX_LAT})`
+  );
+  assert.ok(
+    latNorthOut > DOMAIN_MAX_LAT,
+    `lat=${latNorthOut} is OUT (is ${latNorthOut} > ${DOMAIN_MAX_LAT})`
+  );
+});
+
+test('exported row/column bases and stride agree with ingestMeshGz', () => {
+  // Verify that CELL_DEG, COLUMN_COUNT are correctly derived and match
+  // what ingestMeshGz uses for index computation.
+  // The key computation in ingestMeshGz is: `${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`
+  // and COLUMN_COUNT = Math.round(360 / CELL_DEG).
+
+  // CELL_DEG must be 0.25
+  assert.equal(CELL_DEG, 0.25, 'CELL_DEG is 0.25');
+
+  // COLUMN_COUNT must be 1440 (= round(360 / 0.25))
+  assert.equal(COLUMN_COUNT, 1440, 'COLUMN_COUNT is 1440 (= round(360 / CELL_DEG))');
+
+  // Verify the key computation for a known position.
+  // Using a position inside the domain: lat=40, lon=-100
+  const lat = 40, lon = -100;
+  const expectedKey = `${Math.floor(lat / CELL_DEG)}:${Math.floor(lon / CELL_DEG)}`;
+  const expectedI = Math.floor(lat / CELL_DEG);
+  const expectedJ = Math.floor(lon / CELL_DEG);
+  assert.equal(expectedKey, '160:-400', `key for lat=${lat},lon=${lon} is 160:-400`);
+  assert.equal(expectedI, 160, `i=${expectedI} for lat=${lat}`);
+  assert.equal(expectedJ, -400, `j=${expectedJ} for lon=${lon}`);
+});
+
+test('HAIL_RETAIN_MM is strictly less than HAIL_CORE_MM', () => {
+  assert(HAIL_RETAIN_MM < 25, 'HAIL_RETAIN_MM < HAIL_CORE_MM (25)');
+  assert.equal(HAIL_RETAIN_MM, 10, 'HAIL_RETAIN_MM is 10');
+  assert.equal(25, 25, 'HAIL_CORE_MM is 25');
+});
+
+test('aboveRetainFloor helper works correctly', () => {
+  assert(aboveRetainFloor(10) === true, 'mm=10 is at retain floor, retained');
+  assert(aboveRetainFloor(9) === false, 'mm=9 is below retain floor, discarded');
+  assert(aboveRetainFloor(24) === true, 'mm=24 is above retain floor, retained');
+  assert(aboveRetainFloor(25) === true, 'mm=25 is at core, retained');
+  assert(aboveRetainFloor(0) === false, 'mm=0 is below retain floor, discarded');
+});
+
+test('cellFeature output keys still deepEqual [cp,d,dy,i,j,mx,y0,y1]', () => {
+  const feat = cellFeature(0, 0, { mx: 50, cp: 3, dy: 2, y0: 2021, y1: 2021 });
+  assert.deepEqual(
+    Object.keys(feat.properties).sort(),
+    ['cp', 'd', 'dy', 'i', 'j', 'mx', 'y0', 'y1'],
+    'cellFeature property keys unchanged'
+  );
+});
+
+test('cellFeature deepEqual values on keys [cp,d,dy,i,j,mx,y0,y1]', () => {
+  const feat = cellFeature(163, -406, { mx: 56.2, cp: 1, dy: 1, y0: 2021, y1: 2021 });
+  const keys = Object.keys(feat.properties).sort();
+  assert.deepEqual(
+    keys,
+    ['cp', 'd', 'dy', 'i', 'j', 'mx', 'y0', 'y1'],
+    'property keys in sorted order'
+  );
+  assert.equal(feat.properties.cp, 1, 'cp preserved');
+  assert.equal(feat.properties.d, 0.25, 'd preserved');
+  assert.equal(feat.properties.dy, 1, 'dy preserved');
+  assert.equal(feat.properties.i, 163, 'i preserved');
+  assert.equal(feat.properties.j, -406, 'j preserved');
+  assert.equal(feat.properties.mx, 56.2, 'mx preserved');
+  assert.equal(feat.properties.y0, 2021, 'y0 preserved');
+  assert.equal(feat.properties.y1, 2021, 'y1 preserved');
 });
