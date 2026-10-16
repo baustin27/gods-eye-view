@@ -49,8 +49,9 @@ at commit `ca96624a56bd078437bca8184e78163e5039ad19` (SHA-256
 `22d0e3ad85eb3e27f17cabf8ba2d50e554fbc27a87796ff891d958185da62fb5`), fetched
 2026-09-25. `geojson/ne_10m_populated_places_simple.geojson` from the same
 commit (SHA-256
-`fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f`) is read
-only to mark ambiguous names; none of it is bundled.
+`fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f`) is read to
+mark ambiguous names — "Georgia" is a country and a state, "New York" is a state
+and a city — and is separately emitted as `places.json` (below).
 
 **License:** public domain, as above.
 
@@ -154,3 +155,35 @@ and `id`.
 - `id` is the name slug plus the ISO alpha-3 country (`denver-usa`), plus the
   region where one country has two of that name (`springfield-usa-oregon`).
 - Result: 1,146,305 bytes (254,347 with gzip -9).
+
+## Populated places (`places.json`)
+
+City and town **points** — no outlines — used as the third rung of the isolation
+resolver, behind countries and states. Read by `src/data/places.js`
+(`findPlace`, `placesForBox`) and consumed by `src/data/isolation.js`.
+
+This file is not new work. `build-admin-packs.mjs` already downloaded
+`ne_10m_populated_places_simple` on every run, used it to mark ambiguous state
+names, and threw it away. It now emits it.
+
+| | |
+|---|---|
+| Features | 6,491 places |
+| Uncompressed | 1,146,305 bytes |
+| Gzipped | 254,347 bytes |
+| Population floor | 5,000 |
+| Exception | national capitals are kept regardless of population (Vatican City is 832 people and still a place people name) |
+
+**A place has no boundary in this data**, so isolating one is a box scaled by
+population around the point. Every result therefore carries `boundary: null`, and
+`describeIsolation()` says "approximate: point with a radius, no boundary data"
+everywhere the label appears. Denver resolves to roughly a 48 km × 48 km box;
+the box is the answer rather than a frame around a real shape, so a report just
+outside the metro counts as inside. That is the honest limit of this rung, stated
+in the UI rather than hidden.
+
+**Ambiguity.** `findPlace` settles duplicate names the way `adminBoundaries`
+does — population, then a two-letter subdivision code — so the five Springfields
+and the several Denvers are separable ("Denver, CO" vs "Denver, NC").
+
+**Regenerate:** `node scripts/build-admin-packs.mjs --only places`

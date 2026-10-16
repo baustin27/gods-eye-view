@@ -1,3 +1,34 @@
+- Add the **Isolation Mode** layer: narrow the whole app to a named place.
+
+  Type `Texas`, `New York State`, `Denver` or `Japan` into the row and
+  everything outside is dimmed while the storm layer filters to what is
+  inside. Its own **Focus** panel group, because it is a lens applied over
+  every other layer rather than weather or a utility.
+
+  Countries and states are real polygons; cities are a population-scaled
+  box around a point, and the panel says "approximate: point with a radius,
+  no boundary data" everywhere the label appears rather than implying a
+  boundary that does not exist. A name that resolves to nothing reports
+  what it tried and changes nothing.
+
+  The bounding boxes cross the antimeridian — the United States runs to
+  −187.5° because of the Aleutians — so a box is never the answer to "is
+  this point inside", and an isolation that straddles the line is carried as
+  two. The dimming is the complement of the _union_, computed in latitude
+  bands: eight rectangles per box would paint scrim straight over the
+  Aleutians, and the United States correctly yields three.
+
+  Filtering is a bounding-box pre-reject in front of the polygon test, which
+  is what makes it cheap: over the full six-year record Texas costs 72 ms
+  instead of 259 ms, California 2.5 ms instead of 128 ms. Isolating to the
+  whole United States is ~1.1 s once, because the box rejects nothing; that
+  verdict is memoised per area so every later interaction runs at the 50–60 ms
+  baseline.
+
+  Share links carry the area's _name_, not its geometry — kilobytes of
+  coordinates would bloat the URL and break on the next boundaries rebuild.
+  `New York State` reopens with 379 of 44,717 reports.
+
 - Add the **Hail & Wind — Individual Reports** layer, and close the gaps in it.
 
   A separate surface from the aggregate Hail & Wind grid: it draws individual

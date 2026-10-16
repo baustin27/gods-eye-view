@@ -1,3 +1,118 @@
+## Isolation mode — October 16, 2026
+
+The **Isolation Mode** layer (`isolation`, panel group **Focus**) narrows the
+whole app to a named place: everything outside is dimmed, and the storm layer
+filters its reports to what is inside.
+
+|                  |                                                                                                     |
+| ---------------- | --------------------------------------------------------------------------------------------------- |
+| Layer id / token | `isolation` / `6`                                                                                   |
+| Panels           | own **Focus** group at the top — it is a lens over every other layer, not weather and not a utility |
+| Data             | bundled Natural Earth boundaries + 6,491 populated places                                           |
+| Network          | none, ever                                                                                          |
+
+**Name a place.** The row field takes free text: `Texas`, `New York State`,
+`Denver`, `Japan`. Three rungs, tried in order — country, state, city — and the
+panel says which one it found. A name that resolves to nothing reports
+`Could not find "…" — try a country, a state, or a city` and changes nothing at
+all; the next good name clears the complaint.
+
+**Why `New York` needs the word "State".** This is deliberate, not a bug. The
+pack marks a name ambiguous when a city of that name sits inside the unit
+(`build-admin-packs.mjs`), and an ambiguous name can only be settled by the
+unit's own name — because "New York, USA" still does not distinguish the state
+from New York City. `New York State` and `New York, New York` both work.
+
+### The bounding boxes cross the antimeridian
+
+`adminBoundaries.js` unwraps longitudes around each unit's largest part, so a
+bundled box can run past ±180:
+
+| Unit          | Bundled `lon`     | Why                |
+| ------------- | ----------------- | ------------------ |
+| United States | `[-187.5, -67.0]` | Alaska's Aleutians |
+| Russia        | `[19.6, 190.4]`   | Chukotka           |
+| Fiji          | `[177.0, 181.8]`  | Taveuni            |
+
+A naive `lon >= west && lon <= east` silently drops places near the date line,
+which for the United States means Alaska. So a bounding box is **never** the
+answer to "is this point inside" — the polygon is, and it is longitude-periodic
+already. `normaliseBbox` wraps into `[-180,180]` and returns **one or two**
+boxes, because no single rectangle can contain an area straddling the line. The
+United States resolves to two.
+
+### The scrim is the complement of the union, not a sum of complements
+
+The obvious implementation — for each isolation box, emit north/south/west/east
+rectangles — produces **eight** rectangles for the United States and paints scrim
+straight across the Aleutians and across the seam, which is exactly what the
+split exists to prevent. So `scrimRectangles` slices the world into latitude
+bands at every box edge, unions covered longitudes per band, complements each
+band, and merges vertically-adjacent bands that agree. The United States yields
+**three**:
+
+```
+[-180, -90, 180, 18.9]        south of the country
+[ -67, 18.9, 172.5, 71.4]    between Maine and the western Aleutians
+[-180, 71.4, 180, 90]         north of the country
+```
+
+Probed live: 175°E lit, 100°E dimmed, 117°W lit.
+
+### Filtering cost, measured
+
+The pre-reject is load-bearing. Against shipped 2024 data (29,109 reports, 7,484
+at hail ≥ 1″), counting rows that actually reach the polygon test:
+
+| Isolation     | Rows the box keeps | Scans avoided |
+| ------------- | ------------------ | ------------- |
+| Texas         | 2,033 (27.2%)      | 5,451         |
+| California    | 9 (0.1%)           | 7,475         |
+| United States | 7,484 (100%)       | none          |
+
+On the full six-year record (44,717 hail rows): Texas **259 ms → 72 ms**,
+California **128 ms → 2.5 ms**.
+
+**The honest cost.** Isolating to the whole United States over six years is
+~1.1 s on first use and the pre-reject cannot help — its box rejects 0.1% of
+rows. Rather than cap it, which would change the answer, the per-row verdict is
+memoised on `(packed rows, area)`. That 1.1 s is paid once; every later hail-floor
+click, hazard switch or repaint under that isolation runs at the 50–60 ms
+baseline. Verified live: Texas narrows 44,717 reports to **6,891**.
+
+### Share links carry the NAME, never the geometry
+
+`getParams()` reports the text the person typed and `setParams()` re-resolves it.
+A link carrying New York's boundary would put kilobytes of coordinates in a URL
+and would break the next time the boundaries pack is rebuilt. Case is preserved,
+so a link reopens "New York State" rather than "new york state"; the value is
+bounded at 80 characters and control characters are refused.
+
+Resolved live from a crafted URL: `New York State` → **379 of 44,717 reports**.
+
+### Two defects the test suite could not have caught
+
+Both were found by driving the real app, and both are worth remembering:
+
+1. **The two halves were never connected.** Isolation drew the box and dimmed
+   the world; the storm layer had its own `setIsolation` and an ISOLATE chip; and
+   nothing joined them. The panel shipped three disabled buttons and a storm
+   layer counting all 44,717 reports while the rest of the screen was narrowed to
+   Texas. Fixed with `onAreaChange` — layers that honour an area subscribe and
+   are told; the isolation layer does not know the storm layer's id.
+2. **Cesium silently dropped the box outline.** `rectangle.outline` is disabled
+   on ground-clamped geometry and Cesium reports nothing when it disables it, so
+   the frame — the entire visual affordance — simply was not drawn. The frame is
+   now a clamped **polyline**, and the test asserts the mechanism _and_ that the
+   frame closes (five positions, the fifth repeating the first), because an
+   unclosed frame draws three sides and reads as a rendering fault.
+
+**A third, about tests.** The area was `enabled-only` with no option group, so
+the layer-state codec had nowhere to put it: every link reopened with nothing
+isolated, while the layer's own `getParams`/`setParams` round-tripped perfectly
+in isolation and the test stayed green. The lesson is the same one this file
+keeps re-learning — assert through the real seam, not around it.
+
 ## Individual storm reports — October 16, 2026
 
 The **Hail & Wind — Individual Reports** layer (`storm-reports`, panel group
@@ -14,7 +129,7 @@ that is grouped into clusters by proximity and time and labelled
 NCEI-equivalent identity.
 
 **Storm identity.** Each packed report carries `stormRef`, an integer ordinal
-into *its own year's* event array, or `-1`. Because `eventsFor` hands back the
+into _its own year's_ event array, or `-1`. Because `eventsFor` hands back the
 per-year arrays concatenated, a consumer must apply a per-year base offset —
 indexing the flat list answers with a storm from the wrong year. The layer
 derives the offsets itself and verifies each year's block is contiguous,
@@ -41,6 +156,7 @@ time, counties and states — so this describes where people reported, not where
 hail fell. It is labelled approximate and is off until asked for.
 
 **Known limits.**
+
 - Every failure in this layer so far has been silent rather than loud: a control
   that renders but does nothing, an id that resolves to nothing, a caution that
   is set and never displayed. The suite cannot distinguish working code from a
@@ -3139,28 +3255,28 @@ nearby place—always use station selection. Unqualified “turn on/start the ra
 requests use Play; a qualified Play-shaped tool call is normalized to Select so
 its criteria cannot be silently ignored.
 
-| Layer                  | Source                                                                                                                                                                                          | File                                                  | Proxy                                                    | Update Interval                                                                   |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Live Flights ✈️        | OpenSky Network; bounded adsb.lol regional fallback                                                                                                                                             | `src/data/flights.js`                                 | `/api/flights` (OAuth + fallback)                        | 30s                                                                               |
-| Military Flights 🎖️    | adsb.lol /v2/mil                                                                                                                                                                                | `src/data/militaryFlights.js`                         | `/api/military`                                       | 15s                                                                               |
-| Live AIS Vessels 🚢    | AISStream websocket                                                                                                                                                                             | `src/data/aisLiveVessels.js`                          | `/api/vessels`                                          | 60s (+800ms visibility pass)                                                      |
-| Mapped Installations ⌖ | OpenFreeMap military areas; optional configured Overpass names and Google Places search | `src/data/militaryInstallations.js` | OpenFreeMap tiles, `/api/military-installations`, `/api/google/text-search` | viewport-driven; transient errors back off, missing capability switches to tiles |
-| Earthquakes            | USGS                                                                                                                                                                                            | `src/data/earthquakes.js`                             | —                                                        | 60s                                                                               |
-| Satellites             | CelesTrak                                                                                                                                                                                       | `src/data/satellites.js`                              | `/api/celestrak`                                         | 120s                                                                              |
-| Space Missions (30d)   | Launch Library 2 + CelesTrak                                                                                                                                                                    | `src/data/rocketLaunches.js`                          | `/api/launches` + `/api/celestrak/active`                | 5 min                                                                             |
-| Traffic | Selectable TomTom / OpenStreetMap / Hybrid roads; optional TomTom flow (BYOK) | `src/data/traffic.js` | browser-direct OpenFreeMap tiles; `/api/tomtom` for flow | viewport-driven; capped tile cache |
-| CCTV                   | Austin + Caltrans (CA) + TfL London + Ontario 511 + Fintraffic (FI) + DriveBC (BC) + TxDOT (TX) + Estonia (Tallinn, Tarktee) + Live Traffic NSW + Open Calgary Open Data + Statens vegvesen (NO, stills + live HLS) + NYC DOT TMC (opt-in) + Street View fallback | `src/data/cctv.js`                                    | `/api/cctv`                                              | 10s (active)                                                                      |
-| Radio                  | Radio Browser (public-domain station directory)                                                                                                                                                 | `src/data/radio.js`                                   | `/api/radio/stations`, `/api/radio/click/:uuid`          | 45 min directory refresh                                                          |
-| Transit 🚌             | Operator GTFS-Realtime VehiclePositions (7 keyless regions, `src/data/transitFeeds.js`)                                                                                                         | `src/layers/transit/` via `src/app/layers/transit.js` | `/api/transit`                                           | 15s (poll + delayed playback)                                                     |
-| Bikeshare 🚲           | GBFS (Lyft + BCycle)                                                                                                                                                                            | `src/data/bikeshare.js`                               | `/api/gbfs`                                              | 60s                                                                               |
-| Directions 🧭          | OSRM on FOSSGIS servers (OpenStreetMap)                                                                                                                                                         | `src/data/directions.js`                              | `/api/route` (`steps=1`)                                 | on placement / mode change                                                        |
-| Datacenters ▣          | OSM extract (bundled)                                                                                                                                                                           | `src/data/localLayers.js`                             | —                                                        | static                                                                            |
-| Dams ▰                 | OpenInfraMap/OSM extract (bundled)                                                                                                                                                              | `src/data/localLayers.js`                             | —                                                        | static                                                                            |
-| Submarine Cables ◠     | TeleGeography public map (bundled)                                                                                                                                                              | `src/data/telegeographySubmarineCables.js`            | —                                                        | static                                                                            |
-| FIRMS Active Fires ▲   | NASA FIRMS live (VIIRS ×3 NRT + MODIS NRT, trailing 24h)                                                                                                                                        | `src/data/firmsHeatmap.js`                            | `/api/firms` (`FIRMS_MAP_KEY`)                           | 10 min (proxy TTL 30 min)                                                         |
-| Street Level 📷 | Street-level imagery; Mapillary is the first provider (vector tiles, Graph API, MapillaryJS) | `src/layers/streetLevel/` via `src/app/layers/streetLevel.js` | `/api/mapillary/status`, `/api/mapillary/tiles/coverage/{z}/{x}/{y}` (`MAPILLARY_CLIENT_TOKEN`) | camera-driven (320 ms debounce, ≤9 tiles, cached 24 h) |
-| Wind 🌬                 | NOAA GFS 10 m wind (keyless, 0.25°→1° grid; animated particles)                                                                                                                                 | `src/data/wind.js`                                    | `/api/wind`                                              | 1 h (forecast cycle)                                                              |
-| Fire Perimeters 🔥 | NIFC WFIGS current interagency perimeters (keyless, paged past the 2000-record cap); InciWeb catalog + incident page origin and update time checks for verified incident-page links | `src/layers/perimeters/` via `src/app/layers/perimeters.js` | `/api/fire-perimeters` + `/api/fire-perimeters/inciweb/*` | 5 min (server caches: catalog 1 h; publication 30 min) |
+| Layer                  | Source                                                                                                                                                                                                                                                            | File                                                          | Proxy                                                                                           | Update Interval                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Live Flights ✈️        | OpenSky Network; bounded adsb.lol regional fallback                                                                                                                                                                                                               | `src/data/flights.js`                                         | `/api/flights` (OAuth + fallback)                                                               | 30s                                                                              |
+| Military Flights 🎖️    | adsb.lol /v2/mil                                                                                                                                                                                                                                                  | `src/data/militaryFlights.js`                                 | `/api/military`                                                                                 | 15s                                                                              |
+| Live AIS Vessels 🚢    | AISStream websocket                                                                                                                                                                                                                                               | `src/data/aisLiveVessels.js`                                  | `/api/vessels`                                                                                  | 60s (+800ms visibility pass)                                                     |
+| Mapped Installations ⌖ | OpenFreeMap military areas; optional configured Overpass names and Google Places search                                                                                                                                                                           | `src/data/militaryInstallations.js`                           | OpenFreeMap tiles, `/api/military-installations`, `/api/google/text-search`                     | viewport-driven; transient errors back off, missing capability switches to tiles |
+| Earthquakes            | USGS                                                                                                                                                                                                                                                              | `src/data/earthquakes.js`                                     | —                                                                                               | 60s                                                                              |
+| Satellites             | CelesTrak                                                                                                                                                                                                                                                         | `src/data/satellites.js`                                      | `/api/celestrak`                                                                                | 120s                                                                             |
+| Space Missions (30d)   | Launch Library 2 + CelesTrak                                                                                                                                                                                                                                      | `src/data/rocketLaunches.js`                                  | `/api/launches` + `/api/celestrak/active`                                                       | 5 min                                                                            |
+| Traffic                | Selectable TomTom / OpenStreetMap / Hybrid roads; optional TomTom flow (BYOK)                                                                                                                                                                                     | `src/data/traffic.js`                                         | browser-direct OpenFreeMap tiles; `/api/tomtom` for flow                                        | viewport-driven; capped tile cache                                               |
+| CCTV                   | Austin + Caltrans (CA) + TfL London + Ontario 511 + Fintraffic (FI) + DriveBC (BC) + TxDOT (TX) + Estonia (Tallinn, Tarktee) + Live Traffic NSW + Open Calgary Open Data + Statens vegvesen (NO, stills + live HLS) + NYC DOT TMC (opt-in) + Street View fallback | `src/data/cctv.js`                                            | `/api/cctv`                                                                                     | 10s (active)                                                                     |
+| Radio                  | Radio Browser (public-domain station directory)                                                                                                                                                                                                                   | `src/data/radio.js`                                           | `/api/radio/stations`, `/api/radio/click/:uuid`                                                 | 45 min directory refresh                                                         |
+| Transit 🚌             | Operator GTFS-Realtime VehiclePositions (7 keyless regions, `src/data/transitFeeds.js`)                                                                                                                                                                           | `src/layers/transit/` via `src/app/layers/transit.js`         | `/api/transit`                                                                                  | 15s (poll + delayed playback)                                                    |
+| Bikeshare 🚲           | GBFS (Lyft + BCycle)                                                                                                                                                                                                                                              | `src/data/bikeshare.js`                                       | `/api/gbfs`                                                                                     | 60s                                                                              |
+| Directions 🧭          | OSRM on FOSSGIS servers (OpenStreetMap)                                                                                                                                                                                                                           | `src/data/directions.js`                                      | `/api/route` (`steps=1`)                                                                        | on placement / mode change                                                       |
+| Datacenters ▣          | OSM extract (bundled)                                                                                                                                                                                                                                             | `src/data/localLayers.js`                                     | —                                                                                               | static                                                                           |
+| Dams ▰                 | OpenInfraMap/OSM extract (bundled)                                                                                                                                                                                                                                | `src/data/localLayers.js`                                     | —                                                                                               | static                                                                           |
+| Submarine Cables ◠     | TeleGeography public map (bundled)                                                                                                                                                                                                                                | `src/data/telegeographySubmarineCables.js`                    | —                                                                                               | static                                                                           |
+| FIRMS Active Fires ▲   | NASA FIRMS live (VIIRS ×3 NRT + MODIS NRT, trailing 24h)                                                                                                                                                                                                          | `src/data/firmsHeatmap.js`                                    | `/api/firms` (`FIRMS_MAP_KEY`)                                                                  | 10 min (proxy TTL 30 min)                                                        |
+| Street Level 📷        | Street-level imagery; Mapillary is the first provider (vector tiles, Graph API, MapillaryJS)                                                                                                                                                                      | `src/layers/streetLevel/` via `src/app/layers/streetLevel.js` | `/api/mapillary/status`, `/api/mapillary/tiles/coverage/{z}/{x}/{y}` (`MAPILLARY_CLIENT_TOKEN`) | camera-driven (320 ms debounce, ≤9 tiles, cached 24 h)                           |
+| Wind 🌬                 | NOAA GFS 10 m wind (keyless, 0.25°→1° grid; animated particles)                                                                                                                                                                                                   | `src/data/wind.js`                                            | `/api/wind`                                                                                     | 1 h (forecast cycle)                                                             |
+| Fire Perimeters 🔥     | NIFC WFIGS current interagency perimeters (keyless, paged past the 2000-record cap); InciWeb catalog + incident page origin and update time checks for verified incident-page links                                                                               | `src/layers/perimeters/` via `src/app/layers/perimeters.js`   | `/api/fire-perimeters` + `/api/fire-perimeters/inciweb/*`                                       | 5 min (server caches: catalog 1 h; publication 30 min)                           |
 
 Fire Perimeters uses capped, timed server reads with stale-on-error caching and a per-client limit. Unchanged snapshots retain geometry; link checks cancel on disable or selection change, and the row legend shows reported containment.
 
@@ -3322,8 +3438,7 @@ that does not answer in 20 s is asked once more, and one that is not a line
 list is not cached. A click on a line reaches
 `handlePick(id, {groundPoint})`, and the provider asks the core
 (`actions.openNearest`) for its nearest showable photo within 50 m, without
-framing: many photos are archived (their file answers 409, while a HEAD says
-200) or have no file, so the six nearest are probed at once with a GET cut
+framing: many photos are archived (their file answers 409, while a HEAD says 200) or have no file, so the six nearest are probed at once with a GET cut
 off at the headers, and where all are gone the panel says KartaView's photos
 there are archived. Only a definite answer (403/404/409/410, or 200) is
 remembered; a storage timeout or 5xx is asked again. The open photo's
