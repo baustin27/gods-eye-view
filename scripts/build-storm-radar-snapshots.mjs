@@ -107,6 +107,22 @@ const HAIL_CORE_MM = 25;
  */
 export const HAIL_RETAIN_MM = 10;
 
+/**
+ * Tenths of a millimetre per unit in the per-day binary encoding.
+ *
+ * The per-day artifact stores `maxMm × PER_DAY_MM_SCALE` in a `uint16`, so the
+ * scale is a correctness constraint and not a formatting preference. MESH peaks
+ * at 1437.4 mm over the archive, so scale 10 tops out at 14,374 and fits with
+ * room to spare. A scale of 100 — the obvious "be precise" choice — reaches
+ * 143,740 and wraps a `uint16` silently, turning a 1,437 mm reading into 11,284
+ * and a 600 mm one into a negative. The scale is pinned here, exported, and
+ * asserted in the tests for exactly that reason.
+ */
+export const PER_DAY_MM_SCALE = 10;
+
+/** Bytes per per-day record: `u16 cellIndex, u16 dayIndex, u16 maxMm × scale`. */
+export const PER_DAY_RECORD_BYTES = 6;
+
 /** Grid step of the emitted snapshot, degrees. Must match the report snapshot. */
 export const CELL_DEG = 0.25;
 
@@ -160,6 +176,17 @@ export const GRID_COLUMNS = Math.round((GRID_MAX_LON - DOMAIN_MIN_LON) / CELL_DE
  * preference — it is the whole reason the encoding is 16-bit rather than 32.
  */
 export const GRID_CELL_COUNT = GRID_ROWS * GRID_COLUMNS;
+
+/**
+ * Day zero for the per-day artifact's `dayIndex`, ISO form. Fixed to the first
+ * day of the MRMS archive so an index means the same calendar day in every
+ * build: counted from the window start instead, extending the window by a day
+ * would shift every earlier index and silently re-date the archive.
+ *
+ * The index is a `uint16`, so it addresses 65,536 days — the year 2199 — from
+ * here. That is a limit worth stating rather than discovering.
+ */
+export const DAY_INDEX_EPOCH = '2021-01-01';
 
 /** Guard against a pathological day materialising every CONUS cell. */
 const MAX_CELLS = 40000;
@@ -313,10 +340,19 @@ export function yearBucket(cellsByYear, ymd) {
  *   passes {@link HAIL_RETAIN_MM} to see the sub-core field. A point below either
  *   floor is discarded before the domain test, which is why the two had to be split:
  *   one constant could not be both the discard floor and the emission rule.
+ * @param {{perDay?: Map<string, Map<string, number>>}} [options] `perDay` is an
+ *   optional second accumulator, `Map<'i:j', Map<ymd, maxMm>>`, that records the
+ *   strongest reading in every retained cell on every day it reaches
+ *   {@link HAIL_RETAIN_MM}. It is a separate map rather than a field on the cell
+ *   on purpose: a 12 mm cell has no business in the year bucket, and adding one
+ *   would emit it as a line in the published climatology with `cp: 0`. Keeping it
+ *   separate makes the byte-identity invariant structural instead of a filter
+ *   somebody has to remember.
  * @returns {{points: number, maxMm: number|null, cellsTouched: number, year: number}}
  */
 export function ingestMeshGz(gzipped, ymd, cellsByYear, options = {}) {
   const retainMm = options.retainMm ?? HAIL_CORE_MM;
+  const perDay = options.perDay ?? null;
   const { year, bucket: cells } = yearBucket(cellsByYear, ymd);
   const raw = zlib.gunzipSync(gzipped);
   const message = parseGrib2(raw);
@@ -328,6 +364,23 @@ export function ingestMeshGz(gzipped, ymd, cellsByYear, options = {}) {
   let points = 0;
   for (let i = 0; i < values.length; i += 1) {
     const mm = values[i];
+    // The per-day field is read *before* the core gate, and that ordering is the
+    // whole reason the two thresholds were split: a 12 mm core in an unreported
+    // cell is precisely what the per-day artifact exists to publish, and the
+    // core gate would have discarded it a line earlier.
+    if (perDay && mm >= HAIL_RETAIN_MM) {
+      const spot = indexToLonLat(grid, i);
+      if (inDomain(spot.lat, spot.lon)) {
+        const dayKey = `${gridRow(spot.lat)}:${gridCol(spot.lon)}`;
+        let days = perDay.get(dayKey);
+        if (!days) {
+          days = new Map();
+          perDay.set(dayKey, days);
+        }
+        const seen = days.get(ymd);
+        if (seen === undefined || mm > seen) days.set(ymd, mm);
+      }
+    }
     if (!(mm >= retainMm)) continue;
     points += 1;
     if (maxMm == null || mm > maxMm) maxMm = mm;
@@ -365,13 +418,15 @@ export function ingestMeshGz(gzipped, ymd, cellsByYear, options = {}) {
  * Fetch one day and fold it into that day's year bucket.
  * @param {string} ymd
  * @param {Map<number, Map<string, object>>} cellsByYear
+ * @param {{perDay?: Map<string, Map<string, number>>}} [options] Passed through
+ *   to {@link ingestMeshGz}.
  * @returns {Promise<{ymd:string, ok:boolean, points:number, error?:string}>}
  */
-async function ingestDay(ymd, cellsByYear) {
+async function ingestDay(ymd, cellsByYear, options = {}) {
   const key = `${PRODUCT}/${ymd}/MRMS_MESH_Max_1440min_00.50_${ymd}-000000.grib2.gz`;
   try {
     const body = await fetchBuffer(`${BUCKET}/${key}`);
-    const result = ingestMeshGz(body, ymd, cellsByYear);
+    const result = ingestMeshGz(body, ymd, cellsByYear, options);
     return { ymd, ok: true, points: result.points };
   } catch (error) {
     // A missing day (product not produced, outage, or a gap in the archive) is
@@ -656,6 +711,137 @@ export async function writeGeoJsonlGz(file, features) {
 }
 
 /**
+ * Turn a per-day accumulator into the flat records the binary artifact stores.
+ *
+ * `dayIndex` is an offset in days from {@link DAY_INDEX_EPOCH}, not from the
+ * window start, and that choice is what makes the artifact re-readable. The
+ * window end moves every rebuild, so an index counted from the window start would
+ * silently re-date every record the next time the window is extended: index 0
+ * would quietly become a different day. The epoch is fixed by the archive, so an
+ * index means the same day forever and the sidecar can state it once.
+ *
+ * Cells outside `keptKeys` are dropped here rather than written and filtered
+ * later. `MAX_CELLS` currently sits at 21,947 of 40,000, but when it bites, a
+ * day record for a cell the combined file dropped is a record the consumer
+ * cannot join to anything.
+ *
+ * @param {Map<string, Map<string, number>>} perDay `Map<'i:j', Map<ymd, maxMm>>`.
+ * @param {Set<string>} keptKeys `i:j` keys present in the combined snapshot.
+ * @returns {Array<{cellIndex: number, dayIndex: number, maxMm: number}>}
+ */
+export function perDayRecords(perDay, keptKeys) {
+  const records = [];
+  for (const [key, days] of perDay ?? []) {
+    if (!keptKeys.has(key)) continue;
+    const [i, j] = key.split(':').map(Number);
+    const index = cellIndex(i, j);
+    for (const [ymd, maxMm] of days) {
+      records.push({ cellIndex: index, dayIndex: dayIndex(ymd), maxMm });
+    }
+  }
+  return records;
+}
+
+/**
+ * Days from {@link DAY_INDEX_EPOCH} to `ymd`, the index the artifact stores.
+ *
+ * @param {string} ymd Day stamp, `YYYYMMDD`.
+ * @returns {number}
+ */
+export function dayIndex(ymd) {
+  const toMs = (stamp) => {
+    const iso = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}`;
+    return Date.parse(`${iso}T00:00:00Z`);
+  };
+  return Math.round((toMs(ymd) - toMs(DAY_INDEX_EPOCH.replaceAll('-', ''))) / 86_400_000);
+}
+
+/**
+ * The inverse of the per-day encoding, for tests and for anyone checking an
+ * artifact by hand.
+ *
+ * @param {Buffer} bytes Decompressed payload.
+ * @returns {Array<{cellIndex: number, dayIndex: number, maxMm: number}>}
+ * @throws {RangeError} when the payload is not a whole number of records.
+ */
+export function decodePerDayRecords(bytes) {
+  if (bytes.length % PER_DAY_RECORD_BYTES !== 0) {
+    throw new RangeError(
+      `per-day payload is ${bytes.length} bytes, not a whole number of ${PER_DAY_RECORD_BYTES}-byte records`,
+    );
+  }
+  const out = [];
+  for (let at = 0; at < bytes.length; at += PER_DAY_RECORD_BYTES) {
+    out.push({
+      cellIndex: bytes.readUInt16LE(at),
+      dayIndex: bytes.readUInt16LE(at + 2),
+      maxMm: bytes.readUInt16LE(at + 4) / PER_DAY_MM_SCALE,
+    });
+  }
+  return out;
+}
+
+/**
+ * Encode per-day records to the artifact's binary payload, uncompressed.
+ *
+ * The sort is load-bearing rather than tidy. Records arrive in accumulator order,
+ * which under `pooled()` is download-completion order, so two runs over the same
+ * window would otherwise produce different bytes for identical data — the exact
+ * failure the GeoJSONL writers avoid with `compareBySeverity`. `(dayIndex,
+ * cellIndex)` is a total order over distinct records, and no two records can
+ * share it, because a cell holds one reading per day.
+ *
+ * Every field is range-checked before it is written. A `uint16` past 65,535 does
+ * not throw; `Buffer.writeUInt16LE` silently truncates, which would turn a
+ * 1,437 mm day into 11,284 and ship it. Refusing is the only safe answer.
+ *
+ * @param {Array<{cellIndex: number, dayIndex: number, maxMm: number}>} records
+ * @returns {Buffer}
+ */
+export function encodePerDayRecords(records) {
+  const ordered = [...(records ?? [])].sort(
+    (a, b) => a.dayIndex - b.dayIndex || a.cellIndex - b.cellIndex,
+  );
+  const buffer = Buffer.alloc(ordered.length * PER_DAY_RECORD_BYTES);
+  ordered.forEach((record, n) => {
+    const scaled = Math.round(record.maxMm * PER_DAY_MM_SCALE);
+    for (const [label, value] of [
+      ['cellIndex', record.cellIndex],
+      ['dayIndex', record.dayIndex],
+      ['maxMm x PER_DAY_MM_SCALE', scaled],
+    ]) {
+      if (!Number.isInteger(value) || value < 0 || value > 65_535) {
+        throw new RangeError(
+          `per-day ${label} ${value} does not fit a uint16; raise the encoding width rather than truncating`,
+        );
+      }
+    }
+    const at = n * PER_DAY_RECORD_BYTES;
+    buffer.writeUInt16LE(record.cellIndex, at);
+    buffer.writeUInt16LE(record.dayIndex, at + 2);
+    buffer.writeUInt16LE(scaled, at + 4);
+  });
+  return buffer;
+}
+
+/**
+ * Write the per-day radar artifact atomically: gzip level 9, no mtime, so two
+ * runs over the same window produce identical bytes.
+ *
+ * @param {string} file Absolute destination path.
+ * @param {Array<{cellIndex: number, dayIndex: number, maxMm: number}>} records
+ * @returns {Promise<number>} Bytes on disk.
+ */
+export async function writePerDayBin(file, records) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, zlib.gzipSync(encodePerDayRecords(records), { level: 9 }));
+  await fs.rename(tmp, file);
+  const { size } = await fs.stat(file);
+  return size;
+}
+
+/**
  * `20210629` -> `2021-06-29`, the ISO form the `window` field is written in.
  * @param {string} ymd
  * @returns {string}
@@ -708,6 +894,78 @@ export function radarMeta(input) {
 }
 
 /**
+ * Provenance for the per-day artifact, which gets its own sidecar rather than a
+ * few more keys on `radarMeta`.
+ *
+ * The fields `radarMeta` already carries describe a climatology — one number per
+ * cell, a window, a core threshold. The per-day artifact is a different shape
+ * (a sorted list of cell-days), a different threshold (the retain floor), and it
+ * carries one thing nothing else does: the day-index epoch. Folding it into
+ * `radarMeta` would add `dayIndexEpoch` to seven sidecars that have no day
+ * index, and make the reading of the *published* sidecars depend on whether a
+ * per-day build happened. Separate is also the honest statement: reading this
+ * file tells you how to read the binary beside it, and nothing more.
+ *
+ * @param {object} input
+ * @param {string} input.builtAt
+ * @param {{from: string, to: string, days: number}} input.window
+ * @param {Array<{ymd: string, error: string}>} input.unavailableDays
+ * @param {number} input.recordCount Cell-days in the artifact.
+ * @param {number} input.cellCount Distinct cells the artifact mentions.
+ * @param {boolean} input.truncated
+ * @param {number} input.cellsBeforeTruncation
+ * @returns {object}
+ */
+export function perDayMeta(input) {
+  return {
+    version: 1,
+    builtAt: input.builtAt,
+    builder: 'scripts/build-storm-radar-snapshots.mjs',
+    artifact: 'storm_radar_hail_perday.bin.gz',
+    product: PRODUCT,
+    productLabel: PRODUCT_LABEL,
+    bucket: 's3://noaa-mrms-pds',
+    license: 'US Government public domain (NOAA/NWS/NSSL)',
+    attribution: 'NOAA/NWS/NSSL — Multi-Radar/Multi-Sensor (MRMS)',
+    commercialUse: true,
+    requiresKey: false,
+    units: 'millimetres',
+    format: {
+      description:
+        'Sorted 6-byte little-endian triples: u16 cellIndex, u16 dayIndex, u16 maxMm x 10. Gzipped, no mtime.',
+      recordBytes: PER_DAY_RECORD_BYTES,
+      order: 'ascending (dayIndex, cellIndex)',
+      mmScale: PER_DAY_MM_SCALE,
+    },
+    geometry: {
+      cellIndex:
+        '(i - rowBase) * columns + (j - colBase), row-major over the retained domain',
+      gridDeg: CELL_DEG,
+      rowBase: GRID_ROW_BASE,
+      colBase: GRID_COL_BASE,
+      rows: GRID_ROWS,
+      columns: GRID_COLUMNS,
+      cellCount: GRID_CELL_COUNT,
+    },
+    // Stated because a `uint16` day index is only meaningful with it: without
+    // the epoch a reader cannot turn index 2,124 into a date, and a sidecar
+    // written before this field existed would silently mis-date every record.
+    dayIndexEpoch: DAY_INDEX_EPOCH,
+    hailRetainThresholdMm: HAIL_RETAIN_MM,
+    hailCoreThresholdMm: HAIL_CORE_MM,
+    window: input.window,
+    unavailableDays: input.unavailableDays,
+    recordCount: input.recordCount,
+    cellCount: input.cellCount,
+    maxCells: MAX_CELLS,
+    truncated: input.truncated,
+    cellsBeforeTruncation: input.cellsBeforeTruncation,
+    caveat:
+      'MESH is a radar estimate and is known to over-report relative to ground reports. A cell here means hail fell in it on that day, not that a stone was measured.',
+  };
+}
+
+/**
  * Write a sidecar JSON atomically, with the trailing newline the other builders
  * emit so the files stay diff- and prettier-friendly.
  * @param {string} file
@@ -751,6 +1009,10 @@ async function main() {
   step(`MRMS ${PRODUCT_LABEL}: ${days.length} days, ${from} to ${to}`);
 
   const cellsByYear = new Map();
+  // The per-day field is a second accumulator, not a field on the cell: see the
+  // note on `ingestMeshGz`. O(records) — one entry per (cell, day) that reached
+  // the retain floor — and never a decoded Float32Array, which is 98 MB a day.
+  const perDay = new Map();
   /** Distinct cells across all year buckets — a cell active in two years counts twice. */
   const ingestedCells = () => {
     let total = 0;
@@ -767,7 +1029,7 @@ async function main() {
   const pointsByYear = new Map();
 
   await pooled(days, args.concurrency, async (ymd) => {
-    const result = await ingestDay(ymd, cellsByYear);
+    const result = await ingestDay(ymd, cellsByYear, { perDay });
     done += 1;
     const year = Number(ymd.slice(0, 4));
     daysByYear.set(year, (daysByYear.get(year) ?? 0) + 1);
@@ -876,6 +1138,29 @@ async function main() {
       `Wrote storm_radar_hail_${year}.geojsonl.gz — ${list.length.toLocaleString()} cells, ${(gzBytes / 1e3).toFixed(1)} kB`,
     );
   }
+
+  // The per-day artifact, written last so the file on disk is never newer than
+  // the kept-cell set it is filtered against.
+  const records = perDayRecords(perDay, keptKeys);
+  const perDayFile = path.join(args.out, 'storm_radar_hail_perday.bin.gz');
+  const perDayBytes = await writePerDayBin(perDayFile, records);
+  step(
+    `Wrote storm_radar_hail_perday.bin.gz — ${records.length.toLocaleString()} cell-days ≥${HAIL_RETAIN_MM}mm, ${(perDayBytes / 1e6).toFixed(2)} MB`,
+  );
+  await writeMetaJson(
+    path.join(args.out, 'storm-radar-days-sources.json'),
+    perDayMeta({
+      builtAt,
+      window: { from, to, days: days.length },
+      unavailableDays: failures,
+      recordCount: records.length,
+      cellCount: new Set(records.map((r) => r.cellIndex)).size,
+      truncated,
+      cellsBeforeTruncation,
+    }),
+  );
+  step('Wrote storm-radar-days-sources.json');
+
   step(`Done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 }
 

@@ -23,9 +23,13 @@ import {
   cellFeature,
   cellIndex,
   compareBySeverity,
+  DAY_INDEX_EPOCH,
+  dayIndex,
+  decodePerDayRecords,
   DOMAIN_MAX_LAT,
   DOMAIN_MIN_LAT,
   DOMAIN_MIN_LON,
+  encodePerDayRecords,
   featuresByYear,
   GRID_CELL_COUNT,
   GRID_COLUMNS,
@@ -39,9 +43,14 @@ import {
   inDomain,
   ingestMeshGz,
   mergeYearFeatures,
+  perDayMeta,
+  perDayRecords,
+  PER_DAY_MM_SCALE,
+  PER_DAY_RECORD_BYTES,
   radarMeta,
   restrictYearsToKeys,
   selectKeptCells,
+  writePerDayBin,
   writeGeoJsonlGz,
   writeMetaJson,
   yearBucket,
@@ -788,4 +797,222 @@ test('cellFeature still emits exactly the eight properties consumers read', () =
     y0: 2021,
     y1: 2021,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Per-day artifact
+// ---------------------------------------------------------------------------
+
+test('every field of the per-day encoding fits a uint16, and the writer says so', () => {
+  // The scale is the load-bearing number: MESH peaks at 1,437.4 mm over the
+  // archive, so `x 10` is 14,374 and fits, while `x 100` is 143,740 and wraps
+  // silently into a plausible-looking wrong value.
+  assert.equal(PER_DAY_MM_SCALE, 10);
+  assert.ok(Math.round(1437.4 * PER_DAY_MM_SCALE) <= 65_535, 'the peak fits');
+  assert.ok(Math.round(1437.4 * 100) > 65_535, 'the obvious scale would not');
+  assert.equal(PER_DAY_RECORD_BYTES, 6);
+  assert.ok(GRID_CELL_COUNT <= 65_535, 'the index space fits');
+  // And the writer refuses rather than truncating, which is the only safe
+  // answer: `Buffer.writeUInt16LE` does not throw past 65,535.
+  assert.throws(
+    () =>
+      encodePerDayRecords([
+        { cellIndex: 0, dayIndex: 0, maxMm: 6553.6 },
+      ]),
+    RangeError,
+  );
+  assert.throws(
+    () => encodePerDayRecords([{ cellIndex: 70_000, dayIndex: 0, maxMm: 25 }]),
+    RangeError,
+  );
+  assert.throws(
+    () =>
+      encodePerDayRecords([
+        { cellIndex: 0, dayIndex: 70_000, maxMm: 25 },
+      ]),
+    RangeError,
+  );
+});
+
+test('dayIndex counts from the archive start, not from the window start', () => {
+  assert.equal(DAY_INDEX_EPOCH, '2021-01-01');
+  assert.equal(dayIndex('20210101'), 0, 'day zero is the epoch itself');
+  assert.equal(dayIndex('20210102'), 1);
+  assert.equal(dayIndex('20210615'), 165, 'the 2021-06-15 fixture day');
+  assert.equal(dayIndex('20241015'), 1383);
+  assert.equal(dayIndex('20261015'), 2113, 'the end of the committed window');
+  // The epoch is fixed to the archive, so extending the window end does not
+  // move an earlier day's index. That is the whole reason it is not the window
+  // start: a moving epoch re-dates the whole artifact on the next rebuild.
+  const wide = [dayIndex('20210101'), dayIndex('20261015')];
+  const narrow = [dayIndex('20210101'), dayIndex('20260801')];
+  assert.equal(wide[0], narrow[0], 'the same day keeps the same index');
+});
+
+test('records round-trip through the binary encoding unchanged', () => {
+  const records = [
+    { cellIndex: 0, dayIndex: 0, maxMm: 10 },
+    { cellIndex: GRID_CELL_COUNT - 1, dayIndex: 2124, maxMm: 1437.4 },
+    { cellIndex: cellIndex(171, -406), dayIndex: 165, maxMm: 56.2 },
+  ];
+  const decoded = decodePerDayRecords(encodePerDayRecords(records));
+  assert.equal(decoded.length, records.length);
+  assert.deepEqual(
+    decoded.map((r) => r.cellIndex),
+    [0, GRID_CELL_COUNT - 1, cellIndex(171, -406)].sort((a, b) => a - b),
+    'records come back sorted by (dayIndex, cellIndex)',
+  );
+  for (const record of decoded) {
+    const original = records.find(
+      (r) =>
+        r.cellIndex === record.cellIndex && r.dayIndex === record.dayIndex,
+    );
+    // Millimetres survive to the tenth, which is the precision the scale buys.
+    assert.ok(Math.abs(original.maxMm - record.maxMm) <= 0.05);
+  }
+  assert.throws(
+    () => decodePerDayRecords(Buffer.alloc(7)),
+    RangeError,
+    'a partial record is refused rather than read as a short one',
+  );
+});
+
+test('the per-day payload is byte-identical whatever order records arrive in', () => {
+  // Records come out of the accumulator in download-completion order under
+  // `pooled()`, so without the sort two runs over the same window would produce
+  // different bytes for identical data.
+  const records = [
+    { cellIndex: 300, dayIndex: 165, maxMm: 44.1 },
+    { cellIndex: 12, dayIndex: 165, maxMm: 30.2 },
+    { cellIndex: 900, dayIndex: 20, maxMm: 12.3 },
+    { cellIndex: 5, dayIndex: 900, maxMm: 88.8 },
+  ];
+  const shuffled = [records[3], records[1], records[0], records[2]];
+  assert.ok(encodePerDayRecords(shuffled).equals(encodePerDayRecords(records)));
+});
+
+test('a per-day write is gzipped, atomic, and reproducible on disk', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gev-per-day-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const records = [
+    { cellIndex: 1, dayIndex: 2, maxMm: 33.3 },
+    { cellIndex: 4, dayIndex: 2, maxMm: 51.1 },
+  ];
+  const file = path.join(dir, 'storm_radar_hail_perday.bin.gz');
+  const first = await writePerDayBin(file, records);
+  const bytes = await fs.readFile(file);
+  assert.equal(bytes[0], 0x1f, 'gzip magic');
+  assert.equal(bytes[1], 0x8b);
+  // No mtime in the header: two writes of the same records are identical bytes.
+  await writePerDayBin(file, records);
+  assert.ok((await fs.readFile(file)).equals(bytes), 'byte-identical on rewrite');
+  assert.equal(first, bytes.length);
+  assert.deepEqual(await fs.readdir(dir), ['storm_radar_hail_perday.bin.gz']);
+  assert.deepEqual(
+    decodePerDayRecords(zlib.gunzipSync(bytes)).length,
+    2,
+    'it decodes back to what went in',
+  );
+});
+
+test('per-day records respect the kept-cell set', () => {
+  const kept = new Set(['171:-406', '84:-500']);
+  const perDay = new Map([
+    ['171:-406', new Map([['20210615', 56.2]])],
+    ['84:-500', new Map([['20210615', 12.1], ['20210616', 30.4]])],
+    ['219:-241', new Map([['20210615', 99.9]])],
+  ]);
+  const records = perDayRecords(perDay, kept);
+  assert.equal(records.length, 3, 'the dropped cell contributes nothing');
+  assert.ok(
+    !records.some((r) => r.cellIndex === cellIndex(219, -241)),
+    'a cell MAX_CELLS dropped is not in the day records either',
+  );
+  assert.deepEqual(
+    records.map((r) => r.dayIndex),
+    [165, 165, 166],
+    'every cell-day of every kept cell is present',
+  );
+});
+
+test(
+  'the per-day accumulator sees sub-core cells the published climatology drops',
+  { skip: !meshCacheFile('20240615') ? 'no cached MRMS day on disk' : false },
+  () => {
+    // The split, through the real decoder. The published bucket must not gain a
+    // single cell: a 12 mm cell has no business in a file whose threshold is
+    // 25 mm, and the whole invariant of the change is that those files stay
+    // byte-identical.
+    const cellsByYear = new Map();
+    const perDay = new Map();
+    ingestMeshGz(
+      fsSync.readFileSync(meshCacheFile('20240615')),
+      '20240615',
+      cellsByYear,
+      { perDay },
+    );
+    const published = cellsByYear.get(2024);
+    const publishedKeys = new Set([...published.keys()]);
+    let subCoreOnly = 0;
+    for (const days of perDay.values()) {
+      const peak = Math.max(...days.values());
+      if (peak >= 25) continue;
+      subCoreOnly += 1;
+      assert.ok(peak >= HAIL_RETAIN_MM, 'retained from 10 mm, not from nothing');
+      const key = [...perDay.keys()].find((k) => perDay.get(k) === days);
+      assert.ok(
+        !publishedKeys.has(key),
+        `sub-core cell ${key} is in the day records and not in the climatology`,
+      );
+    }
+    assert.ok(
+      subCoreOnly > 1000,
+      `the day has sub-core cells worth publishing (${subCoreOnly})`,
+    );
+    // Where the two accumulators overlap they must agree exactly: one day
+    // ingested, so a published cell's lifetime peak is that day's peak.
+    let checked = 0;
+    for (const [key, cell] of published) {
+      const day = perDay.get(key);
+      assert.ok(day, `published cell ${key} has a day record`);
+      assert.equal(day.get('20240615'), cell.maxMm, `cell ${key} agrees on its peak`);
+      checked += 1;
+    }
+    assert.ok(
+      checked > 200,
+      `checked ${checked} overlapping cells`,
+    );
+  },
+);
+
+test('the per-day sidecar states the epoch, the scale and the geometry', () => {
+  const meta = perDayMeta({
+    builtAt: '2026-10-16T00:00:00.000Z',
+    window: { from: '2021-01-01', to: '2026-10-15', days: 2125 },
+    unavailableDays: [],
+    recordCount: 253016,
+    cellCount: 21947,
+    truncated: false,
+    cellsBeforeTruncation: 21947,
+  });
+  assert.equal(meta.dayIndexEpoch, DAY_INDEX_EPOCH);
+  assert.equal(meta.format.mmScale, PER_DAY_MM_SCALE);
+  assert.equal(meta.format.recordBytes, PER_DAY_RECORD_BYTES);
+  assert.equal(meta.geometry.columns, GRID_COLUMNS);
+  assert.equal(meta.geometry.rowBase, GRID_ROW_BASE);
+  assert.equal(meta.hailRetainThresholdMm, HAIL_RETAIN_MM);
+  assert.equal(meta.hailCoreThresholdMm, 25);
+  assert.equal(meta.recordCount, 253016);
+  assert.equal(meta.window.to, '2026-10-15');
+  // The seven published sidecars must not grow a day-index field they cannot
+  // honour, which is why this is a separate shape.
+  assert.equal(radarMeta({
+    builtAt: 'x',
+    window: { from: '2021-01-01', to: '2026-10-15', days: 2125 },
+    unavailableDays: [],
+    cellCount: 1,
+    corePointCount: 1,
+    truncated: false,
+    cellsBeforeTruncation: 1,
+  }).dayIndexEpoch, undefined);
 });

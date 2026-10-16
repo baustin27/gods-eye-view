@@ -317,10 +317,23 @@ node scripts/build-storm-radar-snapshots.mjs --from 2023-01-01 --to 2023-12-31
 node scripts/build-storm-radar-snapshots.mjs --refresh          # bypass HTTP cache
 ```
 
-A bare run reproduces the committed snapshot exactly (archive start
-2021-01-01 through yesterday). Files are GRIB2 with PNG data packing, decoded
-in-process by `scripts/lib/grib2.mjs` and `scripts/lib/png.mjs` — no
-dependencies, no `wgrib2`, no `eccodes`.
+A run reproduces the committed snapshot exactly **for the window it covers** —
+the committed files are the archive from 2021-01-01 through **2026-10-15**, so
+that is the window to pass:
+
+```bash
+node scripts/build-storm-radar-snapshots.mjs --to 2026-10-15   # the committed build
+```
+
+The default `--to` is yesterday, because the 24-hour-maximum file stamped 00:00
+UTC covers the preceding day. That default moves, so a bare run tomorrow writes a
+*different* artifact from the committed one and the diff is a real change in the
+data, not a regression. Pin `--to` when reproducing; expect `builtAt` in every
+sidecar to differ regardless.
+
+Files are GRIB2 with PNG data packing, decoded in-process by
+`scripts/lib/grib2.mjs` and `scripts/lib/png.mjs` — no dependencies, no
+`wgrib2`, no `eccodes`.
 
 > **The MRMS GRIB2 layout is compact and undocumented.** Its field offsets do
 > *not* match the standard template 3.0 / 5.0 octet positions; they were
