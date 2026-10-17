@@ -183,6 +183,170 @@ export function toRadarRecord(feature) {
 }
 
 /**
+ * First day of the per-day radar artifact's `dayIndex`, mirroring the builder's
+ * `DAY_INDEX_EPOCH`. It is fixed to the start of the MRMS archive rather than to
+ * the build window so an index means the same calendar day in every build: a
+ * window-relative epoch would silently re-date every record the next time the
+ * window was extended.
+ */
+export const RADAR_DAY_INDEX_EPOCH = '2021-01-01';
+
+/**
+ * Units per millimetre in the per-day radar artifact, mirroring the builder's
+ * `PER_DAY_MM_SCALE`. The builder stores `maxMm x 10` in a `uint16`, so a stored
+ * reading is tenths of a millimetre and must be divided by this, not multiplied
+ * or written out unchanged.
+ */
+export const RADAR_PER_DAY_MM_SCALE = 10;
+
+/**
+ * The retained index space the per-day radar artifact encodes, mirroring the
+ * builder's geometry (`GRID_ROW_BASE`, `GRID_COL_BASE`, `GRID_COLUMNS`, and the
+ * 140 x 260 cell count). `cellIndex = (i - rowBase) * columns + (j - colBase)`,
+ * row-major. These are load-bearing 16-bit geometry — a one-unit error silently
+ * misplaces every cell — so the values are pinned against the sidecar in
+ * `stormRadar.test.mjs` rather than trusted here.
+ */
+export const RADAR_GRID = Object.freeze({
+  deg: STORM_FINE_GRID_DEG,
+  rowBase: 84,
+  colBase: -500,
+  rows: 140,
+  columns: 260,
+  cellCount: 140 * 260,
+});
+
+const RADAR_EPOCH_MS = Date.parse(`${RADAR_DAY_INDEX_EPOCH}T00:00:00Z`);
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * ISO day form of a date-like value: `2026-08-11`, `20260811` or a `Date`.
+ * @param {string|Date} date
+ * @returns {string|null}
+ */
+function radarIsoDay(date) {
+  if (date instanceof Date) {
+    return Number.isNaN(date.getTime())
+      ? null
+      : date.toISOString().slice(0, 10);
+  }
+  const text = String(date ?? '').trim();
+  if (/^\d{8}$/.test(text))
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  return null;
+}
+
+/**
+ * Days from {@link RADAR_DAY_INDEX_EPOCH} to a calendar date, the index the
+ * per-day artifact stores. This is the read side of the builder's `dayIndex`,
+ * and the epoch is the part that must match the sidecar: read with a different
+ * origin and every date on the map shifts.
+ * @param {string|Date} date
+ * @returns {number|null} UTC day number, or null for an unreadable date.
+ */
+export function radarDayIndex(date) {
+  const iso = radarIsoDay(date);
+  if (!iso) return null;
+  const ms = Date.parse(`${iso}T00:00:00Z`);
+  if (!Number.isFinite(ms)) return null;
+  return Math.round((ms - RADAR_EPOCH_MS) / MS_PER_DAY);
+}
+
+/**
+ * The inverse of {@link radarDayIndex}: the calendar date a stored day index
+ * names. `null` for a negative or non-integer index rather than an invented
+ * date.
+ * @param {number} dayIndex
+ * @returns {string|null} ISO day, `YYYY-MM-DD`.
+ */
+export function radarDateFromDayIndex(dayIndex) {
+  if (!Number.isInteger(dayIndex) || dayIndex < 0) return null;
+  return new Date(RADAR_EPOCH_MS + dayIndex * MS_PER_DAY)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * The calendar year a date names, as a string. The year-scoped radar loaders
+ * key on it, and the per-day loader is asked for one year at a time.
+ * @param {string|Date} date
+ * @returns {string|null}
+ */
+export function radarYearOf(date) {
+  const iso = radarIsoDay(date);
+  return iso ? iso.slice(0, 4) : null;
+}
+
+/**
+ * Decode a flat per-day cell index back to its grid `i`/`j`.
+ *
+ * The inverse of the builder's `cellIndex`, refusing rather than aliasing: an
+ * index outside the retained space would otherwise decode onto a real cell and
+ * misplace hail on the map with no error anywhere downstream.
+ * @param {number} cellIndex
+ * @returns {{i: number, j: number}|null}
+ */
+export function radarCellFromIndex(cellIndex) {
+  if (
+    !Number.isInteger(cellIndex) ||
+    cellIndex < 0 ||
+    cellIndex >= RADAR_GRID.cellCount
+  )
+    return null;
+  return {
+    i: Math.floor(cellIndex / RADAR_GRID.columns) + RADAR_GRID.rowBase,
+    j: (cellIndex % RADAR_GRID.columns) + RADAR_GRID.colBase,
+  };
+}
+
+/**
+ * Normalise one decoded day of the per-day radar artifact.
+ *
+ * A sibling of {@link toRadarRecord}, not a change to it: a per-day record is a
+ * flat `{cellIndex, dayIndex, tenths}`, not a GeoJSON feature, and the strict
+ * feature normaliser would reject it outright. The day index resolves to a real
+ * calendar date through the artifact's fixed epoch, and each cell index to its
+ * `i:j` grid key, so the result drops straight into
+ * `stormCrossReference.indexRadarDays` and the consumers downstream of it.
+ *
+ * Millimetres are exact. A reading may carry `maxMm` already in millimetres (the
+ * form a decoder produces) or `tenthsMm`, the raw `uint16` as stored, which is
+ * divided by {@link RADAR_PER_DAY_MM_SCALE}. 14,374 tenths is 1,437.4 mm and
+ * 100 tenths is 10 mm — the division, not an approximation of it.
+ *
+ * Malformed input rejects the whole day, exactly as `toRadarRecord` rejects a
+ * feature: a missing or out-of-range cell index, or a non-finite value, returns
+ * null rather than silently dropping cells from a swath.
+ *
+ * @param {number} dayIndex
+ * @param {Iterable<{cellIndex?: number, maxMm?: number, tenthsMm?: number}>} readings
+ * @returns {{dayIndex: number, date: string, cells: Map<string, number>}|null}
+ */
+export function toRadarDays(dayIndex, readings) {
+  const date = radarDateFromDayIndex(dayIndex);
+  if (date === null || readings == null) return null;
+  const cells = new Map();
+  for (const reading of readings) {
+    const cell = radarCellFromIndex(reading?.cellIndex);
+    if (!cell) return null;
+    let mm;
+    if (reading?.tenthsMm !== undefined) {
+      const tenths = Number(reading.tenthsMm);
+      if (!Number.isFinite(tenths)) return null;
+      mm = tenths / RADAR_PER_DAY_MM_SCALE;
+    } else {
+      mm = Number(reading?.maxMm);
+      if (!Number.isFinite(mm)) return null;
+    }
+    const key = `${cell.i}:${cell.j}`;
+    const seen = cells.get(key);
+    if (seen === undefined || mm > seen) cells.set(key, mm);
+  }
+  return { dayIndex, date, cells };
+}
+
+/**
  * Normalise one bundled significant-event feature.
  *
  * Tracks arrive as a two-point LineString when SPC recorded both an initial and

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
+import { readFileSync } from 'node:fs';
 
 import {
   parseGrib2,
@@ -12,7 +13,26 @@ import {
   indexToLonLat,
 } from '../../scripts/lib/grib2.mjs';
 import { decodeGrayscalePng } from '../../scripts/lib/png.mjs';
-import { toRadarRecord, parseOptionalJson } from './stormDatasets.js';
+import {
+  RADAR_DAY_INDEX_EPOCH,
+  RADAR_GRID,
+  RADAR_PER_DAY_MM_SCALE,
+  parseOptionalJson,
+  radarCellFromIndex,
+  radarDateFromDayIndex,
+  radarDayIndex,
+  radarYearOf,
+  toRadarDays,
+  toRadarRecord,
+} from './stormDatasets.js';
+import {
+  RADAR_IMPLAUSIBLE_MM,
+  canvassTargets,
+  crossReference,
+  indexRadarCells,
+  indexRadarDays,
+  summariseAgreement,
+} from './stormCrossReference.js';
 import {
   radarScore,
   blendScore,
@@ -447,6 +467,167 @@ test('optional JSON metadata degrades to null instead of throwing', () => {
   assert.equal(parseOptionalJson('not json'), null);
   assert.equal(parseOptionalJson(null), null);
   assert.equal(parseOptionalJson(''), null);
+});
+
+// ---------------------------------------------------------------------------
+// Per-day radar normalisation
+//
+// The per-day artifact is a flat binary field, not GeoJSONL, so it needs its
+// own normaliser beside `toRadarRecord` and its own index beside
+// `indexRadarCells`. The index's whole job is to emit the SAME `{mx, cores}`
+// shape so `crossReference`, `summariseAgreement` and `canvassTargets` need
+// nothing.
+// ---------------------------------------------------------------------------
+
+/** The committed sidecar, so the geometry cannot drift from the artifact. */
+const RADAR_DAYS_META = JSON.parse(
+  readFileSync(
+    new URL(
+      './local_data/storm/storm-radar-days-sources.json',
+      import.meta.url,
+    ),
+    'utf8',
+  ),
+);
+
+test('the retained per-day geometry matches the committed sidecar', () => {
+  // These are load-bearing 16-bit geometry: a one-unit error misplaces every
+  // cell and no error is raised anywhere. Pinning them against the sidecar the
+  // builder wrote is what makes that failure loud.
+  assert.equal(RADAR_DAY_INDEX_EPOCH, '2021-01-01');
+  assert.equal(RADAR_DAYS_META.dayIndexEpoch, RADAR_DAY_INDEX_EPOCH);
+  assert.equal(RADAR_PER_DAY_MM_SCALE, 10);
+  assert.equal(RADAR_DAYS_META.format.mmScale, RADAR_PER_DAY_MM_SCALE);
+  assert.equal(RADAR_GRID.rowBase, RADAR_DAYS_META.geometry.rowBase);
+  assert.equal(RADAR_GRID.colBase, RADAR_DAYS_META.geometry.colBase);
+  assert.equal(RADAR_GRID.rows, RADAR_DAYS_META.geometry.rows);
+  assert.equal(RADAR_GRID.columns, RADAR_DAYS_META.geometry.columns);
+  assert.equal(RADAR_GRID.cellCount, RADAR_DAYS_META.geometry.cellCount);
+});
+
+test('a cell index at both ends of the space decodes to the right i:j', () => {
+  assert.deepEqual(radarCellFromIndex(0), { i: 84, j: -500 });
+  assert.deepEqual(radarCellFromIndex(RADAR_GRID.cellCount - 1), {
+    i: 223,
+    j: -241,
+  });
+  // The known fixture cell, through the forward index the builder encodes.
+  const fixture = (171 - RADAR_GRID.rowBase) * RADAR_GRID.columns + (-406 - RADAR_GRID.colBase);
+  assert.equal(fixture, 22_714);
+  assert.deepEqual(radarCellFromIndex(fixture), { i: 171, j: -406 });
+  // Outside the space refuses rather than aliasing onto a real cell.
+  assert.equal(radarCellFromIndex(-1), null);
+  assert.equal(radarCellFromIndex(RADAR_GRID.cellCount), null);
+  assert.equal(radarCellFromIndex(1.5), null);
+});
+
+test('toRadarDays normalises one decoded day to a date and i:j cells', () => {
+  const day = toRadarDays(radarDayIndex('2026-06-15'), [
+    { cellIndex: 0, tenthsMm: 14_374 },
+    { cellIndex: 22_714, maxMm: 56.2 },
+  ]);
+  assert.equal(day.date, '2026-06-15');
+  assert.equal(day.cells.get('84:-500'), 1437.4);
+  assert.equal(day.cells.get('171:-406'), 56.2);
+  assert.equal(day.cells.size, 2);
+});
+
+test('toRadarDays rejects a malformed day the way toRadarRecord rejects a feature', () => {
+  // A missing cell index must not read as cell zero.
+  assert.equal(toRadarDays(0, [{ tenthsMm: 10 }]), null);
+  assert.equal(toRadarDays(0, [{ cellIndex: null, maxMm: 10 }]), null);
+  // A non-finite reading rejects the day rather than dropping the cell.
+  assert.equal(toRadarDays(0, [{ cellIndex: 0, maxMm: Number.NaN }]), null);
+  assert.equal(
+    toRadarDays(0, [{ cellIndex: 0, tenthsMm: Number.POSITIVE_INFINITY }]),
+    null,
+  );
+  // A cell outside the retained space would alias onto a real one.
+  assert.equal(toRadarDays(0, [{ cellIndex: 1_000_000, maxMm: 10 }]), null);
+  // And an unreadable day index is an unreadable day.
+  assert.equal(toRadarDays(-1, []), null);
+  assert.equal(toRadarDays(0, null), null);
+});
+
+test('day indices one apart resolve to dates a year apart at the new year', () => {
+  const dec31 = radarDayIndex('2021-12-31');
+  const jan1 = radarDayIndex('2022-01-01');
+  assert.equal(jan1 - dec31, 1, 'the indices are adjacent');
+  assert.equal(radarDateFromDayIndex(dec31), '2021-12-31');
+  assert.equal(radarDateFromDayIndex(jan1), '2022-01-01');
+  assert.notEqual(
+    radarDateFromDayIndex(dec31).slice(0, 4),
+    radarDateFromDayIndex(jan1).slice(0, 4),
+    'the calendar years differ by one',
+  );
+  assert.equal(radarDayIndex('20210101'), 0, 'day zero is the epoch');
+  assert.equal(radarYearOf('20211231'), '2021');
+  assert.equal(radarYearOf('2022-01-01'), '2022');
+  // And the normaliser resolves both ends of the boundary by date.
+  assert.equal(toRadarDays(dec31, []).date, '2021-12-31');
+  assert.equal(toRadarDays(jan1, []).date, '2022-01-01');
+});
+
+test('the per-day millimetre scale is exact, not approximate', () => {
+  const day = toRadarDays(0, [
+    { cellIndex: 0, tenthsMm: 14_374 },
+    { cellIndex: 1, tenthsMm: 100 },
+  ]);
+  assert.equal(day.cells.get('84:-500'), 1437.4, 'the archive peak survives');
+  assert.equal(day.cells.get('84:-499'), 10, 'ten millimetres stays ten');
+  assert.notEqual(day.cells.get('84:-499'), 10.05, 'no rounding drift');
+});
+
+test('indexRadarDays emits the same cell shape as indexRadarCells', () => {
+  const geo = indexRadarCells(
+    JSON.stringify({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [-95.875, 35.125] },
+      properties: { i: 140, j: -384, d: 0.25, mx: 45, cp: 1, dy: 1 },
+    }),
+  );
+  const perDay = indexRadarDays(new Map([['140:-384', 45]]));
+  // Compared against the shared indexer, not a hand-rolled literal: a consumer
+  // must not be able to tell which one it was handed.
+  assert.deepEqual(perDay.cells, geo.cells);
+  for (const [key, value] of perDay.cells) {
+    assert.deepEqual(
+      Object.keys(value).sort(),
+      ['cores', 'mx'],
+      `cell ${key} carries only mx and cores`,
+    );
+  }
+  // `cores` is a presence flag over the day, not a 1km count: a sub-core cell
+  // reads 0 because the per-day artifact stores no core tally.
+  const sub = indexRadarDays(new Map([['140:-384', 12]])).cells;
+  assert.deepEqual(sub.get('140:-384'), { mx: 12, cores: 0 });
+});
+
+test('indexRadarDays merges days by the strongest reading', () => {
+  const year = new Map([
+    [0, new Map([['140:-384', 12], ['200:-380', 30]])],
+    [1, new Map([['140:-384', 104]])],
+  ]);
+  const { cells, days } = indexRadarDays(year);
+  assert.equal(days, 2);
+  assert.equal(cells.get('140:-384').mx, 104, 'the day peak wins');
+  assert.equal(cells.get('140:-384').cores, 1);
+  assert.equal(cells.get('200:-380').mx, 30);
+});
+
+test('implausibility is applied per day and survives into the comparison', () => {
+  const implausible = indexRadarDays(new Map([['140:-384', 104]])).cells;
+  const credible = indexRadarDays(new Map([['140:-384', 96]])).cells;
+  const over = crossReference([], implausible);
+  const under = crossReference([], credible);
+  assert.equal(over[0].implausible, true, '104 mm in a day is flagged');
+  assert.equal(under[0].implausible, false, '96 mm in a day is not');
+  assert.equal(RADAR_IMPLAUSIBLE_MM, 100);
+  // The flag is what keeps an artefact off the canvassing map, and it reads
+  // straight through the unchanged summary and target ranking.
+  assert.equal(summariseAgreement(over).artefacts, 1);
+  assert.equal(canvassTargets(over).length, 0);
+  assert.equal(canvassTargets(under).length, 1);
 });
 
 // ---------------------------------------------------------------------------

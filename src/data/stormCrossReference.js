@@ -75,6 +75,59 @@ export function indexRadarCells(text) {
 }
 
 /**
+ * Read a decoded per-day radar field into the same cell lookup
+ * {@link indexRadarCells} produces.
+ *
+ * The point is the shape, not the source. `crossReference`,
+ * `summariseAgreement` and `canvassTargets` read `{mx, cores}` and nothing else,
+ * so a per-day field indexed here is indistinguishable from the GeoJSONL index
+ * and none of them needs a change. `mx` is the strongest reading for the cell
+ * across the days handed in.
+ *
+ * Input is the loader's `Map<dayIndex, Map<'i:j', number>>`, a single day's
+ * `Map<'i:j', number>`, or an iterable of `[key, mm]` pairs. Millimetres are
+ * taken as measured — the loader already applied the artifact's scale, so none
+ * is applied here.
+ *
+ * `cores` is NOT the 1km core count that `indexRadarCells` carries from `cp`.
+ * The per-day artifact stores one peak per cell per day and no core tally, so
+ * this is a presence flag: 1 when the cell's peak reaches {@link HAIL_CORE_MM}
+ * on a day in the input, else 0. Every consumer reads `mx`; the flag exists so
+ * the object keeps the shape they key on rather than growing a second one.
+ *
+ * @param {Map|Array} dayCells
+ * @returns {{cells: Map<string, {mx: number, cores: number}>, days: number}}
+ */
+export function indexRadarDays(dayCells) {
+  const cells = new Map();
+  let days = 0;
+  const absorb = (readings) => {
+    days += 1;
+    for (const [key, value] of readings) {
+      const mx = Number(value);
+      if (!Number.isFinite(mx)) continue;
+      const seen = cells.get(key);
+      if (!seen) {
+        cells.set(key, { mx, cores: mx >= HAIL_CORE_MM ? 1 : 0 });
+        continue;
+      }
+      if (mx > seen.mx) seen.mx = mx;
+      if (mx >= HAIL_CORE_MM) seen.cores = 1;
+    }
+  };
+  if (dayCells instanceof Map) {
+    // A year map nests a day map per entry; a single day is flat. Detect rather
+    // than require a wrapper, so the loader's output passes straight through.
+    if ([...dayCells.values()].some((value) => value instanceof Map))
+      for (const day of dayCells.values()) absorb(day);
+    else absorb(dayCells);
+  } else if (Array.isArray(dayCells)) {
+    absorb(dayCells);
+  }
+  return { cells, days };
+}
+
+/**
  * How a cell's two observations agree, or fail to.
  * @typedef {Object} CrossCell
  * @property {string} key       `i:j`.
@@ -92,9 +145,16 @@ export function indexRadarCells(text) {
  * Above this, MESH is reporting something hail does not do.
  *
  * MESH is a vertically-integrated liquid estimate derived from reflectivity,
- * not a measurement of a stone. Measured against the 2026 snapshot the median
- * core is 39mm (about 1.5in) and the 99th percentile is 109mm, but 1.4% of
- * cells exceed 100mm and thirty exceed 200mm — hail that size does not fall.
+ * not a measurement of a stone. Applied per day — the scale at which a canvasser
+ * acts, and the scale at which {@link indexRadarDays} feeds this — a 100mm
+ * reading is a credible extreme day: of the 1,407,918 cell-days in the 2021-2026
+ * per-day artifact, 3,036 (0.22%) reach 100mm, about 1.4 cells on an average
+ * day. Against a six-year lifetime maximum the same threshold is far less
+ * selective and far less credible as a stone: 2,386 of 21,947 cells (10.9%) in
+ * the combined file exceed it. The 1.4% once quoted here was a 2026-only figure
+ * and is wrong for the archive. The constant stays at 100mm; only its meaning —
+ * per day rather than per lifetime — changes.
+ *
  * Those cells are kept so the grid does not develop holes, but flagged, and
  * they are never ranked as canvass targets.
  *
