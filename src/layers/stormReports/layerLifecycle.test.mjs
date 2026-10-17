@@ -1161,16 +1161,22 @@ test('a swath is a clamped, outlined polygon with a band-ramped fill', async () 
   // at height 0, which `npm run qa:storm-swath` measured as a flat green box
   // rather than a swath: 64% of the frame, legible, and shapeless.
   assert.ok(entity.polygon, 'drawn as a polygon');
-  // A DEFINED height, and deliberately NOT clamped. See the measurement note on
-  // addSwathRingSet: the old height:0 rectangles were measured at 64% of the
-  // frame, so nothing was ever buried, while 72 clamped polygons killed the
-  // renderer. If a future ground regime genuinely buries these, this assertion
-  // is the thing to change first — and `npm run qa:storm-swath` is the evidence.
-  assert.equal(value(entity.polygon.height), 0, 'an explicit height');
+  // CLAMP TO GROUND, and this is the assertion that would have caught the bug.
+  //
+  // The launcher carries a CESIUM_ION_TOKEN in pinokio/ENVIRONMENT, so the
+  // shipped regime is Photorealistic 3D Tiles with globe.show = false: the
+  // ground is tiled geometry at real elevation. Measured there, same cell,
+  // 23 km camera: `height: 0` drew 0 px (0.0% of frame, invisible), while
+  // CLAMP_TO_GROUND drew 191,543 px (40.6%). A fixed altitude also draws but
+  // floats the wash above the ground.
+  //
+  // So a defined height here is not a cheaper alternative — it is the bug. This
+  // assertion is the cheap guard that keeps it from coming back, and
+  // `npm run qa:storm-swath` is the end-to-end evidence.
   assert.equal(
-    value(entity.polygon.heightReference) ?? null,
-    null,
-    'and no ground clamping, which costs a shadow volume per polygon',
+    value(entity.polygon.heightReference),
+    Cesium.HeightReference.CLAMP_TO_GROUND,
+    'draped on the ground, or it is buried under the photorealistic tiles',
   );
   // Cesium accepts `outline` silently whether or not it draws anything, so this
   // assertion is the cheapest guard there is for the hard edge.
@@ -1183,10 +1189,10 @@ test('a swath is a clamped, outlined polygon with a band-ramped fill', async () 
     value(entity.polygon.outlineColor),
     'and the edge has a colour',
   );
-  const vertices = value(entity.polygon.hierarchy);
+  const hierarchy = value(entity.polygon.hierarchy);
   assert.ok(
-    Array.isArray(vertices) ? vertices.length >= 3 : vertices?.positions?.length >= 3,
-    'a closed shape with at least three vertices',
+    hierarchy?.positions?.length >= 3,
+    `a closed ring with at least three vertices, got ${hierarchy?.positions?.length}`,
   );
   const material = value(entity.polygon.material);
   assert.ok(

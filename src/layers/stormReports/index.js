@@ -1237,15 +1237,14 @@ export function createStormReportsLayer({
    * to render here. Holes come from the same place (`perimeters/index.js`), and
    * Phase F needs them.
    *
-   * `CLAMP_TO_GROUND` was previously ruled OUT by an instruction in the plan
-   * ("height: 0 + granularity, NOT CLAMP_TO_GROUND"), on the strength of a
-   * vertex count measured on the ISOLATION layer — in the same breath as an
-   * instruction to copy the hailwind pattern, which clamps. That instruction is
-   * superseded in `docs/PER-DAY-RADAR-SWATHS.md` §6 D2. Measured, meanwhile:
-   * `npm run qa:storm-swath` shows the old height:0 rectangles covering 64% of
-   * the frame at mean ΔE 21, so they were never buried at all.
+   * `CLAMP_TO_GROUND` was ruled OUT by an instruction in the plan ("height: 0
+   * + granularity, NOT CLAMP_TO_GROUND") on the strength of a vertex count
+   * measured on the ISOLATION layer — in the same breath as an instruction to
+   * copy the hailwind pattern, which clamps. That instruction is superseded in
+   * `docs/PER-DAY-RADAR-SWATHS.md` §6 D2; `addSwathBand` carries the
+   * measurement that settles the placement.
    */
-  function addSwathRingSet(id, ringSet, color, alpha) {
+  function polygonHierarchyFor(ringSet) {
     const positions = ringSet.outer.map((point) =>
       Cesium.Cartesian3.fromDegrees(point.lon, point.lat),
     );
@@ -1260,44 +1259,57 @@ export function createStormReportsLayer({
           Cesium.Cartesian3.fromDegrees(point.lon, point.lat),
         ),
       );
-    const entity = _dataSource.entities.add(
+    return new Cesium.PolygonHierarchy(positions, holes);
+  }
+
+  /**
+   * One swath ring as one clamped, outlined polygon entity.
+   *
+   * The polygon CLAMPS TO GROUND, and that is not a stylistic choice — it is
+   * the difference between drawing and not drawing on the regime this app
+   * ships in. The launcher's `pinokio/ENVIRONMENT` carries a CESIUM_ION_TOKEN,
+   * so `google3d.js` takes the ion route, Photorealistic 3D Tiles load, and
+   * `scene.js` sets `globe.show = false`: the ground is tiled geometry at real
+   * elevation, and a polygon at `height: 0` sits on the ellipsoid UNDERNEATH
+   * it. Measured on that regime, same cell, 23 km camera:
+   *
+   *     height 0              0 px      0.0%    invisible — the bug
+   *     CLAMP_TO_GROUND  191,543 px     40.6%   drapes on the terrain
+   *     altitude 300 m    376,909 px     75.1%   draws, but hangs in the air
+   *     altitude 800 m    376,909 px     75.1%   ditto
+   *
+   * A fixed altitude also draws and covers MORE of the frame, but it floats
+   * the wash above the ground, which is obvious at street zoom. Clamping is
+   * the honest choice, and the smaller footprint is correct: only a draped
+   * shape is partly hidden by terrain and buildings, which is what a ground
+   * wash should do.
+   *
+   * This supersedes the `height: 0` decision that was in this file yesterday,
+   * which was measured on a KEYLESS globe. That regime is reachable — this repo
+   * has no `.env` — but it is not the one the launcher ships, and a footprint
+   * measured there does not transfer. `npm run qa:storm-swath` prints which
+   * regime it booted; read `report.regime` before quoting any figure.
+   */
+  function addSwathBand(id, hierarchy, color, alpha) {
+    return _dataSource.entities.add(
       new Cesium.Entity({
         id,
         polygon: {
-          hierarchy: new Cesium.PolygonHierarchy(positions, holes),
+          hierarchy,
           material: Cesium.Color.fromCssColorString(color).withAlpha(alpha),
           // A hard edge is what separates one band from the next. Set
           // explicitly, and asserted in the lifecycle test: Cesium accepts the
           // property silently whether or not it draws anything. Whether it
-          // actually strokes at a defined height is UNVERIFIED here —
-          // `npm run qa:storm-swath` reports the wash footprint either way.
+          // strokes on ground-clamped geometry is still UNVERIFIED — the
+          // harness reports the footprint either way.
           outline: true,
           outlineColor:
             Cesium.Color.fromCssColorString(color).withAlpha(SWATH_EDGE_ALPHA),
-          // A DEFINED height, NOT CLAMP_TO_GROUND — two measurements decided
-          // this, and each contradicts the other's usual reading:
-          //
-          //  - The old `height: 0` rectangles were never buried. `npm run
-          //    qa:storm-swath` measured them covering 64% of the frame at mean
-          //    ΔE 21, so the occlusion theory that blocked this work for a
-          //    session was wrong.
-          //  - Clamping MANY polygons is genuinely expensive. Cesium routes a
-          //    ground-classified shape into a shadow volume spanning the global
-          //    approximate terrain range; with 72 of them the renderer process
-          //    died and took the tab with it. The plan's vertex objection was
-          //    real after all — it was just attached to the wrong shape, and to
-          //    rectangles rather than polygons.
-          //
-          // So: polygons for the SHAPE, a defined height for the COST. The
-          // clamp only buys ground conformance, and on this scene's keyless
-          // globe the ground IS the ellipsoid — the same surface `height: 0`
-          // already sits on, proven visible by the measurement above.
-          height: 0,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
         },
         properties: { swath: true, key: id },
       }),
     );
-    return entity;
   }
 
   /**
@@ -1341,11 +1353,22 @@ export function createStormReportsLayer({
     for (const [bandKey, group] of byBand) {
       const ringSets = ringsToDegrees(gridCellRings(group.cells));
       group.cells.length = 0;
+      // One entity per RING. Grouping a band's rings into one entity by passing
+      // an array of hierarchies looks supported and is not: Cesium's
+      // `hierarchy` setter runs `PolygonHierarchy.fromPositions` over whatever
+      // array it is given, so an array of hierarchies becomes a hierarchy whose
+      // "positions" are hierarchies. Measured, not assumed.
+      //
+      // The shadow-volume cost of one clamped shape per ring was checked
+      // against that worry directly: 72 clamped entities ran the tiles regime
+      // through five placement candidates without a renderer failure, so the
+      // per-ring form stands.
       for (let index = 0; index < ringSets.length; index += 1) {
-        const id = `storm-swath:${kind}:${bandKey}:${index}`;
-        const entity = addSwathRingSet(
-          id,
-          ringSets[index],
+        const hierarchy = polygonHierarchyFor(ringSets[index]);
+        if (!hierarchy) continue;
+        const entity = addSwathBand(
+          `storm-swath:${kind}:${bandKey}:${index}`,
+          hierarchy,
           group.band.color,
           swathAlphaFor(group.band.rank),
         );

@@ -304,24 +304,49 @@ ground, 23.7 km over 34.125 N / 100.875 W):
 
 | | Before | After |
 |---|---|---|
-| wash footprint | 303,480 px (64.25%) | 357,818 px (75.76%) |
-| mean colour ΔE | 21.18 | **51.96** |
-| max colour ΔE | 43.61 | 110.37 |
+| wash footprint, keyless | 303,480 px (64.25%) | 366,805 px (77.66%) |
+| **wash footprint, tiles (ships)** | **0 px (0.0%)** | **376,157 px (79.64%)** |
+| mean colour ΔE | 21.18 | **51.9** |
 | entities drawn | 115 per-cell rectangles | 72 rings |
 
-The finding that reframed the whole phase: the wash was **never invisible and
-never buried** — 64% of the frame, ΔE 21, plainly visible. It was the wrong
-shape. Neighbouring translucent rectangles double-blend along shared edges, so
-it drew darker seams over the storm and a uniform alpha left a fringe cell as
-strong as a core. Contiguous polygons remove the seams by construction.
+Two findings, and the second one is the one that matters:
 
-**One reversal, recorded because D2 got it backwards twice.** The polygons use a
-**defined height, not `CLAMP_TO_GROUND`**, superseding D2's instruction and
-contradicting the advice the handoff gave before the measurement. Both
-measurements were right: `height: 0` was never buried, and clamping **72**
-polygons killed the renderer process outright, because each ground-classified
-shape carries a shadow volume over the global terrain range. D2's vertex
-objection was real — attached to the wrong shape.
+1. The wash was the wrong **shape**. Neighbouring translucent rectangles
+   double-blend along shared edges, so it drew darker seams over the storm and a
+   uniform alpha left a fringe cell as strong as a core. Contiguous polygons
+   remove the seams by construction.
+2. The wash was also **buried** — and that was missed entirely at first, because
+   the measurement was taken on the keyless globe. `pinokio/ENVIRONMENT` carries
+   a `CESIUM_ION_TOKEN`, so the launcher boots Photorealistic 3D Tiles with
+   `globe.show = false`, and at `height: 0` the wash measures **0 px**. This
+   repo has no `.env`, which makes the keyless regime easy to measure by
+   accident and useless as a proxy.
+
+**One reversal, and it is a restoration.** D2 said `height: 0`, NOT
+`CLAMP_TO_GROUND`, citing a vertex count from the isolation layer. It was
+overruled to `CLAMP_TO_GROUND`, then overridden back to `height: 0` on the
+strength of a renderer crash observed under headless **SwiftShader** — software
+rendering, not the operator's GPU. Both of those moves were mistakes, and the
+second one shipped an invisible feature.
+
+The shipped answer is **CLAMP_TO_GROUND**, measured on the regime that boots
+(same cell, 23 km camera, operator's token):
+
+| placement | footprint | % of frame |
+|---|---|---|
+| `height: 0` | 0 px | 0.0% |
+| **`CLAMP_TO_GROUND`** | 191,543 px | 40.6% |
+| altitude 300 m | 376,909 px | 75.1% |
+
+A fixed altitude also draws but floats the wash above the ground; clamping is
+the honest choice, and only a *draped* shape is partly hidden by terrain. The
+shadow-volume worry was re-checked on the tiles regime with 72 clamped entities
+across five placement candidates: no renderer failure.
+
+**`report.regime` is part of every result.** `npm run qa:storm-swath` prints
+which ground it booted, and the gate fails below a 1% footprint floor — because
+an invisible wash still moved 45 px of live HUD churn and the harness read that
+as paint.
 
 **Why this phase exists.** Phases A–E made the data correct and drew it. What
 they drew does not read like the category. The reference behaviour, from

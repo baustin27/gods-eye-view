@@ -17,6 +17,16 @@ a day on instruments that lie.**
 
 ## 0. Read this first — three things that outranked the open question in §4
 
+**First: which ground are you measuring on?** This repo has **no `.env`**, so a
+plain `npm run dev` boots the *keyless* globe on Esri imagery. The Pinokio
+launcher reads `pinokio/ENVIRONMENT`, which carries a **`CESIUM_ION_TOKEN`** —
+so the regime that actually ships is **Photorealistic 3D Tiles with
+`globe.show = false`**, ground at real elevation. **A footprint measured on one
+does not transfer to the other, and this document was wrong twice for exactly
+that reason** (§4). Always read `report.regime` before quoting a number:
+`npm run qa:storm-swath` prints which one it booted, and a keyed run can be had
+by injecting the token into a private dev server.
+
 **Both swath toggles default to `false`** (`src/layers/stormReports/index.js:421-422`).
 A freshly loaded scene, and any HMR reload of the layer file, therefore draws
 **zero swaths by design**. "The operator sees only the pins" is fully explained
@@ -49,13 +59,14 @@ built, shipped, loaded, normalised, cross-referenced and summarised in the
 panel. **Phase F is now built too**, and both open items from this handoff are
 closed.
 
-**The open question is answered, and the answer was not the expected one.** The
-wash was never invisible and never buried: it covered 64% of the frame and
-measured ΔE 21 — plainly visible. It was the wrong *shape*, drawn as one
-translucent rectangle per 0.25° cell at a flat alpha, which double-blends into
-seams and carries no ranking. Phase F draws contiguous banded polygons with
-hard edges and band-ramped alpha: **ΔE 21 → 52**, entities 115 → 72. Full
-figures and the reasoning reversal in **§4**.
+**The open question is answered, and the answer was both things at once.** The
+wash was **buried** — `pinokio/ENVIRONMENT` carries a `CESIUM_ION_TOKEN`, so the
+shipped regime is Photorealistic 3D Tiles with the globe hidden, and a polygon
+at `height: 0` measures **0 px, literally invisible**. It was *also* the wrong
+**shape**: one flat rectangle per 0.25° cell, double-blending into seams.
+Phase F draws banded polygons **clamped to the ground**: 79.64% of the frame on
+the tiles regime, **ΔE 51.9**, entities 115 → 72. Full figures, the two
+corrections, and the regime trap in **§4**.
 
 **The production `.gz` gap is fixed.** A build now ships 24 payloads, every one
 byte-identical to source, 14,721,326 bytes (§5).
@@ -109,73 +120,89 @@ gzip, sorted by `(dayIndex, cellIndex)`, 6-byte little-endian records:
 
 ---
 
-## 4. RESOLVED: it was never buried — it was the wrong shape
+## 4. RESOLVED — twice. It WAS buried; then it was the wrong shape
 
-**This section answered the open question. It did not go the way it was
-written to go, so read the correction before the history.**
+**Read the correction before the history. This section has been wrong twice,
+and both times the error was the same one: measuring on the wrong ground.**
 
-The question was *is the wash invisible, or merely faint?*, with depth
-occlusion under photorealistic tiles as the leading hypothesis and "if it is
-faint, the fix is contrast and nothing more structural" as the fallback.
-`npm run qa:storm-swath` (Phase 1's harness) answered it by measurement
-instead of opinion. Camera 23.7 km over one known-drawn cell at 34.125 N,
-100.875 W, on the keyless `esri-imagery` ground:
+### The regime, which turns out to be the whole story
 
-| | Before | After Phase F |
+`pinokio/ENVIRONMENT` carries a **`CESIUM_ION_TOKEN`**. So `google3d.js` takes
+the ion route, Photorealistic 3D Tiles load, and `scene.js` sets
+`globe.show = false`. **The ground is tiled geometry at real elevation, and a
+polygon at `height: 0` sits on the ellipsoid underneath it.**
+
+This repo has no `.env`, so a plain `npm run dev` boots the *keyless* globe on
+Esri imagery instead. That is a genuinely different world, and every footprint
+measured there does not transfer.
+
+### What the shipped regime actually does
+
+`npm run qa:storm-swath`, same cell (34.125 N, 100.875 W), 23 km camera,
+**with the operator's own token injected into a private dev server**:
+
+| placement | footprint | % of frame |
 |---|---|---|
-| wash footprint | 303,480 px (64.25%) | 357,818 px (75.76%) |
-| mean colour ΔE | **21.18** | **51.96** |
-| max colour ΔE | 43.61 | 110.37 |
-| entities drawn | 115 per-cell rectangles | 72 rings |
-| repeatability | 303,478 px on a second cycle | 357,818 px, exact |
+| `height: 0` | **0 px** | **0.0%** |
+| `CLAMP_TO_GROUND` | 191,543 px | 40.6% |
+| altitude 300 m | 376,909 px | 75.1% |
+| altitude 800 m | 376,909 px | 75.1% |
 
-Three things follow, and none of them is "raise the contrast":
+`height: 0` is **completely invisible** — which is exactly what the operator
+reported and what this section's first version denied. The original occlusion
+hypothesis in this handoff was **right**, and the caveat attached to it — that
+clamping "may still be buried under photorealistic tiles" — is wrong. Measured:
+clamping drapes onto the terrain and draws.
 
-1. **Occlusion is dead.** The old rectangles covered two thirds of the frame.
-   Nothing was buried. The `height: 0` ellipsoid surface was not under
-   anything on this ground, and §4's own caveat — that the hypothesis was never
-   ranked against the toggles being off — turned out to be the real lesson.
-2. **Faintness was never the problem either.** ΔE 21 is a colour difference
-   plainly visible to the eye; the screenshot showed an obvious green tint.
-3. **The wash was the wrong SHAPE.** One flat translucent rectangle per
-   0.25° cell at a uniform alpha. Neighbouring rectangles double-blend along
-   every shared edge, which draws a lattice of darker seams over the storm, and
-   a uniform alpha means a fringe cell looks exactly as strong as a core. It
-   read as a green box, not a swath. Phase F fixed it by drawing contiguous
-   banded polygons: ΔE 21 → 52, a 2.45× improvement, and the seams are gone by
-   construction.
+A fixed altitude also draws, and covers more of the frame, but it hangs the wash
+in the air — obvious at street zoom. Clamping is both honest and cheaper: only
+a *draped* shape is partly hidden by terrain, which is what a ground wash
+should do.
 
-### The reversal worth reading twice
+With the clamp in place, both regimes pass:
 
-Phase F's polygons use a **defined height, not `CLAMP_TO_GROUND`** — against
-the advice §4 gave an hour earlier. Both measurements were right and they
-contradict the usual reading of each other:
+| regime | footprint | % | mean ΔE |
+|---|---|---|---|
+| keyless `esri-imagery` | 366,805 px | 77.66% | 51.9 |
+| **photorealistic tiles (ships)** | 376,157 px | 79.64% | 51.9 |
 
-- The `height: 0` rectangles were never buried (ΔE 21, 64% of frame), so
-  there was nothing to fix by clamping.
-- Clamping **72 polygons** killed the renderer process outright, because each
-  ground-classified shape carries a shadow volume spanning the global
-  approximate terrain range. The plan's vertex objection was real — it was
-  just attached to the wrong shape, and to rectangles rather than polygons.
+### The other half: it was ALSO the wrong shape
 
-So: polygons for the shape, a defined height for the cost. On this scene's
-keyless globe the ground *is* the ellipsoid, which is the surface `height: 0`
-already sat on.
+That part of the first correction stands. Even at 40.6% coverage, one flat
+translucent rectangle per 0.25° cell double-blends along every shared edge,
+drawing darker seams over the storm, and a uniform alpha makes a fringe cell as
+strong as a core. Phase F's banded polygons fixed that: **mean ΔE 21.18 → 51.9**
+on both regimes, entities 115 per-cell rectangles → 72 rings.
 
-`polygon.outline` is set and asserted, but whether it strokes at a defined
-height is **unverified** — Cesium accepts the property silently either way, and
-the harness reports the wash footprint regardless. Measured, not assumed, as
-promised. If a future ground regime really does bury these, the first thing to
-change is `addSwathRingSet`'s height, and the evidence will be in
-`qa:storm-swath`.
+So the full answer is **both**: it was buried, *and* it was shapeless. Fixing
+only the shape left it invisible on the ground that ships.
 
-### What is still true about occlusion, for whoever needs it
+### The cost question, settled by measurement
+
+The plan's vertex objection was real: a ground-classified shape carries a
+shadow volume over the global approximate terrain range. It was dismissed with a
+crash observed under headless **SwiftShader** — software rendering, not the
+operator's GPU. Re-checked on the tiles regime with 72 clamped entities across
+five placement candidates: no renderer failure. The crash was not evidence about
+production, and treating it as such is what removed the clamp and shipped an
+invisible feature.
+
+Grouping each band's rings into ONE entity via an array of hierarchies — the
+obvious cost fix — **does not work**: Cesium's `hierarchy` setter runs
+`PolygonHierarchy.fromPositions` over any array, so an array of hierarchies
+becomes a hierarchy whose "positions" are hierarchies. One entity per ring it
+is; the count is fine.
+
+`polygon.outline` is set and asserted, but whether it strokes on ground-clamped
+geometry is **still unverified** — Cesium accepts the property silently either
+way.
+
+### What is still true about occlusion
 
 `scene.globe.depthTestAgainstTerrain` is `false` — the **Cesium default**;
 nothing in `src/` sets it. It covers the ellipsoid's own terrain, not 3D tiles.
-`renderOutline` (`index.js:1509`), `hailwind/index.js:611` and
-`perimeters/index.js:316` all clamp in this scene without trouble, so clamping
-is not forbidden here — it is simply expensive at this entity count.
+`renderOutline`, `hailwind/index.js:611` and `perimeters/index.js:316` all clamp
+in this scene, which is what should have been checked first.
 
 ---
 
@@ -430,4 +457,16 @@ mine:
 - I read `camera.positionCartographic` as degrees in the harness's own aim
   logic — the exact trap this document lists second — and flew a camera into
   the Gulf of Guinea, where it correctly reported no swaths.
+- I measured visibility on the keyless globe, declared "occlusion is dead", and
+  shipped a feature that was **0 px invisible** on the ground the launcher
+  actually boots. The operator caught it by looking at their own screen. The
+  whole lesson of this document — trust instruments, verify the environment
+  first — was the lesson I skipped.
+- I removed a working clamp on the strength of a crash under headless
+  SwiftShader, and called software-rendering behaviour a production fact.
 - Every one of those produced a confident, clean, wrong number.
+
+The common shape: **a measurement taken in an environment that was not the one
+under discussion, then reported without its conditions.** Every fix here is
+either a correction of one of those, or a guard that makes the environment part
+of the report (`report.regime`, the footprint floor, the kill-the-bug tests).

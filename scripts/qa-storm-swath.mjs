@@ -84,6 +84,17 @@ const DELTA_THRESHOLD = 8;
  * central region drops the panel and keeps the map, where the wash is.
  */
 const MEASURE_INSET = Number(process.env.QA_SWATH_INSET || 0.18);
+/**
+ * The share of the measured window the wash must cover to count as drawn.
+ *
+ * Without a floor, this harness called a completely invisible wash "DRAWN": on
+ * the photorealistic-tiles regime the buried swaths still moved 45 px — the
+ * live HUD's own churn — and `changedPixels !== 0` was read as evidence of
+ * paint. 45 px is 0.01% of the frame. The floor is 1%, which a real wash clears
+ * by two orders of magnitude (measured 40.6% clamped, 75.1% at altitude) and
+ * telemetry cannot reach.
+ */
+const VISIBLE_FOOTPRINT = Number(process.env.QA_SWATH_MIN_FOOTPRINT || 0.01);
 
 fs.mkdirSync(shotsDir, { recursive: true });
 
@@ -1085,10 +1096,24 @@ try {
       : `wash footprint ${visible.changedPixels}px (${visible.changedPercent}% of frame), mean Δ${visible.meanDelta}, contrast ${visible.contrastRatio}:1`,
   );
 
-  const buried = visible.error ? false : visible.changedPixels === 0;
+  // "Drawn" means the wash covers a materially different amount of the frame
+  // than the HUD's own frame-to-frame churn.
+  const footprintShare = visible.error
+    ? 0
+    : visible.changedPixels / Math.max(visible.measuredPixels || 1, 1);
+  const buried = visible.error ? true : footprintShare < VISIBLE_FOOTPRINT;
+  report.footprintShare = Number(footprintShare.toFixed(5));
+  check(
+    `the wash covers at least ${(VISIBLE_FOOTPRINT * 100).toFixed(0)}% of the map`,
+    !buried,
+    `${(footprintShare * 100).toFixed(3)}% — ${report.regime?.name}`,
+  );
   report.diagnosis = buried
-    ? 'NOT DRAWN — zero pixels changed with the swaths on. Either the toggles are off, or nothing at all reached the framebuffer.'
-    : 'DRAWN — the swaths change the frame.';
+    ? `NOT DRAWN — the wash moved ${visible.changedPixels} px, below the ` +
+      `${(VISIBLE_FOOTPRINT * 100).toFixed(0)}% floor, on the ` +
+      `${report.regime?.name} ground. Either the toggles are off, or the ` +
+      'geometry never reached the framebuffer.'
+    : `DRAWN — the wash covers ${(footprintShare * 100).toFixed(2)}% of the map on ${report.regime?.name} ground.`;
 
   // ---- Is the result repeatable, or was that one lucky frame? --------------
   //
