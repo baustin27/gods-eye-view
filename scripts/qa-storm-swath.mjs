@@ -226,6 +226,37 @@ async function collectSwaths(page) {
               east: rect.east * d,
               north: rect.north * d,
             };
+          } else {
+            // Phase F draws POLYGONS, so there is no rectangle to read bounds
+            // off — the hierarchy carries Cartesian3 positions instead. The
+            // ellipsoid on the viewer converts them; there is no Cesium global
+            // to reach for, which is the constraint this whole harness works
+            // around.
+            const hierarchy = read(entity.polygon?.hierarchy);
+            const points = hierarchy?.positions;
+            if (points && points.length) {
+              const ellipsoid =
+                window.__godsEyeView?.viewer?.scene?.ellipsoid;
+              let west = Infinity;
+              let south = Infinity;
+              let east = -Infinity;
+              let north = -Infinity;
+              // RADIANS. `cartesianToCartographic` returns radians, and so does
+              // every other Cesium coordinate accessor in this file — the trap
+              // the handoff lists first. Read raw, it aimed the camera at
+              // 0.6 N, 1.76 W: the Gulf of Guinea, and a clean 0px "the swaths
+              // are not drawn" finding produced entirely by the units.
+              const DEG = 180 / Math.PI;
+              for (const position of points) {
+                const carto = ellipsoid.cartesianToCartographic(position);
+                if (!carto) continue;
+                west = Math.min(west, carto.longitude * DEG);
+                east = Math.max(east, carto.longitude * DEG);
+                south = Math.min(south, carto.latitude * DEG);
+                north = Math.max(north, carto.latitude * DEG);
+              }
+              if (Number.isFinite(west)) bounds = { west, south, east, north };
+            }
           }
           found.push({
             key: typeof key === 'string' ? key : null,
@@ -865,6 +896,17 @@ page.on('console', (message) => {
   if (message.type() === 'error') consoleErrors.push(redact(message.text()));
 });
 page.on('pageerror', (error) => consoleErrors.push(redact(error.message)));
+// A renderer that takes the tab down with it is a FINDING, not a harness
+// hiccup. Cesium throwing inside the render loop used to surface as a bare
+// "Session closed" from CDP with nothing pointing at the cause, so the crash is
+// recorded at the source and reported as a failure of its own.
+let pageClosed = null;
+page.on('error', (error) => {
+  pageClosed = `renderer process crashed: ${redact(String(error?.message || error))}`;
+});
+page.on('close', () => {
+  if (!pageClosed) pageClosed = 'the page was closed mid-run';
+});
 
 console.log(`\nStorm swath QA — ${appUrl}\n`);
 
@@ -1121,6 +1163,13 @@ try {
         : 'LEGIBLE — the wash reads as a deliberate mark.',
     );
   }
+
+  check(
+    'the renderer survived the run',
+    pageClosed === null,
+    pageClosed || '',
+  );
+  report.pageClosed = pageClosed;
 
   // ---- REPORTED vs RADAR, so a regression cannot hide in the other layer --
   const renderErrors = await readRenderErrors(page);

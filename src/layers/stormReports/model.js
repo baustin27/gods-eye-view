@@ -789,6 +789,199 @@ export function frameAltitude(radiusKm) {
  * ---------------------------------------------------------------------- */
 
 /**
+ * Group grid cells into contiguous per-band rings, ready to draw as polygons.
+ *
+ * WHY THIS EXISTS. The swaths were drawn as one translucent rectangle per
+ * 0.25-degree cell at a uniform alpha. Measured on the running app
+ * (`npm run qa:storm-swath`, camera 23.8 km over one drawn cell): the wash
+ * covers 64% of the frame and has a mean colour difference of ΔE 21 against the
+ * basemap, so it is neither buried nor invisible — it is a flat GREEN BOX.
+ * Neighbouring translucent rectangles also double-blend along shared edges,
+ * which draws a lattice of darker seams over the storm. The category this
+ * copies draws contiguous colour-banded POLYGONS with hard edges, so the cells
+ * have to be joined before they can be drawn that way.
+ *
+ * HOW. Marching squares on the integer lattice, edge by edge:
+ *
+ *   - a cell's edge is a boundary edge exactly when the neighbour across it is
+ *     not in the set;
+ *   - edges are emitted with a consistent winding, so the interior is always on
+ *     the same side and the rings come out closed;
+ *   - because holes are traced by the same rule, they come out with the OPPOSITE
+ *     winding automatically — no containment test, which is where a hand-rolled
+ *     version usually goes wrong;
+ *   - outer rings are the positively-wound ones, by signed area.
+ *
+ * Pure, node-testable, no Cesium — the same rule D1 set for the swath model.
+ * Deterministic: cells are visited in sorted order and rings are emitted in a
+ * fixed sequence, so two runs produce identical geometry and a test can assert
+ * exact vertex lists.
+ *
+ * @param {Array<{i: number, j: number}>} cells Grid cells, in any order.
+ * @returns {Array<{outer: Array<[number, number]>, holes: Array<Array<[number, number]>>}>}
+ *   One entry per disjoint landmass, in CELL-CORNER indices (not centres), so
+ *   the renderer can multiply by the grid step and hand the result to
+ *   `PolygonHierarchy` without re-deriving an offset.
+ */
+export function gridCellRings(cells) {
+  const occupied = new Set();
+  for (const cell of cells || []) {
+    const i = Number(cell?.i);
+    const j = Number(cell?.j);
+    if (!Number.isInteger(i) || !Number.isInteger(j)) continue;
+    occupied.add(`${i}:${j}`);
+  }
+  if (!occupied.size) return [];
+  const has = (i, j) => occupied.has(`${i}:${j}`);
+
+  // Every boundary edge as a directed segment, keyed by its start point so the
+  // chaining below is a map walk rather than a search.
+  const edges = new Map();
+  const push = (from, to) => {
+    const key = `${from[0]},${from[1]}`;
+    if (!edges.has(key)) edges.set(key, []);
+    edges.get(key).push(to);
+  };
+
+  // Sorted, so the ring order and the winding are reproducible run to run.
+  const sorted = [...occupied].sort((a, b) => {
+    const [ai, aj] = a.split(':').map(Number);
+    const [bi, bj] = b.split(':').map(Number);
+    return ai - bi || aj - bj;
+  });
+
+  for (const key of sorted) {
+    const [i, j] = key.split(':').map(Number);
+    // The four corners of this cell, in counter-clockwise order in (i, j).
+    const sw = [i, j];
+    const se = [i + 1, j];
+    const ne = [i + 1, j + 1];
+    const nw = [i, j + 1];
+    // Interior on the left of travel: south edge runs west->east, east edge
+    // south->north, north edge east->west, west edge north->south.
+    if (!has(i, j - 1)) push(sw, se);
+    if (!has(i + 1, j)) push(se, ne);
+    if (!has(i, j + 1)) push(ne, nw);
+    if (!has(i - 1, j)) push(nw, sw);
+  }
+
+  // Chain the segments into closed rings.
+  const rings = [];
+  while (edges.size) {
+    const [startKey] = edges.keys();
+    const start = startKey.split(',').map(Number);
+    const ring = [start];
+    let current = start;
+    // The budget is fixed BEFORE walking. Reading `edges.size` as the bound is
+    // a trap: keys are deleted as they are consumed, so the ceiling drops
+    // mid-ring and truncates it — which is exactly what it did here, closing a
+    // 2x2 block after 6 of its 8 vertices.
+    const budget = edges.size + 1;
+    // Every vertex has as many outgoing edges as incoming ones, so this always
+    // closes; the guard defends against a malformed input, not a branch a
+    // correct set can reach.
+    for (let guard = 0; guard < budget; guard += 1) {
+      const key = `${current[0]},${current[1]}`;
+      const outs = edges.get(key);
+      if (!outs || !outs.length) break;
+      const next = outs.shift();
+      if (!outs.length) edges.delete(key);
+      if (next[0] === start[0] && next[1] === start[1]) break;
+      ring.push(next);
+      current = next;
+    }
+    if (ring.length >= 4) rings.push(ring);
+  }
+
+  const signedArea = (ring) => {
+    let sum = 0;
+    for (let n = 0; n < ring.length; n += 1) {
+      const [x1, y1] = ring[n];
+      const [x2, y2] = ring[(n + 1) % ring.length];
+      sum += x1 * y2 - x2 * y1;
+    }
+    return sum / 2;
+  };
+
+  /**
+   * Drop vertices that sit in the middle of a straight run.
+   *
+   * The edge walk naturally emits one vertex per lattice step, so a 4x4 block
+   * arrives as sixteen corners when four describe it. They are harmless to
+   * Cesium but they are not canonical: two cells sets that draw the same shape
+   * would carry different vertex lists, and the drawing budget grows with the
+   * cell count instead of with the shape. Collapsing collinear runs makes the
+   * ring a function of the SHAPE, which is also what makes it assertable.
+   */
+  const dropCollinear = (ring) => {
+    if (ring.length < 4) return ring;
+    const out = [];
+    for (let n = 0; n < ring.length; n += 1) {
+      const prev = ring[(n - 1 + ring.length) % ring.length];
+      const here = ring[n];
+      const next = ring[(n + 1) % ring.length];
+      const cross =
+        (here[0] - prev[0]) * (next[1] - prev[1]) -
+        (here[1] - prev[1]) * (next[0] - prev[0]);
+      if (cross !== 0) out.push(here);
+    }
+    return out.length >= 4 ? out : ring;
+  };
+
+  // Positive winding is land, negative is a hole inside it.
+  const outers = rings.map(dropCollinear).filter((r) => signedArea(r) > 0);
+  const holes = rings.map(dropCollinear).filter((r) => signedArea(r) < 0);
+  if (!outers.length) return [];
+
+  // A hole belongs to the outer ring that CONTAINS it. With cell-corner rings
+  // that is decided by a point-in-polygon test on the hole's first vertex.
+  const contains = (outer, point) => {
+    const [px, py] = point;
+    let inside = false;
+    for (let n = 0, m = outer.length - 1; n < outer.length; m = n, n += 1) {
+      const [xi, yi] = outer[n];
+      const [xj, yj] = outer[m];
+      const straddles = yi > py !== yj > py;
+      if (
+        straddles &&
+        px < ((xj - xi) * (py - yi)) / (yj - yi || Number.EPSILON) + xi
+      ) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  };
+
+  return outers.map((outer) => ({
+    outer,
+    holes: holes.filter((hole) => contains(outer, hole[0])),
+  }));
+}
+
+/**
+ * The same rings, as `{lat, lon}` positions ready for a `PolygonHierarchy`.
+ *
+ * Cell corners in degrees, using the SAME step the cell indices were built
+ * with. Kept separate from {@link gridCellRings} so the index arithmetic stays
+ * testable without trigonometry or a viewer.
+ *
+ * @param {Array<{outer: Array<[number, number]>, holes: Array<Array<[number, number]>>}>} rings
+ * @returns {Array<{outer: Array<{lat: number, lon: number}>,
+ *   holes: Array<Array<{lat: number, lon: number}>>}>}
+ */
+export function ringsToDegrees(rings) {
+  return (rings || []).map((ring) => ({
+    outer: ring.outer.map(([i, j]) => ({
+      lat: i * GRID_DEG,
+      lon: j * GRID_DEG,
+    })),
+    holes: (ring.holes || []).map((hole) =>
+      hole.map(([i, j]) => ({ lat: i * GRID_DEG, lon: j * GRID_DEG })),
+    ),
+  }));
+}
+
+/**
  * The centre and the rectangle of a grid cell.
  *
  * Both come from the same floored index the join uses, never from rounding a

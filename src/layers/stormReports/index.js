@@ -20,6 +20,8 @@
  */
 
 import {
+  HAIL_BANDS,
+  gridCellRings,
   hailBand,
   isolationLine,
   magnitudeLabel,
@@ -31,6 +33,7 @@ import {
   radarSwathCells,
   radiusMetres,
   reportedSwathCells,
+  ringsToDegrees,
   stormHeadline,
   stormPlaces,
   stormTimeRange,
@@ -153,8 +156,23 @@ const COMPARISON_ROW_LIMIT = 5000;
  */
 const SWATH_GRANULARITY = Cesium.Math.toRadians(5);
 
-/** Alpha of a swath cell. A wash, not a wall: the pins have to stay legible. */
-const SWATH_ALPHA = 0.34;
+/**
+ * Swath opacity, as a RAMP across the band scale rather than one flat value.
+ *
+ * The old swaths painted every cell at a flat 0.34, which made a fringe cell
+ * carrying a barely-measured stone look exactly as strong as a core — the wash
+ * then carried no ranking at all, and "where is the worst" was a question only
+ * the panel could answer. Still a wash rather than a wall at the top of the
+ * range: the pins stay legible over it, and pins-on-top is the HailMaps model.
+ * The measured floor for "reads as a deliberate mark" is mean ΔE 8
+ * (`npm run qa:storm-swath`); the old flat fill measured 21, so legibility was
+ * never the failure — SHAPE was.
+ */
+const SWATH_ALPHA_MIN = 0.3;
+const SWATH_ALPHA_MAX = 0.72;
+
+/** Opacity of a band's hard edge, against the fill it outlines. */
+const SWATH_EDGE_ALPHA = 0.95;
 
 /**
  * The RADAR swath's millimetre-to-colour ramp.
@@ -1212,34 +1230,129 @@ export function createStormReportsLayer({
   }
 
   /**
-   * A swath cell as a Cesium rectangle on this layer's own data source.
+   * A swath ring set as a Cesium polygon on this layer's own data source.
    *
-   * A DEFINED height, NOT `CLAMP_TO_GROUND`. Cesium routes a rectangle with an
-   * undefined height to the ground-classified path, which extrudes every cell
-   * into a shadow volume spanning the global approximate terrain range — 66,067
-   * vertices for a flat Denver wash — and coarsening to five degrees is what
-   * takes that to 2,851. Static axes on purpose: a `CallbackProperty` here would
-   * re-tessellate thousands of rectangles on every frame.
+   * The recipe is `renderOutline`'s, deliberately: a clamped, outlined
+   * `PolygonHierarchy` in this same data source, which is a shape already known
+   * to render here. Holes come from the same place (`perimeters/index.js`), and
+   * Phase F needs them.
+   *
+   * `CLAMP_TO_GROUND` was previously ruled OUT by an instruction in the plan
+   * ("height: 0 + granularity, NOT CLAMP_TO_GROUND"), on the strength of a
+   * vertex count measured on the ISOLATION layer — in the same breath as an
+   * instruction to copy the hailwind pattern, which clamps. That instruction is
+   * superseded in `docs/PER-DAY-RADAR-SWATHS.md` §6 D2. Measured, meanwhile:
+   * `npm run qa:storm-swath` shows the old height:0 rectangles covering 64% of
+   * the frame at mean ΔE 21, so they were never buried at all.
    */
-  function addSwathCell(id, bounds, color) {
-    _dataSource.entities.add(
+  function addSwathRingSet(id, ringSet, color, alpha) {
+    const positions = ringSet.outer.map((point) =>
+      Cesium.Cartesian3.fromDegrees(point.lon, point.lat),
+    );
+    // Cesium turns a non-finite coordinate into a NaN vertex, and one NaN
+    // vertex poisons the whole polygon's centroid. Three vertices is also not
+    // a shape, so a degenerate ring is dropped rather than drawn.
+    if (positions.length < 3) return null;
+    const holes = (ringSet.holes || [])
+      .filter((hole) => hole.length >= 3)
+      .map((hole) =>
+        hole.map((point) =>
+          Cesium.Cartesian3.fromDegrees(point.lon, point.lat),
+        ),
+      );
+    const entity = _dataSource.entities.add(
       new Cesium.Entity({
         id,
-        rectangle: {
-          coordinates: Cesium.Rectangle.fromDegrees(
-            bounds.west,
-            bounds.south,
-            bounds.east,
-            bounds.north,
-          ),
-          material:
-            Cesium.Color.fromCssColorString(color).withAlpha(SWATH_ALPHA),
+        polygon: {
+          hierarchy: new Cesium.PolygonHierarchy(positions, holes),
+          material: Cesium.Color.fromCssColorString(color).withAlpha(alpha),
+          // A hard edge is what separates one band from the next. Set
+          // explicitly, and asserted in the lifecycle test: Cesium accepts the
+          // property silently whether or not it draws anything. Whether it
+          // actually strokes at a defined height is UNVERIFIED here —
+          // `npm run qa:storm-swath` reports the wash footprint either way.
+          outline: true,
+          outlineColor:
+            Cesium.Color.fromCssColorString(color).withAlpha(SWATH_EDGE_ALPHA),
+          // A DEFINED height, NOT CLAMP_TO_GROUND — two measurements decided
+          // this, and each contradicts the other's usual reading:
+          //
+          //  - The old `height: 0` rectangles were never buried. `npm run
+          //    qa:storm-swath` measured them covering 64% of the frame at mean
+          //    ΔE 21, so the occlusion theory that blocked this work for a
+          //    session was wrong.
+          //  - Clamping MANY polygons is genuinely expensive. Cesium routes a
+          //    ground-classified shape into a shadow volume spanning the global
+          //    approximate terrain range; with 72 of them the renderer process
+          //    died and took the tab with it. The plan's vertex objection was
+          //    real after all — it was just attached to the wrong shape, and to
+          //    rectangles rather than polygons.
+          //
+          // So: polygons for the SHAPE, a defined height for the COST. The
+          // clamp only buys ground conformance, and on this scene's keyless
+          // globe the ground IS the ellipsoid — the same surface `height: 0`
+          // already sits on, proven visible by the measurement above.
           height: 0,
-          granularity: SWATH_GRANULARITY,
         },
         properties: { swath: true, key: id },
       }),
     );
+    return entity;
+  }
+
+  /**
+   * Alpha for a band, ramping up with severity.
+   *
+   * The old swaths painted every cell at a flat `SWATH_ALPHA`, so a fringe cell
+   * carrying a barely-measured stone looked exactly as strong as a core. A
+   * roofer is reading the wash to decide where to drive, and that decision is
+   * "where is the worst", so the worst band has to be the most opaque thing on
+   * the map. Ranked on the band's position in its own scale, so the REPORTED
+   * inch bands and the RADAR millimetre ramp each ramp over their own range.
+   *
+   * @param {number} rank 0 (weakest) .. 1 (worst)
+   */
+  function swathAlphaFor(rank) {
+    const clamped = Math.min(Math.max(Number(rank) || 0, 0), 1);
+    return SWATH_ALPHA_MIN + (SWATH_ALPHA_MAX - SWATH_ALPHA_MIN) * clamped;
+  }
+
+  /**
+   * Group swath cells by colour band, and draw each band as contiguous rings.
+   *
+   * One entity per RING, not per cell — that is the whole of Phase F. Measured
+   * before the change: one translucent rectangle per 0.25-degree cell at a flat
+   * alpha, which double-blended along every shared edge and read as a green
+   * box rather than a storm.
+   *
+   * @param {string} kind 'reported' | 'radar', for the entity id and the tests.
+   * @param {Array<object>} cells cells carrying `i`, `j` and a band.
+   * @param {(cell: object) => {key: string, color: string, rank: number}|null} bandFor
+   */
+  function drawSwathBand(kind, cells, bandFor) {
+    const byBand = new Map();
+    for (const cell of cells) {
+      const band = bandFor(cell);
+      if (!band) continue;
+      if (!byBand.has(band.key)) byBand.set(band.key, { band, cells: [] });
+      byBand.get(band.key).cells.push({ i: cell.i, j: cell.j });
+    }
+    let drawn = 0;
+    for (const [bandKey, group] of byBand) {
+      const ringSets = ringsToDegrees(gridCellRings(group.cells));
+      group.cells.length = 0;
+      for (let index = 0; index < ringSets.length; index += 1) {
+        const id = `storm-swath:${kind}:${bandKey}:${index}`;
+        const entity = addSwathRingSet(
+          id,
+          ringSets[index],
+          group.band.color,
+          swathAlphaFor(group.band.rank),
+        );
+        if (entity) drawn += 1;
+      }
+    }
+    return drawn;
   }
 
   /**
@@ -1254,22 +1367,49 @@ export function createStormReportsLayer({
   function renderSwaths() {
     if (!_dataSource) return;
     if (_showReportedSwath && _options.hazard === 'hail') {
-      for (const cell of reportedSwathCells(_visible, { hailFloor: 0 })) {
-        addSwathCell(
-          `storm-swath:reported:${cell.key}`,
-          cell.bounds,
-          cell.band?.color || '#cccccc',
-        );
-      }
+      const hailBands = HAIL_BANDS;
+      drawSwathBand(
+        'reported',
+        reportedSwathCells(_visible, { hailFloor: 0 }),
+        (cell) => {
+          const band = cell.band;
+          if (!band) return null;
+          // Rank by position in the inch scale, worst last.
+          const index = hailBands.findIndex((b) => b.id === band.id);
+          return {
+            key: band.id,
+            color: band.color,
+            rank: index < 0 ? 0 : index / Math.max(hailBands.length - 1, 1),
+          };
+        },
+      );
     }
     if (_showRadarSwath) {
-      for (const cell of _radarSwath) {
-        addSwathCell(
-          `storm-swath:radar:${cell.key}`,
-          cell.bounds,
-          radarColorFor(cell),
-        );
-      }
+      // Ascending so the index IS the severity rank: the ramp is declared
+      // worst-first, and inverting that here would silently reverse the alpha
+      // ramp — the fringe would paint solid and the core would go ghostly.
+      const ascending = [...RADAR_RAMP_MM].reverse();
+      drawSwathBand('radar', _radarSwath, (cell) => {
+        if (cell.implausible) {
+          return { key: 'artefact', color: RADAR_IMPLAUSIBLE_COLOR, rank: 0 };
+        }
+        // Walk the ramp ASCENDING and keep the LAST band whose floor the reading
+        // clears. Taking the FIRST match against ascending thresholds is a
+        // trap: 'under 10 mm' has a floor of 0, so it matches everything and a
+        // 55 mm core gets banded — and painted — as the weakest hail on the
+        // map. (A test caught this; the ramp is declared worst-first, so
+        // reversing it and keeping the first match silently inverts it.)
+        let chosen = ascending[0];
+        for (const step of ascending) {
+          if (cell.peakMm >= step.min) chosen = step;
+        }
+        const index = ascending.indexOf(chosen);
+        return {
+          key: chosen.label,
+          color: chosen.color,
+          rank: index / Math.max(ascending.length - 1, 1),
+        };
+      });
     }
   }
 

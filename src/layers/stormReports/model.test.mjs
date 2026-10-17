@@ -17,12 +17,14 @@ import {
   destinationPointKm,
   frameAltitude,
   framingFor,
+  gridCellRings,
   hailBand,
   hailNickname,
   hailSizeLabel,
   haversineKm,
   isolationLine,
   magnitudeLabel,
+  ringsToDegrees,
   matchesFilter,
   outlineRing,
   parseStormDate,
@@ -634,4 +636,141 @@ test('every band has a peer object, including the unnamed ones', () => {
     );
   }
   assert.equal(HAIL_NICKNAMES.find((n) => n.object === 'tennis ball').inches, 2.5);
+});
+
+// ===========================================================================
+// Swath rings: the cells have to become POLYGONS before they can read as a
+// swath. These tests are written to be killed by the old behaviour — draw a
+// rectangle per cell and every one of them fails.
+// ===========================================================================
+
+test('a single cell becomes one ring of four corners', () => {
+  const rings = gridCellRings([{ i: 136, j: -404 }]);
+  assert.equal(rings.length, 1, 'one landmass');
+  assert.equal(rings[0].holes.length, 0, 'and no hole in it');
+  assert.equal(rings[0].outer.length, 4, 'four corners, closed');
+  // Cell corners in INDEX space, so the renderer only has to multiply by the
+  // grid step. Getting this wrong would shift every swath by half a cell.
+  const corners = rings[0].outer.map(([i, j]) => `${i}:${j}`).sort();
+  assert.deepEqual(corners, [
+    '136:-403',
+    '136:-404',
+    '137:-403',
+    '137:-404',
+  ]);
+});
+
+test('a run of cells in a line is ONE ring, not one ring per cell', () => {
+  const rings = gridCellRings([
+    { i: 0, j: 0 },
+    { i: 0, j: 1 },
+    { i: 0, j: 2 },
+  ]);
+  assert.equal(rings.length, 1, 'three cells in a row are one landmass');
+  assert.equal(
+    rings[0].outer.length,
+    4,
+    'a 1x3 strip is a rectangle, so collinear vertices are collapsed to four',
+  );
+  // The long side must still be three cells long, not one: collapsing
+  // collinear vertices must not collapse the EDGE. Checking the extent is what
+  // catches a version that wrongly drops the run's far end.
+  const js = rings[0].outer.map(([, j]) => j);
+  assert.equal(Math.min(...js), 0, 'starts at the first cell');
+  assert.equal(Math.max(...js), 3, 'and runs to one past the last cell');
+});
+
+test('a solid block collapses to its four corners', () => {
+  const cells = [];
+  for (let i = 0; i < 4; i += 1) for (let j = 0; j < 4; j += 1) cells.push({ i, j });
+  const rings = gridCellRings(cells);
+  assert.equal(rings.length, 1, 'a 4x4 block is one landmass');
+  assert.equal(
+    rings[0].outer.length,
+    4,
+    'and its boundary is four corners, not sixteen lattice steps',
+  );
+  assert.equal(rings[0].holes.length, 0, 'with no hole inside it');
+  // Collapsing collinear vertices must not shrink the shape.
+  const js = rings[0].outer.map(([, j]) => j);
+  assert.equal(Math.max(...js), 4, 'four cells across is still four cells wide');
+});
+
+test('a donut keeps its hole, and the hole is inside the outer ring', () => {
+  const cells = [];
+  // 3x3 with the middle removed.
+  for (let i = 0; i < 3; i += 1) {
+    for (let j = 0; j < 3; j += 1) {
+      if (i === 1 && j === 1) continue;
+      cells.push({ i, j });
+    }
+  }
+  const rings = gridCellRings(cells);
+  assert.equal(rings.length, 1, 'the ring of eight is one landmass');
+  assert.equal(rings[0].holes.length, 1, 'with the missing cell punched out');
+  // The hole must be the inner square, not the outer one. Cesium takes holes as
+  // a second hierarchy; handing it the outer ring here would fill the donut and
+  // silently lose the shape.
+  const hole = rings[0].holes[0];
+  assert.equal(hole.length, 4, 'the hole is a square');
+  const holeI = hole.map(([i]) => i);
+  const holeJ = hole.map(([, j]) => j);
+  assert.deepEqual([...new Set(holeI)].sort(), [1, 2], 'hole spans i 1..2');
+  assert.deepEqual([...new Set(holeJ)].sort(), [1, 2], 'hole spans j 1..2');
+});
+
+test('two separated groups are two landmasses, neither swallowing the other', () => {
+  const rings = gridCellRings([
+    { i: 0, j: 0 },
+    { i: 10, j: 10 },
+  ]);
+  assert.equal(rings.length, 2, 'diagonal cells never touch');
+  for (const ring of rings) assert.equal(ring.holes.length, 0);
+});
+
+test('the ring order and winding are deterministic across runs', () => {
+  const cells = [
+    { i: 1, j: 1 },
+    { i: 0, j: 0 },
+    { i: 0, j: 1 },
+    { i: 1, j: 0 },
+  ];
+  const first = JSON.stringify(gridCellRings(cells));
+  // Reversed input order must not change the geometry: a renderer that orders
+  // rings by input would repaint differently between two identical days.
+  const second = JSON.stringify(gridCellRings([...cells].reverse()));
+  assert.equal(first, second, 'input order does not reach the output');
+});
+
+test('junk in the cell list is dropped, not turned into geometry', () => {
+  const rings = gridCellRings([
+    { i: 1, j: 1 },
+    null,
+    { i: NaN, j: 2 },
+    { i: 'x', j: 'y' },
+    { i: 1.5, j: 2 },
+  ]);
+  assert.equal(rings.length, 1);
+  assert.equal(rings[0].outer.length, 4, 'only the one real cell drew');
+});
+
+test('an empty set is no rings at all', () => {
+  assert.deepEqual(gridCellRings([]), []);
+  assert.deepEqual(gridCellRings(null), []);
+});
+
+test('ringsToDegrees multiplies by the grid step and adds no offset', () => {
+  const [ring] = gridCellRings([{ i: 136, j: -404 }]);
+  const [degrees] = ringsToDegrees([ring]);
+  // The step is 0.25 degrees, and a corner is `index * step` — NOT
+  // `index * step + step / 2`, which is the CENTRE rule. Using the centre rule
+  // here would displace every swath by half a cell, which is 14 km and looks
+  // like nothing at all.
+  for (const point of degrees.outer) {
+    assert.ok(Math.abs(point.lat % GRID_DEG) < 1e-9, 'lat is on the step');
+    assert.ok(Math.abs(point.lon % GRID_DEG) < 1e-9, 'lon is on the step');
+  }
+  const lats = degrees.outer.map((p) => p.lat);
+  assert.equal(Math.min(...lats), 136 * GRID_DEG, 'the south edge, exactly');
+  assert.equal(Math.max(...lats), 137 * GRID_DEG, 'and the north edge');
 });

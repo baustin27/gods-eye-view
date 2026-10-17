@@ -1135,7 +1135,7 @@ test('the swath chips are offered, and each draws only its own layer', async () 
   );
 });
 
-test('a swath rectangle is a defined-height rectangle, not a ground one', async () => {
+test('a swath is a clamped, outlined polygon with a band-ramped fill', async () => {
   const day = radarDayIndex('2026-08-10');
   const cells = new Map([[cellKey(35.11, -97.4), 45]]);
   const radarSource = { daysFor: async () => new Map([[day, cells]]) };
@@ -1152,25 +1152,46 @@ test('a swath rectangle is a defined-height rectangle, not a ground one', async 
   layer.setRadarSwath(true);
   const [entity] = swathEntities(viewer, 'radar');
   assert.ok(entity, 'a radar cell is drawn');
-  assert.equal(entity.position, undefined, 'a rectangle, not a point entity');
-  // The scrim lesson, applied here: an UNDEFINED height routes the rectangle to
-  // the ground-classified path and a shadow volume over the global terrain
-  // range - 66,067 vertices for a flat Denver wash. A DEFINED height is what
-  // keeps it an ordinary depth-tested primitive.
-  assert.equal(value(entity.rectangle.height), 0, 'an explicit height');
+  assert.equal(entity.position, undefined, 'a polygon, not a point entity');
+  assert.equal(entity.rectangle, undefined, 'and not a per-cell rectangle');
+
+  // Phase F. A polygon, clamped to the ground, with an edge — the
+  // `renderOutline` recipe (index.js:1386), which is a shape already known to
+  // render in this scene. The old form was one translucent rectangle per cell
+  // at height 0, which `npm run qa:storm-swath` measured as a flat green box
+  // rather than a swath: 64% of the frame, legible, and shapeless.
+  assert.ok(entity.polygon, 'drawn as a polygon');
+  // A DEFINED height, and deliberately NOT clamped. See the measurement note on
+  // addSwathRingSet: the old height:0 rectangles were measured at 64% of the
+  // frame, so nothing was ever buried, while 72 clamped polygons killed the
+  // renderer. If a future ground regime genuinely buries these, this assertion
+  // is the thing to change first — and `npm run qa:storm-swath` is the evidence.
+  assert.equal(value(entity.polygon.height), 0, 'an explicit height');
   assert.equal(
-    value(entity.rectangle.heightReference) ?? null,
+    value(entity.polygon.heightReference) ?? null,
     null,
-    'no ground clamping',
+    'and no ground clamping, which costs a shadow volume per polygon',
+  );
+  // Cesium accepts `outline` silently whether or not it draws anything, so this
+  // assertion is the cheapest guard there is for the hard edge.
+  assert.equal(
+    value(entity.polygon.outline),
+    true,
+    'a hard edge, or adjacent bands blur into one wash',
   );
   assert.ok(
-    Number(value(entity.rectangle.granularity)) > 0,
-    'coarsened, so a cell is a bounded number of triangles',
+    value(entity.polygon.outlineColor),
+    'and the edge has a colour',
   );
-  const colour = value(entity.rectangle.material).color;
+  const vertices = value(entity.polygon.hierarchy);
   assert.ok(
-    colour.alpha > 0 && colour.alpha < 1,
-    `a wash, not a wall: alpha ${colour.alpha}`,
+    Array.isArray(vertices) ? vertices.length >= 3 : vertices?.positions?.length >= 3,
+    'a closed shape with at least three vertices',
+  );
+  const material = value(entity.polygon.material);
+  assert.ok(
+    material.color.alpha > 0 && material.color.alpha < 1,
+    `a wash, not a wall: alpha ${material.color.alpha}`,
   );
 });
 
@@ -1240,15 +1261,102 @@ test('the radar swath merges a window per cell, worst reading wins', async () =>
   assert.equal(cells.length, 2, 'the union of both days is two cells');
   // The repeatedly-hit cell keeps the WORST reading across the window, not the
   // first day's: 55mm from the 10th, over 30mm from the 9th. 55 lands in the
-  // 50-75mm band, 30 in the 25-50mm one, and the two differ in green.
-  const merged = cells.find((entity) => String(entity.id).endsWith(repeated));
-  assert.ok(merged, 'the repeated cell is drawn');
+  // 50-75mm band, 30 in the 25-50mm one, and the two differ in green. The
+  // entity id names the BAND rather than the cell, since Phase F draws a band
+  // at a time, so the band is what identifies the drawing here.
+  const worst = cells.find((entity) => String(entity.id).includes('50-75 mm'));
+  assert.ok(worst, 'the windowed cell is drawn in its worst band');
+  const material = value(worst.polygon.material);
   assert.ok(
-    value(merged.rectangle.material).color.equals(
-      Cesium.Color.fromCssColorString('#e06020').withAlpha(0.34),
+    material.color.equals(
+      Cesium.Color.fromCssColorString('#e06020').withAlpha(material.color.alpha),
     ),
     'the windowed cell is coloured by its maximum, not its first day',
   );
+  assert.ok(
+    cells.some((entity) => !String(entity.id).includes('50-75 mm')),
+    'and the other cell stays in its own, weaker band',
+  );
+  const alphas = cells.map((entity) => value(entity.polygon.material).color.alpha);
+  assert.ok(
+    Math.max(...alphas) > Math.min(...alphas),
+    `the strongest band is the most opaque: ${JSON.stringify(alphas)}`,
+  );
+});
+
+test('a swath is drawn per RING, never per cell', async () => {
+  // Four cells in a row, all one band. Phase F's acceptance criterion is that
+  // the drawn entity count follows the SHAPE, not the cell count: the old
+  // renderer emitted four rectangles here, which is what drew the darker seams
+  // along every shared edge.
+  const day = radarDayIndex('2026-08-10');
+  const cells = new Map([
+    [cellKey(35.11, -97.4), 45],
+    [cellKey(35.11, -97.4 + 0.25), 45],
+    [cellKey(35.11, -97.4 + 0.5), 45],
+    [cellKey(35.11, -97.4 + 0.75), 45],
+  ]);
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  const drawnSwaths = swathEntities(viewer, 'radar');
+  assert.equal(
+    drawnSwaths.length,
+    1,
+    'four adjacent cells in one band are ONE polygon, not four rectangles',
+  );
+});
+
+test('stronger bands paint more opaque, and every swath gets an edge', async () => {
+  // Two reported sizes in different bands, in non-adjacent cells so each is
+  // its own ring. The alpha must RAMP: a flat alpha made a fringe cell look
+  // exactly as strong as a core, so the wash carried no ranking.
+  const viewer = stubViewer();
+  const { layer } = makeLayer(
+    [
+      // Both at or above the layer's default 1-inch filter; a 0.75 report is
+      // filtered out before it reaches a swath, which is correct and would
+      // otherwise read here as "only one band drew".
+      REPORT(1, { lat: 35.11, lon: -97.4 }),
+      REPORT(3, { lat: 40.11, lon: -97.4 }),
+    ],
+    [],
+    { viewer },
+  );
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setReportedSwath(true);
+  const entities = swathEntities(viewer, 'reported');
+  assert.equal(entities.length, 2, 'two bands, two rings');
+  const alphas = entities.map(
+    (entity) => value(entity.polygon.material).color.alpha,
+  );
+  assert.notEqual(
+    alphas[0],
+    alphas[1],
+    `two bands must not share an alpha: ${JSON.stringify(alphas)}`,
+  );
+  const strongest = Math.max(...alphas);
+  const weakest = Math.min(...alphas);
+  assert.ok(
+    strongest > weakest,
+    'and the stronger band is the more opaque one',
+  );
+  assert.ok(strongest < 1, 'the worst band is still a wash, so pins stay legible');
+  for (const entity of entities) {
+    assert.equal(
+      value(entity.polygon.outline),
+      true,
+      `every swath polygon carries an edge: ${entity.id}`,
+    );
+  }
 });
 
 test('the impacted places skip a report with no county and rank the rest', async () => {
