@@ -28,9 +28,9 @@ nothing here needs to be deleted for a commercial deployment.
 
 | File | Geometry | Contents | Records |
 |---|---|---|---|
-| `storm_cells_025.geojsonl` | Point | 0.25° damage-score grid — the fine grid the scoring surface runs on | 12,119 cells |
-| `storm_cells_050.geojsonl` | Point | 0.5° recurrence grid — coarser, honest frequency view over the whole record | 3,507 cells |
-| `storm_events.geojsonl` | Point or 2-point LineString | Individual significant events (hail ≥ 2.00 in, wind ≥ 75 kt) with tracks where SPC recorded a final location | 37,727 events |
+| `storm_cells_025.geojsonl` | Point | 0.25° damage-score grid — the fine grid the scoring surface runs on | 12,094 cells |
+| `storm_cells_050.geojsonl` | Point | 0.5° recurrence grid — coarser, honest frequency view over the whole record | 3,514 cells |
+| `storm_events.geojsonl` | Point or 2-point LineString | Individual significant events (hail ≥ 2.00 in, wind ≥ 75 kt) with tracks where SPC recorded a final location | 37,245 events |
 | `storm_counties.geojsonl` | Polygon / MultiPolygon | County polygons joined to FEMA NRI attributes and to per-county observed storm statistics | 3,234 counties |
 | `storm_radar_hail.geojsonl` | Point | 0.25° radar hail-core grid from NOAA MRMS, on the same index space as `storm_cells_025` | see `storm-radar-sources.json` |
 | `storm-sources.json` | — | Build metadata: record counts, per-decade completeness, thresholds, source list with licenses | — |

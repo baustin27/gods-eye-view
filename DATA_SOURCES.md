@@ -126,7 +126,7 @@ The [Bhote Koshi event pack](public/events/bhote-koshi-2026/README.md), under `p
 | **Natural Earth countries, states and provinces** (260 admin-0/map units + 4,587 admin-1 polygons)                                   | `natural_earth/`                  | **Public domain**                                                                                                 | ✅ (no restrictions)                             | "Made with Natural Earth" (courtesy credit — not legally required)                                                                               |
 | **US Census Bureau counties** (3,235 county polygons)                                                                                | `us_census_counties/`             | **Public domain**                                                                                                 | ✅ (no restrictions)                             | "U.S. Census Bureau" (courtesy — not legally required)                                                                                           |
 | **CCTV ground heights** (3,445 cameras)                                                                                              | `cctv_ground_heights/`            | Precomputed camera placement heights, aligned to work with Google Photorealistic 3D Tiles (folder README)         | —                                                | —                                                                                                                                                |
-| **Storm hail & wind history** (~976K SPC reports → 12,119 fine cells, 3,507 coarse cells, 37,727 significant events, 3,234 counties) | `storm/`                          | **US public domain** (NOAA/NWS SPC + US Census + NOAA/NSSL MRMS) + **FEMA NRI: free to use, disclaimer required** | ✅ (FEMA disclaimer must be shown verbatim)      | "NOAA/NWS Storm Prediction Center" · "NOAA/NSSL MRMS" · "FEMA National Risk Index" · "US Census Bureau" (courtesy for the public-domain sources) |
+| **Storm hail & wind history** (~976K SPC reports → 12,094 fine cells, 3,514 coarse cells, 37,245 significant events, 3,234 counties) | `storm/`                          | **US public domain** (NOAA/NWS SPC + US Census + NOAA/NSSL MRMS) + **FEMA NRI: free to use, disclaimer required** | ✅ (FEMA disclaimer must be shown verbatim)      | "NOAA/NWS Storm Prediction Center" · "NOAA/NSSL MRMS" · "FEMA National Risk Index" · "US Census Bureau" (courtesy for the public-domain sources) |
 
 ### ⚠️ TeleGeography is bundled but NonCommercial
 
@@ -207,9 +207,9 @@ Douglas-Peucker simplification, 6-decimal rounding).
 
 `storm/` holds offline snapshots built by `scripts/build-storm-snapshots.mjs`
 from **~976,552 raw severe-weather reports** (1955–2025):
-`storm_cells_025.geojsonl` (0.25° damage-score grid, 12,119 cells),
-`storm_cells_050.geojsonl` (0.5° recurrence grid, 3,507 cells),
-`storm_events.geojsonl` (37,727 individual significant events — hail ≥ 2.00 in or
+`storm_cells_025.geojsonl` (0.25° damage-score grid, 12,094 cells),
+`storm_cells_050.geojsonl` (0.5° recurrence grid, 3,514 cells),
+`storm_events.geojsonl` (37,245 individual significant events — hail ≥ 2.00 in or
 wind ≥ 75 kt — with tracks where SPC recorded a final location),
 `storm_counties.geojsonl` (3,234 county polygons joined to FEMA NRI attributes
 and per-county observed storm statistics), and `storm-sources.json` (build
