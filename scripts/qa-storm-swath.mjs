@@ -65,7 +65,14 @@ const keepGoing = process.argv.includes('--keep-going');
 const stageDate = process.env.QA_SWATH_DATE || '2026-10-13';
 const targetLat = Number(process.env.QA_SWATH_LAT || 34.4);
 const targetLon = Number(process.env.QA_SWATH_LON || -100.3);
-const CAMERA_HEIGHT_M = 40_000;
+/**
+ * Staging altitude in metres. Configurable because the QA camera and the thing
+ * being QA'd are different questions at different scales: 40km answers "does the
+ * wash read on a regional map", and 2.5km answers "do the 1km cells resolve at
+ * roof level", which is the entire reason the fine field exists. A harness pinned
+ * to the first can only ever ask the first.
+ */
+const CAMERA_HEIGHT_M = Number(process.env.QA_SWATH_CAMERA_M || 40_000);
 /**
  * The lift probe's height. 200 km clears any terrain this app can show and is
  * far enough below the horizon that the rectangle still faces the camera.
