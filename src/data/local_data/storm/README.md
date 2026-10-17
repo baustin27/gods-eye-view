@@ -37,6 +37,37 @@ nothing here needs to be deleted for a commercial deployment.
 | `storm_radar_hail_<year>.geojsonl.gz` | Point | 0.25° radar hail cores for **one year**, year-scoped: `mx`, `cp` and `dy` are that year's peak, core-point count and distinct hail days | 2021:11,918 · 2022:15,364 · 2023:13,321 · 2024:14,836 · 2025:14,401 · 2026:14,850 |
 | `storm-radar-sources_<year>.json` | — | Build metadata for that year's radar file: window, cell count, caveat | — |
 | `storm-radar-sources.json` | — | Build metadata for the radar snapshot: window, cell count, caveat | — |
+| `storm_radar_hail_perday.bin.gz` | Binary | Per-day radar field: one record per (cell, day) that reached **10 mm**, the strongest reading in that cell that day | 1,407,918 cell-days across 21,947 cells |
+| `storm-radar-days-sources.json` | — | Build metadata for the per-day file: encoding, index geometry, **day-index epoch**, window, caveat | — |
+
+### The per-day radar field
+
+`storm_radar_hail_perday.bin.gz` is the only file here that is not GeoJSONL, and
+it is not readable with `TextDecoder` — decoding the bytes as text destroys the
+`uint16` triples. It is gzipped, sorted ascending by `(dayIndex, cellIndex)`, and
+holds 6-byte little-endian records:
+
+| Offset | Type | Meaning |
+|---|---|---|
+| 0 | `u16` | cell index, `(i - 84) * 260 + (j + 500)` |
+| 2 | `u16` | day index, days since `dayIndexEpoch` |
+| 4 | `u16` | that cell's peak MESH in tenths of a millimetre |
+
+Three things in that are load-bearing rather than incidental:
+
+- **The day-index epoch is fixed at 2021-01-01**, not the window start, so
+  extending the window does not re-date the records already written. A `uint16`
+  day index addresses 65,536 days from the epoch — the year 2199.
+- **The millimetre scale is 10, not 100.** The archive peaks at 1,437.4 mm, which
+  is 14,374 scaled and fits a `uint16`; at 100 it would be 143,740 and wrap
+  silently into a plausible-looking wrong number.
+- **The retained floor is 10 mm while the climatology's is 25 mm.** A 12 mm core
+  in a cell nobody reported is the finding this file exists to publish, and it
+  has no line in `storm_radar_hail.geojsonl` because that file's threshold is
+  25 mm. This is why the two thresholds are separate constants.
+
+`dayIndexEpoch`, `format`, `geometry`, both thresholds and the record count are
+all in `storm-radar-days-sources.json`. Read that before reading the binary.
 
 ### Report-level files
 
