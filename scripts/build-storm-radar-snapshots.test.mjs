@@ -20,33 +20,47 @@ import { fileURLToPath } from 'node:url';
 
 import {
   CELL_DEG,
+  CELL_DEG_FINE,
   cellFeature,
   cellIndex,
+  cellIndexFine,
+  cellIJFine,
   compareBySeverity,
   DAY_INDEX_EPOCH,
   dayFromIndex,
   dayIndex,
+  decodeFineDayRecords,
   decodePerDayRecords,
   DOMAIN_MAX_LAT,
   DOMAIN_MIN_LAT,
   DOMAIN_MIN_LON,
+  encodeFineDayRecords,
   encodePerDayRecords,
   featuresByYear,
   GRID_CELL_COUNT,
+  GRID_CELL_COUNT_FINE,
   GRID_COLUMNS,
+  GRID_COLUMNS_FINE,
   GRID_COL_BASE,
+  GRID_COL_BASE_FINE,
   gridCol,
   GRID_MAX_LON,
   GRID_ROW_BASE,
+  GRID_ROW_BASE_FINE,
   GRID_ROWS,
+  GRID_ROWS_FINE,
   gridRow,
   HAIL_RETAIN_MM,
+  HAIL_RETAIN_MM_FINE,
   inDomain,
   ingestMeshGz,
   mergeYearFeatures,
   perDayMeta,
   perDayRecords,
   perDayRecordsByYear,
+  fineDayFileName,
+  fineDayMeta,
+  FINE_DAY_RECORD_BYTES,
   PER_DAY_MM_SCALE,
   PER_DAY_RECORD_BYTES,
   radarMeta,
@@ -1051,4 +1065,292 @@ test('a day index round-trips through its epoch', () => {
     RangeError,
     'an index past the uint16 range is refused rather than dated',
   );
+});
+
+
+// ===========================================================================
+// The fine grid. The source has always been 1 km; the published field is a 25x
+// downsample of it, and these pin the sibling that undoes that.
+// ===========================================================================
+
+test('the fine grid is 1 km and 25x finer than the published one', () => {
+  assert.equal(CELL_DEG_FINE, 0.01, 'one hundredth of a degree');
+  assert.equal(CELL_DEG / CELL_DEG_FINE, 25, 'and a 25x downsample per axis');
+  // Measured off a cached day: ni=7000, nj=3500 over -129.995..-60.005 and
+  // 54.995..20.005. These must match or the fine grid is not this archive's.
+  assert.equal(GRID_COLUMNS_FINE, 6500, 'columns across the retained domain');
+  assert.equal(GRID_ROWS_FINE, 3500, 'rows across the retained domain');
+});
+
+test('the fine bases are pinned to absolute geography, not to each other', () => {
+  // Written after a real miss: expressing every fine-grid test in terms of the
+  // fine constants means they are all self-consistent even when the constants
+  // are wrong. Setting GRID_ROW_BASE_FINE to DOMAIN_MAX_LAT/CELL_DEG_FINE — a
+  // transposed base, the most likely mistake here — left all 38 tests passing.
+  // These are absolute values, so they fail.
+  assert.equal(GRID_ROW_BASE_FINE, 2100, '21N / 0.01 = row 2100');
+  assert.equal(GRID_COL_BASE_FINE, -12500, '-125 / 0.01 = column -12500');
+  assert.equal(
+    GRID_ROW_BASE_FINE,
+    Math.round(DOMAIN_MIN_LAT / CELL_DEG_FINE),
+    'and the south edge is the minimum latitude, not the maximum',
+  );
+  assert.equal(
+    GRID_COL_BASE_FINE,
+    Math.round(DOMAIN_MIN_LON / CELL_DEG_FINE),
+    'west edge from the minimum longitude',
+  );
+});
+
+test('a known Colorado cell resolves to its absolute index and back', () => {
+  // 39.625N, 104.875W — the densest measured-hail cell of 2026-06-01 (Denver /
+  // Arapahoe, eight reported stones). An end-to-end pin from real coordinates
+  // through the real function, so no constant can drift without this noticing.
+  //
+  // Note the column: Math.floor(-104.875 / 0.01) is -10488, NOT -10487. Floor
+  // on a negative longitude rounds toward minus infinity, so this point sits in
+  // the cell spanning -104.88..-104.87. The builder's own `gridCol` floors the
+  // same way, which is what keeps the two grids in agreement; a `Math.round`
+  // anywhere would shift every western cell by one.
+  const i = Math.floor(39.625 / CELL_DEG_FINE); // 3962
+  const j = Math.floor(-104.875 / CELL_DEG_FINE); // -10488
+  assert.equal(i, 3962);
+  assert.equal(j, -10488, 'floor, not round — the western cells hang off -1');
+  const index = cellIndexFine(i, j);
+  assert.equal(index, 1862 * GRID_COLUMNS_FINE + 2012);
+  assert.deepEqual(
+    cellIJFine(index),
+    { i: 3962, j: -10488 },
+    'and decodes back to the same real cell',
+  );
+  // The same coordinate on the coarse grid is a different index space, which is
+  // the collision documented in the sibling test.
+  assert.notEqual(cellIndex(Math.floor(39.625 / CELL_DEG), Math.floor(-104.875 / CELL_DEG)), index);
+});
+
+test('the fine index space does not fit a uint16, which is why it is uint32', () => {
+  // The load-bearing fact, asserted rather than trusted. `writeUInt16LE`
+  // truncates silently past 65,535, which at this size would alias tens of
+  // thousands of cells onto each other and shift hail across the map with no
+  // error anywhere downstream.
+  assert.equal(GRID_CELL_COUNT_FINE, 22_750_000);
+  assert.ok(
+    GRID_CELL_COUNT_FINE > 0xffff,
+    'the fine space exceeds uint16, so a 16-bit index is a silent-corruption bug',
+  );
+  assert.ok(
+    GRID_CELL_COUNT_FINE <= 0xffffffff,
+    'and it does fit uint32, which is what the encoder writes',
+  );
+  // The coarse space is what made uint16 viable in the first place.
+  assert.ok(
+    GRID_CELL_COUNT <= 0xffff,
+    'the coarse space still fits, so the published artifacts are untouched',
+  );
+});
+
+test('the fine index round-trips at both ends of the space', () => {
+  const origin = { i: GRID_ROW_BASE_FINE, j: GRID_COL_BASE_FINE };
+  assert.equal(cellIndexFine(origin.i, origin.j), 0, 'the origin is index 0');
+  const back = cellIJFine(0);
+  assert.deepEqual(back, origin, 'and decodes back to the same cell');
+
+  const last = GRID_CELL_COUNT_FINE - 1;
+  const lastIJ = cellIJFine(last);
+  assert.equal(
+    cellIndexFine(lastIJ.i, lastIJ.j),
+    last,
+    'the last index round-trips too',
+  );
+  assert.equal(
+    lastIJ.i,
+    GRID_ROW_BASE_FINE + GRID_ROWS_FINE - 1,
+    'at the final row',
+  );
+  assert.equal(
+    lastIJ.j,
+    GRID_COL_BASE_FINE + GRID_COLUMNS_FINE - 1,
+    'and the final column',
+  );
+});
+
+test('the fine index refuses every cell outside the retained space', () => {
+  const base = { i: GRID_ROW_BASE_FINE, j: GRID_COL_BASE_FINE };
+  // One row/col past each edge, in both directions. The function refuses rather
+  // than degrading because an aliased index misplaces hail with no later error.
+  assert.throws(() => cellIndexFine(base.i - 1, base.j), RangeError, 'north of');
+  assert.throws(
+    () => cellIndexFine(base.i + GRID_ROWS_FINE, base.j),
+    RangeError,
+    'south of',
+  );
+  assert.throws(() => cellIndexFine(base.i, base.j - 1), RangeError, 'west of');
+  assert.throws(
+    () => cellIndexFine(base.i, base.j + GRID_COLUMNS_FINE),
+    RangeError,
+    'east of',
+  );
+  // The last valid cell must NOT throw, or the bound is off by one.
+  assert.doesNotThrow(() =>
+    cellIndexFine(
+      base.i + GRID_ROWS_FINE - 1,
+      base.j + GRID_COLUMNS_FINE - 1,
+    ),
+  );
+});
+
+test('the fine inverse refuses an index outside the space', () => {
+  assert.throws(() => cellIJFine(-1), RangeError, 'negative');
+  assert.throws(() => cellIJFine(GRID_CELL_COUNT_FINE), RangeError, 'past the end');
+  assert.throws(() => cellIJFine(1.5), RangeError, 'and a non-integer');
+  assert.doesNotThrow(() => cellIJFine(GRID_CELL_COUNT_FINE - 1), 'the last one');
+});
+
+test('the fine and coarse index spaces genuinely collide, which is the hazard', () => {
+  // Both spaces start at index 0 — that is what "origin" means in each — so a
+  // payload decoded with the wrong grid does NOT throw. It returns plausible
+  // numbers for the wrong places. This is why the fine path is a sibling
+  // function and a sibling cache rather than a parameterised one, and why this
+  // test documents the collision instead of pretending it away.
+  assert.equal(
+    cellIndex(GRID_ROW_BASE, GRID_COL_BASE),
+    0,
+    'the coarse origin is index 0',
+  );
+  assert.equal(
+    cellIndexFine(GRID_ROW_BASE_FINE, GRID_COL_BASE_FINE),
+    0,
+    'and so is the fine origin',
+  );
+
+  // The collision is real: one stored index, two completely different cells.
+  // Index 1 is the cell immediately east of the origin in each grid, and those
+  // are 25 fine cells apart in longitude.
+  const coarseIJ = (index) => ({
+    i: Math.floor(index / GRID_COLUMNS) + GRID_ROW_BASE,
+    j: (index % GRID_COLUMNS) + GRID_COL_BASE,
+  });
+  const fineIJ = cellIJFine(1);
+  const coarseIJ1 = coarseIJ(1);
+  assert.equal(coarseIJ1.j - GRID_COL_BASE, 1, 'coarse: one 0.25-degree column');
+  assert.equal(fineIJ.j - GRID_COL_BASE_FINE, 1, 'fine: one 0.01-degree column');
+  assert.equal(
+    (coarseIJ1.j - GRID_COL_BASE) * CELL_DEG,
+    0.25,
+    'so the same index means a different longitude in each grid',
+  );
+  assert.equal(
+    (fineIJ.j - GRID_COL_BASE_FINE) * CELL_DEG_FINE,
+    0.01,
+    '25x apart — decoding with the wrong grid misplaces hail without error',
+  );
+});
+
+test('the fine retain floor is a severity threshold, not a round number', () => {
+  // 19 mm is three-quarters of an inch: the NWS severe threshold and the lowest
+  // band the category draws. It replaces 10 mm only for the FINE field, and the
+  // measured trade is why: 245 MB -> 28 MB across the window, and 3,065 -> 979
+  // mean rings per day.
+  assert.equal(HAIL_RETAIN_MM_FINE, 19);
+  assert.ok(
+    HAIL_RETAIN_MM_FINE > HAIL_RETAIN_MM,
+    'the fine floor is higher than the coarse one',
+  );
+  // It must not have changed the coarse floor, which is a published artifact.
+  assert.equal(HAIL_RETAIN_MM, 10, 'the published per-day floor is untouched');
+});
+
+
+// ===========================================================================
+// The fine family's own contract. GATE A — the coarse artifacts must come out
+// byte-identical — is what these protect, and it is asserted rather than trusted
+// because it was violated once during development.
+// ===========================================================================
+
+test('a fine day shard round-trips exactly and sorts by cell', () => {
+  const cells = [
+    { i: 5599, j: -6001, maxMm: 127.4 },
+    { i: 2100, j: -12500, maxMm: 19 },
+    { i: 3962, j: -10488, maxMm: 38.5 },
+  ];
+  const buffer = encodeFineDayRecords('20260601', cells);
+  assert.equal(
+    buffer.length,
+    cells.length * FINE_DAY_RECORD_BYTES,
+    'six bytes per cell — the day index is in the filename, not per record',
+  );
+  const back = decodeFineDayRecords(new Uint8Array(buffer));
+  // Order is by cellIndex, so a consumer walks them geographically.
+  assert.deepEqual(
+    back.map((c) => `${c.i}:${c.j}`),
+    ['2100:-12500', '3962:-10488', '5599:-6001'],
+  );
+  const key = (c) => `${c.i}:${c.j}:${c.maxMm}`;
+  assert.deepEqual(
+    back.map(key).sort(),
+    cells.map(key).sort(),
+    'and every value survives the round trip',
+  );
+});
+
+test('a truncated fine payload is refused, which is what rejects an SPA shell', () => {
+  const buffer = encodeFineDayRecords('20260601', [{ i: 2100, j: -12500, maxMm: 19 }]);
+  assert.throws(
+    () => decodeFineDayRecords(new Uint8Array(buffer.subarray(0, 5))),
+    RangeError,
+    'a length that is not a whole number of records is a refusal, not garbage',
+  );
+  assert.deepEqual(
+    decodeFineDayRecords(new Uint8Array(buffer)).length,
+    1,
+    'while the whole thing decodes',
+  );
+});
+
+test('the fine encoder refuses values it cannot represent', () => {
+  assert.throws(
+    () => encodeFineDayRecords('20260601', [{ i: 2100, j: -12500, maxMm: 9000 }]),
+    RangeError,
+    'millimetres that overflow uint16 at scale 10',
+  );
+  assert.throws(
+    () => encodeFineDayRecords('20260601', [{ i: 999999, j: -12500, maxMm: 19 }]),
+    RangeError,
+    'a cell outside the fine space',
+  );
+});
+
+test('a fine shard filename carries its day, and the round trip agrees', () => {
+  assert.equal(
+    fineDayFileName('20260601'),
+    'storm_radar_hail_fine_2026-06-01.bin.gz',
+  );
+  assert.match(fineDayFileName('20240101'), /_2024-01-01\.bin\.gz$/);
+});
+
+test('the fine manifest records the geometry, the floor, and every day', () => {
+  const days = ['20260601', '20260602'];
+  const meta = fineDayMeta({
+    builtAt: '2026-10-17T00:00:00.000Z',
+    window: { from: '2026-06-01', to: '2026-06-02', days: 2, retentionYears: 3 },
+    unavailableDays: [],
+    days,
+    recordCount: 2,
+    cellCount: 2,
+    bytes: 40,
+  });
+  // The geometry is the part a consumer cannot guess, so it is pinned here and
+  // in the loader test that reads it back.
+  assert.equal(meta.geometry.gridDeg, 0.01);
+  assert.equal(meta.geometry.cellCount, GRID_CELL_COUNT_FINE);
+  assert.equal(meta.geometry.rowBase, 2100);
+  assert.equal(meta.geometry.colBase, -12500);
+  assert.equal(meta.retainMm, 19);
+  assert.equal(meta.dayIndexEpoch, '2021-01-01');
+  assert.equal(meta.encoding.cellIndexBits, 32, 'and the index width is declared');
+  assert.equal(meta.encoding.bytesPerRecord, FINE_DAY_RECORD_BYTES);
+  assert.equal(meta.encoding.dayIndexInFilename, true);
+  assert.deepEqual(meta.days, days, 'every published day is listed');
+  assert.equal(meta.dayCount, 2);
+  assert.equal(meta.recordCount, 2);
 });

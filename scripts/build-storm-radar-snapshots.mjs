@@ -123,6 +123,25 @@ export const PER_DAY_MM_SCALE = 10;
 /** Bytes per per-day record: `u16 cellIndex, u16 dayIndex, u16 maxMm × scale`. */
 export const PER_DAY_RECORD_BYTES = 6;
 
+/**
+ * Bytes per FINE per-day record: `u32 cellIndex, u32 dayIndex, u16 maxMm x scale`.
+ *
+ * The index is 32-bit because {@link GRID_CELL_COUNT_FINE} is 22,750,000 and
+ * `writeUInt16LE` would truncate silently past 65,535. `dayIndex` is 32-bit for
+ * symmetry and headroom: at a day a year it is a `uint16`, and a document that
+ * stays valid as the archive grows is cheaper than one that needs re-encoding.
+ *
+ * 10 bytes per record rather than 4. That is affordable ONLY because the fine
+ * field is per-CALENDAR-DAY, not per-year: within one shard `dayIndex` is
+ * constant, so a production encoder drops it and writes 6 bytes — `u32 index,
+ * u16 mm x scale`. {@link encodeFineDayRecords} is that encoder, and a test
+ * pins the two widths apart.
+ */
+export const PER_DAY_RECORD_BYTES_FINE = 10;
+
+/** The narrower per-shard width, which omits the constant dayIndex. */
+export const FINE_DAY_RECORD_BYTES = 6;
+
 /** Grid step of the emitted snapshot, degrees. Must match the report snapshot. */
 export const CELL_DEG = 0.25;
 
@@ -176,6 +195,75 @@ export const GRID_COLUMNS = Math.round((GRID_MAX_LON - DOMAIN_MIN_LON) / CELL_DE
  * preference — it is the whole reason the encoding is 16-bit rather than 32.
  */
 export const GRID_CELL_COUNT = GRID_ROWS * GRID_COLUMNS;
+
+/*
+ * The fine grid — 1 km, for the per-day swath field.
+ * =======================================================================
+ *
+ * The source is 1 km and always was. `DATA_SOURCES.md` says so, and it is
+ * measurable off any cached day: `ni = 7000`, `nj = 3500`, 24,500,000 points,
+ * first point at 54.995N / -129.995E. The `_00.50` in the product name is not
+ * the grid step.
+ *
+ * The 0.25 degree grid above is therefore OUR downsample, by a factor of 25 in
+ * each axis: every published cell is a 2x2 block of fine cells collapsed to one
+ * value. It was chosen for exactly one reason, stated at `cellIndex`: 0.25
+ * degrees gives 140 x 260 = 36,400 addressable cells, which fits a `uint16`. At
+ * 0.01 degrees the retained domain is 22.75M cells and the index has to widen.
+ *
+ * Measured, on ten days across the three-year window, at the 10 mm floor:
+ *
+ *     day          1km cells   rings   0.25deg cells   ratio
+ *     2025-06-18      147,815   4,348           3,003    32x
+ *     2024-07-15      115,313   4,330           ~2,300   50x
+ *     2026-06-01       68,774   2,649             300    32x
+ *     2023-02-06          606     116               ~20   ~0
+ *
+ * So the detail is real and worth having; what it costs is payload and render
+ * count, and both are budgeted rather than discovered later.
+ */
+
+/** Grid step of the fine per-day swath field, degrees. 1 km at this latitude. */
+export const CELL_DEG_FINE = 0.01;
+
+/** First retained fine grid row, `DOMAIN_MIN_LAT / CELL_DEG_FINE`. */
+export const GRID_ROW_BASE_FINE = Math.round(DOMAIN_MIN_LAT / CELL_DEG_FINE);
+/** First retained fine grid column, `DOMAIN_MIN_LON / CELL_DEG_FINE`. */
+export const GRID_COL_BASE_FINE = Math.round(DOMAIN_MIN_LON / CELL_DEG_FINE);
+/** Rows the retained fine domain can address. */
+export const GRID_ROWS_FINE = Math.round(
+  (DOMAIN_MAX_LAT - DOMAIN_MIN_LAT) / CELL_DEG_FINE,
+);
+/** Columns the retained fine domain can address. */
+export const GRID_COLUMNS_FINE = Math.round(
+  (GRID_MAX_LON - DOMAIN_MIN_LON) / CELL_DEG_FINE,
+);
+/**
+ * Cells the retained fine index space can address.
+ *
+ * 22.75 million, which is why the fine per-day record stores this as a `uint32`
+ * and not a `uint16`: `Buffer.writeUInt16LE` truncates silently past 65,535,
+ * which at this size would alias thousands of cells onto each other and shift
+ * hail across the map with no error at any later stage.
+ */
+export const GRID_CELL_COUNT_FINE = GRID_ROWS_FINE * GRID_COLUMNS_FINE;
+
+/**
+ * The fine per-day floor, millimetres.
+ *
+ * NOT 10, and the measurement is what decided it. At 19 mm — three-quarters of
+ * an inch, which is the NWS severe threshold and the lowest band the category
+ * draws — the payload across the three-year window falls from 245 MB to 28 MB
+ * and the mean ring count from 3,065 to 979. That is 8.8x smaller and 3.1x fewer
+ * shapes, for a floor that is a documented public severity threshold rather
+ * than an arbitrary round number.
+ *
+ * It is a SEPARATE constant from {@link HAIL_RETAIN_MM} for the same reason
+ * that one is separate from `HAIL_CORE_MM`: the coarse per-day field stays at
+ * 10 mm because it is published and committed, and changing its floor would
+ * re-date and re-rank an artifact people already have.
+ */
+export const HAIL_RETAIN_MM_FINE = 19;
 
 /**
  * Day zero for the per-day artifact's `dayIndex`, ISO form. Fixed to the first
@@ -249,6 +337,69 @@ export function cellIndex(i, j) {
 }
 
 /**
+ * The fine grid's flat cell index — the 1 km sibling of {@link cellIndex}.
+ *
+ * Same contract, deliberately: it refuses rather than degrades, because an
+ * out-of-range index aliases onto a real cell's index and quietly misplaces
+ * hail on the map with no error at any later stage. Both axes are bounds-checked
+ * for exactly that reason.
+ *
+ * The return value does NOT fit a `uint16`. {@link GRID_CELL_COUNT_FINE} is
+ * 22,750,000, and `Buffer.writeUInt16LE` truncates silently past 65,535 — so
+ * the fine encoding writes `uint32`. That is the whole reason the fine grid
+ * could not simply reuse the coarse artifact's record layout, and the test
+ * suite asserts the ceiling rather than trusting it.
+ *
+ * @param {number} i Fine grid row, `lat / CELL_DEG_FINE`.
+ * @param {number} j Fine grid column, `lon / CELL_DEG_FINE`.
+ * @returns {number} Index in `[0, GRID_CELL_COUNT_FINE)`.
+ * @throws {RangeError} when the cell falls outside the retained fine space.
+ */
+export function cellIndexFine(i, j) {
+  const row = i - GRID_ROW_BASE_FINE;
+  const col = j - GRID_COL_BASE_FINE;
+  if (
+    row < 0 ||
+    row >= GRID_ROWS_FINE ||
+    col < 0 ||
+    col >= GRID_COLUMNS_FINE
+  ) {
+    throw new RangeError(
+      `fine cell ${i}:${j} falls outside the ${GRID_ROWS_FINE}x${GRID_COLUMNS_FINE} retained fine index space`,
+    );
+  }
+  return row * GRID_COLUMNS_FINE + col;
+}
+
+/**
+ * The inverse of {@link cellIndexFine}: fine `i:j` from a stored index.
+ *
+ * A sibling rather than a parameterised {@link cellIndex} so the coarse path
+ * cannot be handed fine bases by a caller that means the coarse ones — the two
+ * grids differ by 25x in each axis, and mixing them places hail in the wrong
+ * hemisphere rather than throwing.
+ *
+ * @param {number} index
+ * @returns {{i: number, j: number}}
+ * @throws {RangeError} when the index is outside the retained fine space.
+ */
+export function cellIJFine(index) {
+  if (
+    !Number.isInteger(index) ||
+    index < 0 ||
+    index >= GRID_CELL_COUNT_FINE
+  ) {
+    throw new RangeError(
+      `fine index ${index} is outside [0, ${GRID_CELL_COUNT_FINE})`,
+    );
+  }
+  return {
+    i: Math.floor(index / GRID_COLUMNS_FINE) + GRID_ROW_BASE_FINE,
+    j: (index % GRID_COLUMNS_FINE) + GRID_COL_BASE_FINE,
+  };
+}
+
+/**
  * First day of the MRMS archive for this product. A bare run reproduces the
  * bundled snapshot exactly, so the committed artefact is never the product of
  * "whatever window someone happened to pass".
@@ -267,6 +418,18 @@ function parseArgs(argv) {
     from: null,
     to: null,
     days: null,
+    // How many years of 1 km detail to keep. Three by default, from the
+    // operator's retention call: insurance claim windows close at one to two
+    // years, so a decade of fine payload is gigabytes nobody will query.
+    fineYears: 3,
+    // Build ONLY the fine 1 km family, leaving every coarse artifact untouched.
+    // This exists because of a real mistake, not a hypothetical one: a fine-only
+    // rolling window is exactly how you would use this, and without the flag a
+    // three-year run REWRITES the six-year climatology. The combined
+    // storm_radar_hail.geojsonl is truncated to the run window, and the per-year
+    // per-day files change because MAX_CELLS truncation is decided on the
+    // merged set. GATE A caught it; this is the fix.
+    fineOnly: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -276,9 +439,12 @@ function parseArgs(argv) {
     else if (arg === '--from') out.from = argv[++i];
     else if (arg === '--to') out.to = argv[++i];
     else if (arg === '--days') out.days = Number(argv[++i]);
+    else if (arg === '--fine-years') out.fineYears = Number(argv[++i]);
+    else if (arg === '--fine-only') out.fineOnly = true;
   }
   if (!Number.isFinite(out.concurrency) || out.concurrency < 1)
     out.concurrency = 4;
+  if (!Number.isFinite(out.fineYears) || out.fineYears < 1) out.fineYears = 3;
   return out;
 }
 
@@ -340,6 +506,12 @@ export function yearBucket(cellsByYear, ymd) {
  *   passes {@link HAIL_RETAIN_MM} to see the sub-core field. A point below either
  *   floor is discarded before the domain test, which is why the two had to be split:
  *   one constant could not be both the discard floor and the emission rule.
+ * @param {{finePerDay?: Map<string, Map<string, number>>}} [options]
+ *   `finePerDay` is `Map<ymd, Map<'i:j', maxMm>>` at 1 km and the higher
+ *   {@link HAIL_RETAIN_MM_FINE} floor. Keyed by DAY rather than by cell,
+ *   because the fine artifact ships one file per calendar day; keying by cell
+ *   and nesting days inside it is the coarse shape and it does not survive a
+ *   25x finer grid.
  * @param {{perDay?: Map<string, Map<string, number>>}} [options] `perDay` is an
  *   optional second accumulator, `Map<'i:j', Map<ymd, maxMm>>`, that records the
  *   strongest reading in every retained cell on every day it reaches
@@ -353,6 +525,7 @@ export function yearBucket(cellsByYear, ymd) {
 export function ingestMeshGz(gzipped, ymd, cellsByYear, options = {}) {
   const retainMm = options.retainMm ?? HAIL_CORE_MM;
   const perDay = options.perDay ?? null;
+  const finePerDay = options.finePerDay ?? null;
   const { year, bucket: cells } = yearBucket(cellsByYear, ymd);
   const raw = zlib.gunzipSync(gzipped);
   const message = parseGrib2(raw);
@@ -379,6 +552,26 @@ export function ingestMeshGz(gzipped, ymd, cellsByYear, options = {}) {
         }
         const seen = days.get(ymd);
         if (seen === undefined || mm > seen) days.set(ymd, mm);
+      }
+    }
+    // The FINE accumulator, at the finer grid and the higher floor. Separate
+    // from the coarse one above for the same reason they are separate constants:
+    // the coarse per-day artifact is published and committed, and touching its
+    // floor or its grid would re-rank data people already have.
+    if (finePerDay && mm >= HAIL_RETAIN_MM_FINE) {
+      const fineSpot = indexToLonLat(grid, i);
+      if (inDomain(fineSpot.lat, fineSpot.lon)) {
+        let dayCells = finePerDay.get(ymd);
+        if (!dayCells) {
+          dayCells = new Map();
+          finePerDay.set(ymd, dayCells);
+        }
+        // Keyed by the fine i:j, at 1 km rather than the coarse 0.25 degrees.
+        const fineKey = `${Math.floor(fineSpot.lat / CELL_DEG_FINE)}:${Math.floor(
+          fineSpot.lon / CELL_DEG_FINE,
+        )}`;
+        const seenFine = dayCells.get(fineKey);
+        if (seenFine === undefined || mm > seenFine) dayCells.set(fineKey, mm);
       }
     }
     if (!(mm >= retainMm)) continue;
@@ -860,6 +1053,85 @@ export async function writePerDayBin(file, records) {
 }
 
 /**
+ * Write ONE calendar day's fine shard.
+ *
+ * Atomic for the same reason {@link writePerDayBin} is: a half-written gzip
+ * that decodes to plausible garbage is worse than a missing one, because the
+ * loader keys "absent" on the payload's shape and a truncated one passes that
+ * check.
+ *
+ * @param {string} file destination path
+ * @param {Array<{i: number, j: number, maxMm: number}>} cells one day's cells
+ * @returns {Promise<number>} bytes written
+ */
+export async function writeFineDayBin(file, cells) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  const gz = zlib.gzipSync(encodeFineDayRecords(ymdFromFile(file), cells), {
+    level: 9,
+  });
+  await fs.writeFile(tmp, gz);
+  await fs.rename(tmp, file);
+  return gz.length;
+}
+
+/** `..._2026-06-01.bin.gz` -> `20260601`, for the shard's own day. */
+function ymdFromFile(file) {
+  const match = /_(\d{4})-(\d{2})-(\d{2})\.bin\.gz$/.exec(file);
+  if (!match) throw new Error(`fine shard filename carries no day: ${file}`);
+  return `${match[1]}${match[2]}${match[3]}`;
+}
+
+/** The filename a given day's fine shard is published under. */
+export function fineDayFileName(ymd) {
+  return `storm_radar_hail_fine_${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}.bin.gz`;
+}
+
+/**
+ * The manifest for the fine family.
+ *
+ * This did not exist for the coarse artifacts and that is a real gap the
+ * exploration turned up: 1,019 files regenerated in place on every rebuild with
+ * nothing recording which days SHOULD be there. A day that silently vanished
+ * from a rebuild would be invisible — there is no hash check, no prune script
+ * and no CI job that reads the payload directory. This manifest is what makes
+ * that detectable: a day in `days` with no file beside it is a broken build.
+ *
+ * @param {object} input
+ * @returns {object} the sidecar body
+ */
+export function fineDayMeta(input) {
+  const { builtAt, window: win, unavailableDays = [], days, recordCount, cellCount, bytes } = input;
+  return {
+    builtAt,
+    format: 'fine-per-day',
+    geometry: {
+      gridDeg: CELL_DEG_FINE,
+      rowBase: GRID_ROW_BASE_FINE,
+      colBase: GRID_COL_BASE_FINE,
+      rows: GRID_ROWS_FINE,
+      columns: GRID_COLUMNS_FINE,
+      cellCount: GRID_CELL_COUNT_FINE,
+    },
+    encoding: {
+      bytesPerRecord: FINE_DAY_RECORD_BYTES,
+      cellIndexBits: 32,
+      mmScale: PER_DAY_MM_SCALE,
+      dayIndexInFilename: true,
+    },
+    dayIndexEpoch: DAY_INDEX_EPOCH,
+    retainMm: HAIL_RETAIN_MM_FINE,
+    window: win,
+    unavailableDays,
+    dayCount: days.length,
+    recordCount,
+    cellCount,
+    bytes,
+    days,
+  };
+}
+
+/**
  * `20210629` -> `2021-06-29`, the ISO form the `window` field is written in.
  * @param {string} ymd
  * @returns {string}
@@ -996,6 +1268,85 @@ export function perDayMeta(input) {
  * @returns {Map<number, Array<{cellIndex: number, dayIndex: number, maxMm: number}>>}
  *   Ascending by year.
  */
+/**
+ * Encode ONE calendar day of the fine grid as a self-contained shard.
+ *
+ * Per calendar day, not per year, and that is the decision everything else
+ * follows from. The loader is asked for a date; a per-year shard means a
+ * national storm season in memory to draw one neighbourhood's worth of detail,
+ * and 1,019 per-day files means only the day on screen ever crosses the wire.
+ * The committed design was per-year (`perDayRecordsByYear`), deliberately, at
+ * 0.25 degrees; the fine grid inverts that because the per-year blob is ~85 MB
+ * and the per-day one is ~28 KB.
+ *
+ * `dayIndex` is NOT stored. It is constant within a shard and lives in the
+ * filename, so carrying it per record would spend 4 bytes saying nothing. That
+ * is what {@link FINE_DAY_RECORD_BYTES} accounts for, and why a 10-byte
+ * general record and a 6-byte day record both exist: the general one is for
+ * tests and for any future multi-day container, the day one for production.
+ *
+ * Records are sorted by `cellIndex`, which within one day is also sorted by
+ * position, so a consumer walks them in geographic order.
+ *
+ * @param {number} ymd `YYYYMMDD`
+ * @param {Array<{i: number, j: number, maxMm: number}>} cells
+ * @returns {Buffer}
+ * @throws {RangeError} when a value does not fit its field, rather than
+ *   truncating — a wrapped index misplaces hail with no error downstream.
+ */
+export function encodeFineDayRecords(ymd, cells) {
+  const ordered = [...(cells ?? [])].sort(
+    (a, b) =>
+      cellIndexFine(a.i, a.j) - cellIndexFine(b.i, b.j),
+  );
+  const buffer = Buffer.alloc(ordered.length * FINE_DAY_RECORD_BYTES);
+  let previousDay = dayIndex(String(ymd));
+  if (!Number.isInteger(previousDay) || previousDay < 0) {
+    throw new RangeError(`fine day ${ymd} does not resolve to a day index`);
+  }
+  ordered.forEach((cell, n) => {
+    const index = cellIndexFine(cell.i, cell.j);
+    const scaled = Math.round(cell.maxMm * PER_DAY_MM_SCALE);
+    if (!Number.isInteger(index) || index < 0 || index > 0xffffffff) {
+      throw new RangeError(
+        `fine cellIndex ${index} does not fit a uint32; the index space is wrong`,
+      );
+    }
+    if (!Number.isInteger(scaled) || scaled < 0 || scaled > 0xffff) {
+      throw new RangeError(
+        `fine maxMm x scale ${scaled} does not fit a uint16; raise PER_DAY_MM_SCALE's inverse or the threshold`,
+      );
+    }
+    const at = n * FINE_DAY_RECORD_BYTES;
+    buffer.writeUInt32LE(index, at);
+    buffer.writeUInt16LE(scaled, at + 4);
+  });
+  return buffer;
+}
+
+/**
+ * The inverse of {@link encodeFineDayRecords}.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {Array<{i: number, j: number, maxMm: number}>}
+ * @throws {RangeError} when the length is not a whole number of records — which
+ *   is also what rejects an SPA shell served with a 200.
+ */
+export function decodeFineDayRecords(bytes) {
+  if (!bytes?.length || bytes.length % FINE_DAY_RECORD_BYTES !== 0) {
+    throw new RangeError(
+      `fine day payload is ${bytes?.length ?? 0} bytes, not a multiple of ${FINE_DAY_RECORD_BYTES}`,
+    );
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const out = [];
+  for (let at = 0; at < bytes.length; at += FINE_DAY_RECORD_BYTES) {
+    const { i, j } = cellIJFine(view.getUint32(at, true));
+    out.push({ i, j, maxMm: view.getUint16(at + 4, true) / PER_DAY_MM_SCALE });
+  }
+  return out;
+}
+
 export function perDayRecordsByYear(records) {
   const byYear = new Map();
   for (const record of records ?? []) {
@@ -1055,6 +1406,12 @@ async function main() {
   // note on `ingestMeshGz`. O(records) — one entry per (cell, day) that reached
   // the retain floor — and never a decoded Float32Array, which is 98 MB a day.
   const perDay = new Map();
+  // The fine field's accumulator, keyed by CALENDAR DAY: `Map<ymd, Map<'i:j',
+  // maxMm>>`. Not the coarse shape (`Map<'i:j', Map<ymd, mm>>`) because that one
+  // does not survive a 25x finer grid — it would mean a Map with a million keys
+  // each holding a Map. Keying by day gives one Map per shard, and the shard is
+  // the unit that is written, shipped and fetched.
+  const finePerDay = new Map();
   /** Distinct cells across all year buckets — a cell active in two years counts twice. */
   const ingestedCells = () => {
     let total = 0;
@@ -1071,7 +1428,7 @@ async function main() {
   const pointsByYear = new Map();
 
   await pooled(days, args.concurrency, async (ymd) => {
-    const result = await ingestDay(ymd, cellsByYear, { perDay });
+    const result = await ingestDay(ymd, cellsByYear, { perDay, finePerDay });
     done += 1;
     const year = Number(ymd.slice(0, 4));
     daysByYear.set(year, (daysByYear.get(year) ?? 0) + 1);
@@ -1112,6 +1469,17 @@ async function main() {
   );
   const publishedByYear = restrictYearsToKeys(byYear, keptKeys);
 
+  // GATE A guard, opened here rather than at the sidecars: the combined file is
+  // the first coarse artifact written, so a guard that started later would let
+  // `--fine-only` truncate the climatology and still report success. That is
+  // exactly what happened the first time this flag was added — the run printed
+  // the fine line and had already overwritten storm_radar_hail.geojsonl.
+  if (args.fineOnly) {
+    step(
+      'Skipping every coarse artifact (--fine-only): the 0.25-degree climatology ' +
+        'is untouched by this run.',
+    );
+  } else {
   const outFile = path.join(args.out, 'storm_radar_hail.geojsonl');
   const bytes = await writeGeoJsonl(outFile, kept);
   step(
@@ -1214,9 +1582,77 @@ async function main() {
       `Wrote storm_radar_hail_perday_${year}.bin.gz — ${list.length.toLocaleString()} cell-days ≥${HAIL_RETAIN_MM}mm, ${(perDayBytes / 1e6).toFixed(2)} MB`,
     );
   }
-  step(
-    `${records.length.toLocaleString()} per-day cell-days across ${perDayByYear.size} year files`,
+
+  // The FINE field, written last and one file per calendar day.
+  //
+  // Two things happen here that do not happen for the coarse artifacts, both
+  // because there are ~1,000 of these rather than six:
+  //
+  //  - ROLL-OFF. The window is finite by design. Insurance claim windows close
+  //    at one to two years, so detail older than `--fine-years` (default 3) is
+  //    not worth shipping and is deleted rather than left to accumulate. There
+  //    is no prune script in this repo, so without this the payload directory
+  //    would grow forever and nothing would ever remove a shard.
+  //  - A MANIFEST. `storm-radar-fine-sources.json` lists every day that should
+  //    have a shard. Nothing else in the repo can detect a missing or truncated
+  //    payload: there is no hash check, no drift gate, and CI does not read this
+  //    directory. The manifest is what makes a broken build visible.
+  const fineOutDir = args.out;
+  const emittedFine = [];
+  let fineRecords = 0;
+  let fineBytes = 0;
+  const fineCells = new Set();
+  for (const [ymd, cellsByIJ] of [...finePerDay.entries()].sort()) {
+    const file = path.join(fineOutDir, fineDayFileName(ymd));
+    const cells = [...cellsByIJ.entries()].map(([key, mm]) => {
+      const [i, j] = key.split(':').map(Number);
+      return { i, j, maxMm: mm };
+    });
+    const bytes = await writeFineDayBin(file, cells);
+    emittedFine.push(ymd);
+    fineRecords += cells.length;
+    fineBytes += bytes;
+    for (const cell of cells) fineCells.add(cellIndexFine(cell.i, cell.j));
+  }
+
+  // Roll off shards older than the retention window, so a rolling rebuild does
+  // not accumulate every day it has ever seen.
+  const fineYears = Number(args.fineYears || 3);
+  const cutoffYear = Number(days[days.length - 1]?.slice(0, 4) || 0) - fineYears + 1;
+  let pruned = 0;
+  for (const name of await fs.readdir(fineOutDir).catch(() => [])) {
+    const match = /^storm_radar_hail_fine_(\d{4})-\d{2}-\d{2}\.bin\.gz$/.exec(name);
+    if (!match) continue;
+    if (Number(match[1]) >= cutoffYear) continue;
+    await fs.rm(path.join(fineOutDir, name), { force: true });
+    pruned += 1;
+  }
+
+  await writeMetaJson(
+    path.join(fineOutDir, 'storm-radar-fine-sources.json'),
+    fineDayMeta({
+      builtAt,
+      window: {
+        from: days.length ? isoDay(days[0]) : null,
+        to: days.length ? isoDay(days[days.length - 1]) : null,
+        days: days.length,
+        retentionYears: fineYears,
+        cutoffYear,
+      },
+      unavailableDays: failures,
+      days: emittedFine,
+      recordCount: fineRecords,
+      cellCount: fineCells.size,
+      bytes: fineBytes,
+    }),
   );
+  step(
+    `Wrote ${emittedFine.length.toLocaleString()} fine 1km day shards — ` +
+      `${fineRecords.toLocaleString()} cells ≥${HAIL_RETAIN_MM_FINE}mm, ` +
+      `${(fineBytes / 1e6).toFixed(1)} MB total` +
+      (pruned ? `, pruned ${pruned} outside ${fineYears}y` : ''),
+  );
+  } // end the fine-only guard opened above the coarse sidecars
 
   step(`Done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 }
