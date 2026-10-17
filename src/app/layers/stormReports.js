@@ -1,5 +1,8 @@
 import { createStormReportsLayer } from '../../layers/stormReports/index.js';
-import { loadRadarDaysForYear } from '../../data/stormReports.js';
+import {
+  loadFineRadarDay,
+  loadRadarDaysForYear,
+} from '../../data/stormReports.js';
 import {
   eventsFor,
   getSnapshot,
@@ -35,6 +38,12 @@ export function createApplicationStormReports({ source } = {}) {
       // rather than a 2021-2026 lifetime aggregate. The layer asks for one year
       // at a time and selects the day's cells out of it.
       daysFor: (year, signal) => loadRadarDaysForYear(year, signal),
+      // The fine 1 km field, one calendar day at a time. A SIBLING of
+      // `daysFor`, not a mode of it: the two index spaces are 25x apart in each
+      // axis and index 0 means different places in each, so sharing a cache or a
+      // decoder between them would return plausible numbers for the wrong cells.
+      // The layer only asks for this when the window is a single day.
+      dayFor: (date, signal) => loadFineRadarDay(date, signal),
     },
   });
 }

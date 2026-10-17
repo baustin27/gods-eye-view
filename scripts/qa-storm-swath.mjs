@@ -366,6 +366,15 @@ async function collectSwaths(page) {
     const radarItems = found.filter((f) =>
       String(f.key).startsWith('storm-swath:radar:'),
     );
+    // The SMALLEST drawn radar polygon, in degrees. Read here because
+    // `bounds` never leaves the page: it is the one measurement that separates
+    // a 1km field from a 25-mile one drawn from identical-looking washes.
+    const radarSpans = radarItems
+      .filter((f) => f.bounds)
+      .map((f) =>
+        Math.max(f.bounds.north - f.bounds.south, f.bounds.east - f.bounds.west),
+      );
+    const finestRadarSpanDeg = radarSpans.length ? Math.min(...radarSpans) : null;
 
     /**
      * The DENSEST cluster of drawn cells, not the bounding box.
@@ -451,6 +460,7 @@ async function collectSwaths(page) {
       total: found.length,
       extent,
       radarExtent,
+      finestRadarSpanDeg,
       focus,
       byKind,
       keys: found.map((f) => f.key).filter(Boolean).slice(0, 400),
@@ -908,6 +918,20 @@ async function diffMetrics(nameA, nameB) {
 const page = await browser.newPage();
 await page.setViewport({ width: 1280, height: 900 });
 const consoleErrors = [];
+// Which payload the window actually FETCHED. The single-day path prefers the
+// fine 1 km shard over the coarse year, and the only honest way to know it did
+// is to watch the network: the drawn geometry looks the same either way at map
+// scale, and the coarse path is a silent, plausible fallback. A green run that
+// quietly rendered the 25-mile field would otherwise be indistinguishable from
+// a correct one.
+const payloadRequests = { fine: [], coarse: [], reported: 0 };
+page.on('request', (request) => {
+  const url = request.url();
+  if (/storm_radar_hail_fine_/.test(url)) payloadRequests.fine.push(url.split('/').pop());
+  else if (/storm_radar_hail_perday_/.test(url))
+    payloadRequests.coarse.push(url.split('/').pop());
+  else if (/storm_reports_\d{4}\.json/.test(url)) payloadRequests.reported += 1;
+});
 page.on('console', (message) => {
   if (message.type() === 'error') consoleErrors.push(redact(message.text()));
 });
@@ -988,6 +1012,38 @@ try {
 
   const swaths = await collectSwaths(page);
   report.swaths = swaths;
+  report.payloadRequests = payloadRequests;
+  // Not a failure when no fine payload is shipped: the keyless panel build
+  // deliberately omits it, and a missing 1,019-shard payload there is correct.
+  // It IS a failure when the payload IS served and the single-day window still
+  // did not ask for it, because that means the fine path is not wired.
+  if (payloadRequests.fine.length) {
+    check(
+      'a single-day window fetches the fine 1km day, not only the coarse year',
+      true,
+      `${payloadRequests.fine.length} fine shard(s): ${payloadRequests.fine
+        .slice(0, 3)
+        .join(', ')}${payloadRequests.fine.length > 3 ? ', ...' : ''}`,
+    );
+  } else {
+    note(
+      `fine payload not requested (coarse ${payloadRequests.coarse.length} shard(s) fetched) — ` +
+        'the single-day fine path did not run, or this build ships no fine payload',
+    );
+  }
+  // The other half of the same claim: a fine shard FETCHED is not a fine field
+  // DRAWN. The renderer multiplies ring indices by the grid step, so a fine
+  // payload drawn with the coarse step is 25x too large and still looks like a
+  // plausible storm. This reads the drawn geometry instead of the fetch.
+  if (payloadRequests.fine.length) {
+    const finest = swaths.finestRadarSpanDeg;
+    check(
+      'the fine field is DRAWN at 1km, not drawn at the coarse 25x step',
+      finest !== null && finest <= 0.011,
+      `smallest radar polygon spans ${finest === null ? 'n/a' : finest.toFixed(4)}deg ` +
+        `(0.01 = one cell, 0.25 = the coarse step)`,
+    );
+  }
   check(
     'swath entities are present and discoverable',
     swaths.total > 0,
