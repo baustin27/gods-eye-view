@@ -15,7 +15,7 @@ a day on instruments that lie.**
 
 ---
 
-## 0. Read this first — three things that outrank the open question in §4
+## 0. Read this first — three things that outranked the open question in §4
 
 **Both swath toggles default to `false`** (`src/layers/stormReports/index.js:421-422`).
 A freshly loaded scene, and any HMR reload of the layer file, therefore draws
@@ -45,21 +45,25 @@ sets a ceiling below the target and is now superseded. See the plan's Phase F.
 ## 1. The short version
 
 Phases A–E are built, merged, committed and green. The per-day radar field is
-built, shipped, loaded, normalised, cross-referenced, summarised in the panel,
-and rendered into the scene as rectangles.
+built, shipped, loaded, normalised, cross-referenced and summarised in the
+panel. **Phase F is now built too**, and both open items from this handoff are
+closed.
 
-**One thing is unverified: whether the swaths are visible, and at what quality.**
-The entities are provably in the scene. The operator reports seeing only the
-pins. Three candidate causes remain — the toggles were off, the wash is buried,
-or the wash is too faint — and §4 now gives a protocol that separates them
-without asking a human. Start at **§0**.
+**The open question is answered, and the answer was not the expected one.** The
+wash was never invisible and never buried: it covered 64% of the frame and
+measured ΔE 21 — plainly visible. It was the wrong *shape*, drawn as one
+translucent rectangle per 0.25° cell at a flat alpha, which double-blends into
+seams and carries no ranking. Phase F draws contiguous banded polygons with
+hard edges and band-ramped alpha: **ΔE 21 → 52**, entities 115 → 72. Full
+figures and the reasoning reversal in **§4**.
 
-One thing is **known broken** and approved for fixing: production builds ship no
-storm `.gz` payloads at all (§5).
+**The production `.gz` gap is fixed.** A build now ships 24 payloads, every one
+byte-identical to source, 14,721,326 bytes (§5).
 
-One thing is **newly scoped**: the swaths are drawn as one translucent rectangle
-per 0.25° cell at a flat alpha. Even fully visible, that does not read like the
-category. That is Phase F of the plan.
+What remains open is honest and small: whether `polygon.outline` actually
+strokes at a defined height (§4), and whether the wash holds up under
+photorealistic tiles, which this machine cannot test — it has no `.env`, so it
+boots keyless.
 
 ---
 
@@ -78,6 +82,8 @@ Everything below was measured in the running app through
 | RADAR swaths exist in the scene | `getById('storm-swath:radar:177:-316')` resolves; 100 cells for 2026-10-13 |
 | Materials are right | `ColorMaterialProperty`, `rgba(200,30,30,0.34)` |
 | The rebuild is deterministic and non-destructive | Two independent full rebuilds: the 7 published artifacts byte-identical, the per-day payload byte-identical. Σ`dy` = 253,016 |
+| **The wash is legible and shaped** | `npm run qa:storm-swath`: mean colour ΔE **51.96** (max 110.37), footprint 357,818 px = 75.76% of frame, repeatable to the pixel on a second toggle cycle. Was ΔE 21.18 / 64.25% as per-cell rectangles |
+| **A production build ships the data** | `npm run build` → 24 `.gz` payloads in `dist/assets/local_data/storm/`, every one byte-identical to source by `cmp`, 14,721,326 bytes |
 
 ---
 
@@ -103,94 +109,84 @@ gzip, sorted by `(dayIndex, cellIndex)`, 6-byte little-endian records:
 
 ---
 
-## 4. The open question: is the wash visible, and at what quality?
+## 4. RESOLVED: it was never buried — it was the wrong shape
 
-**This section was rewritten.** The original asked one binary question — *is the
-wash invisible or merely faint?* — and said only the operator could answer it.
-That framing was wrong in three ways, all now fixed below: it ignored the
-toggles' default state (§0), it had an in-repo control it never consulted, and
-its "faint" branch capped the work below the actual goal.
+**This section answered the open question. It did not go the way it was
+written to go, so read the correction before the history.**
 
-### The state that produced the report
+The question was *is the wash invisible, or merely faint?*, with depth
+occlusion under photorealistic tiles as the leading hypothesis and "if it is
+faint, the fix is contrast and nothing more structural" as the fallback.
+`npm run qa:storm-swath` (Phase 1's harness) answered it by measurement
+instead of opinion. Camera 23.7 km over one known-drawn cell at 34.125 N,
+100.875 W, on the keyless `esri-imagery` ground:
 
-Camera 40 km over west-central Oklahoma (34.4 N, 100.3 W), date **2026-10-13**,
-HAIL, both toggles on. 15 REPORTED rectangles and the RADAR rectangles all
-present via `getById`. Operator sees **dots only**.
+| | Before | After Phase F |
+|---|---|---|
+| wash footprint | 303,480 px (64.25%) | 357,818 px (75.76%) |
+| mean colour ΔE | **21.18** | **51.96** |
+| max colour ΔE | 43.61 | 110.37 |
+| entities drawn | 115 per-cell rectangles | 72 rings |
+| repeatability | 303,478 px on a second cycle | 357,818 px, exact |
 
-### The three candidate causes, in the order you must eliminate them
+Three things follow, and none of them is "raise the contrast":
 
-1. **The toggles were off.** `_showReportedSwath` and `_showRadarSwath` both
-   initialise `false` (`index.js:421-422`). Prove they are on before anything
-   else. If they were off, there is no bug and every hypothesis below is moot.
-2. **The wash is buried.** `addSwathCell` (`src/layers/stormReports/index.js:1224`)
-   creates the rectangle with `height: 0`, the **ellipsoid surface**, while this
-   scene's ground may be Google Photorealistic 3D Tiles at real elevations —
-   tiled geometry is an ordinary depth-tested primitive, so a cell at sea level
-   renders *underneath* the terrain. It builds, it costs the vertex budget, and
-   nothing appears.
-3. **The wash is too faint.** A 34%-alpha band over a busy photorealistic
-   basemap at 40 km may just be hard to see. And even when it is seen, a grid of
-   independent translucent squares is not a HailTrace swath — that is Phase F,
-   and it is not a "contrast" problem.
+1. **Occlusion is dead.** The old rectangles covered two thirds of the frame.
+   Nothing was buried. The `height: 0` ellipsoid surface was not under
+   anything on this ground, and §4's own caveat — that the hypothesis was never
+   ranked against the toggles being off — turned out to be the real lesson.
+2. **Faintness was never the problem either.** ΔE 21 is a colour difference
+   plainly visible to the eye; the screenshot showed an obvious green tint.
+3. **The wash was the wrong SHAPE.** One flat translucent rectangle per
+   0.25° cell at a uniform alpha. Neighbouring rectangles double-blend along
+   every shared edge, which draws a lattice of darker seams over the storm, and
+   a uniform alpha means a fringe cell looks exactly as strong as a core. It
+   read as a green box, not a swath. Phase F fixed it by drawing contiguous
+   banded polygons: ΔE 21 → 52, a 2.45× improvement, and the seams are gone by
+   construction.
 
-### The protocol, in order. Each step is falsifiable and answers one question.
+### The reversal worth reading twice
 
-**Step 1 — are they on?** Read the chip states, then `getById` a known id from
-each of the two sets. Non-empty on both ⇒ cause 1 is eliminated.
+Phase F's polygons use a **defined height, not `CLAMP_TO_GROUND`** — against
+the advice §4 gave an hour earlier. Both measurements were right and they
+contradict the usual reading of each other:
 
-**Step 2 — is it buried, or is it faint?** Lift one swath rectangle far above
-any terrain, in-page, without editing code:
+- The `height: 0` rectangles were never buried (ΔE 21, 64% of frame), so
+  there was nothing to fix by clamping.
+- Clamping **72 polygons** killed the renderer process outright, because each
+  ground-classified shape carries a shadow volume spanning the global
+  approximate terrain range. The plan's vertex objection was real — it was
+  just attached to the wrong shape, and to rectangles rather than polygons.
 
-```js
-// pick any reported swath id from Step 1, then:
-viewer.entities.getById(id).rectangle.height = 200000
-```
+So: polygons for the shape, a defined height for the cost. On this scene's
+keyless globe the ground *is* the ellipsoid, which is the surface `height: 0`
+already sat on.
 
-If the wash **appears**, it was buried (cause 2). If it **still does not**, it was
-faintness or off-screen (cause 3). One eval, binary answer, no human judgment.
+`polygon.outline` is set and asserted, but whether it strokes at a defined
+height is **unverified** — Cesium accepts the property silently either way, and
+the harness reports the wash footprint regardless. Measured, not assumed, as
+promised. If a future ground regime really does bury these, the first thing to
+change is `addSwathRingSet`'s height, and the evidence will be in
+`qa:storm-swath`.
 
-**Step 3 — which ground was under the camera?** The occlusion argument blames
-Photorealistic 3D Tiles, but the repro may never have been in that regime. There
-is **no `.env` in this repository** — only `.env.example` — so
-`loadPhotorealisticTileset` falls through to route `'osm'`, sets
-`globe.show = true`, and initialises the stack to `'esri-imagery'`
-(`src/app/scene.js:82-99`, `src/maps/google3d.js:12-14`). **The keyless globe is
-a control**: if the wash is plainly visible on it and buried on tiles, occlusion
-is proven. If it is faint on *both*, the diagnosis is contrast and Phase F.
+### What is still true about occlusion, for whoever needs it
 
-`scene.globe.depthTestAgainstTerrain` is `false`, but that is the **Cesium
-default** — nothing in `src/` ever sets it. It covers the ellipsoid's own
-terrain, **not** 3D tiles.
-
-### If it is occlusion, the options, honestly
-
-1. **`heightReference: CLAMP_TO_GROUND` on a polygon.** The recipe already
-   renders in this scene — `renderOutline` (`index.js:1386-1392`) is a clamped,
-   outlined polygon in this same data source, and `hailwind/index.js:611` clamps
-   tens of thousands of cell rectangles. This is the house pattern, and it is
-   what Phase F uses regardless of the diagnosis. Caveat: `polygon.outline`
-   under photorealistic tiles is the one Cesium behaviour not to assert from
-   memory — **measure it** with the Phase 1 harness before relying on the edge.
-2. **Lift per cell above local terrain** — needs a terrain height source, and
-   §6 records that reading terrain through this API has been awkward.
-3. **Move the wash out of Cesium geometry** into the layer's existing
-   `overlayHost`, which already carries labels and storm cards. Always on top by
-   construction, no depth fight. Bigger change; loses the "a place on the
-   ground" quality that makes a swath read as geography.
-
-Note this overrides an explicit instruction in the plan (§6 D2: "**`height: 0` +
-`granularity`, NOT `CLAMP_TO_GROUND`**"). That instruction was written from a
-Denver vertex measurement on the **isolation** layer, in the same breath as
-"render on the hailwind cell-rectangle pattern" — and haildwind, the layer it
-told you to copy, **uses `CLAMP_TO_GROUND`**. The instruction contradicts its
-own precedent. The reversal is recorded here and in the plan's §6 D2, so the
-next person who reads the plan and not the history does not revert it.
+`scene.globe.depthTestAgainstTerrain` is `false` — the **Cesium default**;
+nothing in `src/` sets it. It covers the ellipsoid's own terrain, not 3D tiles.
+`renderOutline` (`index.js:1509`), `hailwind/index.js:611` and
+`perimeters/index.js:316` all clamp in this scene without trouble, so clamping
+is not forbidden here — it is simply expensive at this entity count.
 
 ---
 
-## 5. Known broken: production builds ship no storm data
+## 5. FIXED: production builds shipped no storm data
 
-Approved for fixing, unrelated to the swaths.
+**Status: done** (`build/storm-assets.js`, verified on a real `npm run build`).
+24 payloads copied, every one byte-identical to source by `cmp`, 14,721,326
+bytes. `find dist -name '*.gz'` went from **0** to 24. The section is kept
+because the *reason* it was invisible for so long is worth not rediscovering.
+
+Unrelated to the swaths, and the reason nobody saw it:
 
 The loaders build their base by string surgery on `import.meta.url`
 (`src/data/stormReports.js:40` — the `BASE` const; the comment block above it
@@ -208,7 +204,7 @@ Under the Pinokio launcher this works: it runs Vite's **dev** server
 straight from source. Confirmed live — 200, `Content-Encoding: gzip`, 712,667
 bytes, gzip magic `1f 8b`.
 
-**Fix:** a Vite plugin, `build/storm-assets.js`, registered in the `plugins`
+**Fix (landed):** a Vite plugin, `build/storm-assets.js`, registered in the `plugins`
 array of `createBrowserViteConfig` (`build/vite.js:51` is the export;
 `:62` is the array) so it covers both the main build and
 the panel build — `panelBuildConfig` spreads the same config, keeping
@@ -258,13 +254,21 @@ Every one of these cost real time. All observed in this build, through
 
 | Trap | What happens | What to do instead |
 |---|---|---|
-| `entity.id` | **`undefined` on every real Cesium entity**, pins included. Any classification by id silently reports everything as one type. This produced a false "zero swaths" finding that nearly caused a "fix" to working code. | `entities.getById(id)` — the only id access I have found reliable |
-| `EntityCollection.values()` | Not a function. `.length` is `undefined` too. | `getById()`, or the layer's own `getStats()` / `getComparison()` |
+| `entity.id` | **CORRECTION — this entry was wrong.** `entity.id` reads back fine: all 136 ids on the storm data source are readable strings. The real trap is one level up: **`viewer.entities` is EMPTY**, because layers own their own data sources. A probe of the default collection finds nothing and concludes "the swaths never render" — which is the false finding that nearly caused a "fix" to working code. | Walk `viewer.dataSources[i].entities`, or use the PropertyBag the renderer stamps: `{swath: true, key: id}` (`addSwathCell`/`addSwathRingSet`) |
+| `EntityCollection.values` | It is an **array getter**, not a method — so `values()` yields nothing. But it is *not* uniterable. Guarding on `typeof values !== 'function'` skips every collection and reports "0 entities" while they are full; `qa-storm-swath.mjs` made exactly that mistake and read zero. | `for (const e of collection.values)` — no call parens. `.length` on it is fine. |
 | `entities._entities` | Exists, but iterating it yields items whose `.id` is `undefined` — it is not what it looks like | `getById()` |
 | `camera.positionCartographic` | `.latitude` / `.longitude` come back in **radians**, not degrees. 0.6, −1.75 is Oklahoma, not the Gulf of Guinea. | Multiply by 180/π, or trust `gev-control state`, which reports degrees |
 | `globe.getHeight({lat, lon})` | Returns `undefined` for a plain object, even with `tilesLoaded: true` | Needs a real `Cartographic`; no route to one was found |
 | Vite HMR | **Every edit to the layer file reloads the module and resets both swath toggles to off.** This is the most likely reason the operator saw an empty map. | After any edit, re-stage the toggles and the date before looking |
 | `RectangleGraphics` options | Silently ignores anything not in its documented list. `disableDepthTestDistance` compiles, runs, does nothing. | A test asserting the property is the cheapest guard |
+| `ellipsoid.cartesianToCartographic` | Returns **radians**, like every Cesium coordinate accessor. Read raw it aimed a camera at 0.6 N, 1.76 W — the Gulf of Guinea — and produced a clean "the swaths are not drawn" finding caused entirely by units. | Multiply by 180/π. **Assert the aim point is on land** before believing a 0px result |
+| `dataManager.layers.get(id)` | Returns a lifecycle **record**, not the layer. `setHazard` is undefined on it. | `record.module` — the module with the layer's API |
+| `fly_to_location` | Takes `rangeM`. Iterating `adjust_camera_zoom` to approximate it instead walks the camera to a **negative height**, inside the ellipsoid. | Pass `rangeM`, then *verify* by reading `camera.positionCartographic.height` back |
+| The render governor | `requestRender()` does not guarantee a frame. Two screenshots of two different states come back **identical** while the live screen plainly differs — which reads as "the swaths are not drawn". | Call `scene.render()` directly before every capture |
+| The live HUD | The instrument panel re-renders every frame (REC clock, DOLL, ALT, GSD). Comparing whole-frame captures reads **80–320 px of telemetry churn** and mistakes it for instability or for a wash. | Diff a central window only; the harness masks an 18% margin |
+| Imagery still streaming | Two captures taken mid-load differ for reasons unrelated to the swaths. | Wait on `globe.tilesLoaded` before capturing (timeout-guarded) |
+| A bounding box is not a storm | The day's radar field spans the whole ingest domain (21.75–52.75 N). Framing its bounding box parks the camera ~900 km up and shrinks the wash to 0.19% of the frame. | Aim at one **known-drawn cell**, or the densest cluster |
+| `polygon.outline` | Accepted silently; whether it strokes at a defined height is unverified here. | Assert the property (free), and read the footprint from `qa:storm-swath` |
 
 And the two that are not traps but rules — the second of which has changed:
 
@@ -293,9 +297,12 @@ And the two that are not traps but rules — the second of which has changed:
 
 ## 7. What is already committed
 
-Twelve commits on `contrib/storm-scope-20261015`, `f54e2c4a..be814a2a`:
+Fifteen commits on `contrib/storm-scope-20261015`, `f54e2c4a..ca89bf2e`:
 
 ```
+ca89bf2e fix: production builds ship no storm data at all
+35dfdf64 feat: draw the swaths as banded polygons, the shape the category draws
+58dad531 qa: measure the swath wash instead of asking whether it is there
 be814a2a feat: per-day radar swaths, and publish the day's unreported cells
 e528643c feat: read the per-day field as bytes, or not at all
 e0b7839e feat: pure swath builders and hail-size nicknames
@@ -335,6 +342,13 @@ regresses:
   layer is visible; `perimeters/index.js:316-322` draws clamped polygons with
   holes. The plan's contrary instruction came from a vertex count measured on
   the **isolation** layer. Do not spend the day re-deriving occlusion.
+- **The swath polygons' defined `height: 0`.** Not an oversight — Phase F
+  measured that `height: 0` rectangles were never buried (ΔE 21, 64% of frame)
+  and that clamping **72 polygons killed the renderer process**, each
+  ground-classified shape carrying a shadow volume over the global terrain
+  range. Polygons for the shape, a defined height for the cost. The full
+  reasoning is in §4 and the note on `addSwathRingSet`; changing it back needs
+  evidence from `qa:storm-swath`, not a preference.
 - **The keyless globe is a supported shipped state, not a degraded one.** No
   `.env` exists in the repo; `google3d.js:12-14` falls through to `'osm'` and
   `scene.js:82-99` initialises `esri-imagery` with `globe.show = true`. The QA
@@ -343,7 +357,8 @@ regresses:
   question.
 
 If a future reader believes one of these is broken, the burden of proof is on
-them, and §6 explains how the last three such claims arose. For the last two,
+them, and §6 explains how the last three such claims arose — §11 lists six of
+my own, including two that were in a straight-faced table. For the last three,
 the burden includes **running `qa:storm-swath`** and quoting its output, not
 re-deriving it by reading.
 
@@ -373,31 +388,46 @@ so the toggle-before-data-arrives ordering is untested.
 
 ---
 
-## 10. Suggested order of work
+## 10. What is left, in the order I would do it
 
-**The gate is no longer a person.** Item 1 below replaces the old "ask the
-operator" step, which blocked all progress on a subjective judgement that three
-in-repo controls could have settled.
+Both original items are closed (§4, §5). What remains is short, and none of it
+blocks anything.
 
-1. **Close the question with a measurement.** `npm run qa:storm-swath` — the new
-   harness — runs the §4 protocol end to end (toggles on? → buried or faint?
-   → which ground regime?), writes screenshots and a sampled contrast figure to
-   `qa-shots/storm-swath/`, and prints the diagnosis. No operator time, no
-   code changes. **Its output is the answer to the open question; quote it, do
-   not paraphrase it.**
-2. **Phase F — HailTrace fidelity.** The actual goal. Per-cell translucent
-   rectangles become contiguous banded polygons with hard edges and band-ramped
-   alpha, following the `renderOutline` / `perimeters` precedents. Spec is in
-   the plan's Phase F. Whether or not Step 1 says "buried", this is the work
-   that gets us to the category's standard.
-3. **Independently and in parallel: the `build/storm-assets.js` fix from §5.** It
-   touches no layer code, so it cannot collide with item 2.
-4. **Persist the two toggles** so an HMR reload cannot silently reset them
-   again. That trap has already produced one false finding; a regression test
-   asserting a re-mount preserves both chips belongs with it.
-5. Re-verify: `qa:storm-swath` again with before/after shots, full suite,
-   `format:check`, `check-import-directions`, `check-layer-state-tokens`. Keep
-   the existing pins-on-top assertion (`layerLifecycle.test.mjs:1177-1199`)
-   passing across the polygon swap.
-6. Tick the plan's §9 boxes that are now genuinely satisfied, with figures from
-   the harness output.
+1. **Confirm the wash under photorealistic 3D Tiles.** The one thing this
+   machine cannot do: no `.env`, so it boots keyless on `esri-imagery`, and
+   every measurement above is from that regime. On a keyed machine,
+   `npm run qa:storm-swath` reports which regime it ran in — check
+   `report.regime` before quoting a figure. If the wash vanishes on tiles, the
+   first change is `addSwathRingSet`'s height, and this §4 section is the
+   evidence for why it is a defined one.
+2. **Verify `polygon.outline` actually strokes.** Set and asserted, but Cesium
+   accepts the property silently whether or not it draws, so the assertion only
+   proves it was *set*. If it does not stroke, the hard edge needs a
+   `PolylineGraphics` boundary ring at the same height — the house pattern is
+   `perimeters/index.js:316`.
+3. **Persist the two swath toggles.** Both still initialise `false`
+   (`index.js:421-422`), so an HMR reload still silently empties the map. This
+   is the trap that produced the original false finding, and it is one
+   regression test away from being closed for good.
+4. **Tune the top of the alpha ramp if it reads too heavy.** `SWATH_ALPHA_MAX`
+   is 0.72; at the top band the terrain under the wash is dim. The category is
+   saturated too, so this is a taste call rather than a defect — but it is a
+   single constant and it is the obvious next dial.
+
+## 11. What this session got wrong, for the record
+
+Kept because the whole point of §6 is that instruments lie, and these were all
+mine:
+
+- I ranked occlusion above "the toggles were off", which was the actual
+  explanation for the original report, and it is written in a
+  straight-faced table in §0.
+- I claimed `entity.id` was unusable. It is fine. `viewer.entities` was empty.
+- I used luminance contrast to judge a coloured wash, which called a plainly
+  visible green fill "1.015:1, not legible". The fix is CIE76 ΔE.
+- I asserted `CLAMP_TO_GROUND` was safe on the strength of three in-repo
+  examples, then clamped 72 polygons and killed the renderer.
+- I read `camera.positionCartographic` as degrees in the harness's own aim
+  logic — the exact trap this document lists second — and flew a camera into
+  the Gulf of Guinea, where it correctly reported no swaths.
+- Every one of those produced a confident, clean, wrong number.

@@ -260,7 +260,11 @@ _(agents 5: `src/layers/stormReports/`; agent 6: pure model helpers in
   `hailwind/index.js:589-591`).
 - **Pins stay on top.** That is the HailMaps model.
 
-> **AMENDED — D2's height instruction is superseded. Do not apply it.**
+> **AMENDED TWICE — D2's height instruction is superseded. Do not apply it.**
+>
+> It was superseded once to `CLAMP_TO_GROUND`, then superseded AGAIN by Phase F to
+> a defined `height: 0`, after clamping 72 polygons killed the renderer. Read
+> Phase F, not the amendment below, for the shipped answer.
 >
 > This subsection told the implementer `height: 0` + `granularity`, **NOT**
 > `CLAMP_TO_GROUND`, citing a Denver vertex measurement — taken on the
@@ -292,7 +296,32 @@ _(agents 5: `src/layers/stormReports/`; agent 6: pure model helpers in
 
 **GATE E:** full suite green, format, token checker, import directions.
 
-### Phase F — HailTrace fidelity _(not yet started)_
+### Phase F — HailTrace fidelity _(BUILT — measured, see below)_
+
+**Outcome.** Delivered as banded polygons. Measured before and after on the
+same cell, same camera (`npm run qa:storm-swath`, keyless `esri-imagery`
+ground, 23.7 km over 34.125 N / 100.875 W):
+
+| | Before | After |
+|---|---|---|
+| wash footprint | 303,480 px (64.25%) | 357,818 px (75.76%) |
+| mean colour ΔE | 21.18 | **51.96** |
+| max colour ΔE | 43.61 | 110.37 |
+| entities drawn | 115 per-cell rectangles | 72 rings |
+
+The finding that reframed the whole phase: the wash was **never invisible and
+never buried** — 64% of the frame, ΔE 21, plainly visible. It was the wrong
+shape. Neighbouring translucent rectangles double-blend along shared edges, so
+it drew darker seams over the storm and a uniform alpha left a fringe cell as
+strong as a core. Contiguous polygons remove the seams by construction.
+
+**One reversal, recorded because D2 got it backwards twice.** The polygons use a
+**defined height, not `CLAMP_TO_GROUND`**, superseding D2's instruction and
+contradicting the advice the handoff gave before the measurement. Both
+measurements were right: `height: 0` was never buried, and clamping **72**
+polygons killed the renderer process outright, because each ground-classified
+shape carries a shadow volume over the global terrain range. D2's vertex
+objection was real — attached to the wrong shape.
 
 **Why this phase exists.** Phases A–E made the data correct and drew it. What
 they drew does not read like the category. The reference behaviour, from
@@ -445,15 +474,22 @@ Carried over from the bugs this plan responds to, all of which shipped green:
       files say 12,094 / 3,514 / 37,245) and the combined-file artefact rate
       (10.9% of cells exceed 100 mm, versus the 1.4% quoted, which is 2026-only)
 
-Phase F additions:
+Phase F status:
 
-- [ ] Swaths drawn as contiguous per-band polygons with holes, **not** per-cell
-      rectangles — entity count equals ring count
-- [ ] Alpha ramps by band; a hard edge on every band boundary
-- [ ] `qa:storm-swath` shows the wash in **both** ground regimes (keyless
-      `esri-imagery` and photorealistic tiles), with before/after shots written
-      to `qa-shots/storm-swath/` (gitignored — quote the figures from
-      `report.json`, do not commit the PNGs)
-- [ ] Swath toggles survive an HMR remount, with a regression test
-- [ ] `polygon.outline` behaviour under photorealistic tiles **measured**, not
-      assumed, with the `PolylineGraphics` fallback recorded either way
+- [x] Swaths drawn as contiguous per-band polygons with holes, **not** per-cell
+      rectangles — 115 entities → 72 rings; `layerLifecycle.test.mjs` asserts a
+      run of four adjacent cells is ONE polygon
+- [x] Alpha ramps by band (0.30 → 0.72); a hard edge set on every band boundary
+- [x] `npm run qa:storm-swath` measures the wash and reports mean ΔE; ΔE 21.18 →
+      51.96 on the same cell. Shots and `report.json` land in `qa-shots/storm-swath/`
+      (gitignored — quote the figures, do not commit the PNGs)
+- [x] Production build ships the `.gz` payloads: 24 files, all byte-identical to
+      source, 14,721,326 bytes (`find dist -name '*.gz'` went 0 → 24)
+- [ ] Swath toggles survive an HMR remount, with a regression test — **not done**
+- [ ] `polygon.outline` **rendering** verified, not just the property — **not
+      done.** The property is set and asserted; whether it strokes at a defined
+      height is unverified, and Cesium accepts it silently either way
+- [ ] Wash confirmed under photorealistic 3D Tiles — **not testable on this
+      machine.** There is no `.env`, so it boots keyless on `esri-imagery`. The
+      harness reports which regime it actually ran in (`report.regime`) so a
+      keyed run is distinguishable from a keyless one
