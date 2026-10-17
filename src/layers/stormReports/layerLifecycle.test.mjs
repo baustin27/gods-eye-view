@@ -3,7 +3,8 @@ import test from 'node:test';
 
 import * as Cesium from 'cesium';
 
-import { gridCell } from '../../data/stormCrossReference.js';
+import { gridCell, GRID_DEG } from '../../data/stormCrossReference.js';
+import { GRID_DEG_FINE, gridCellRings, ringsToDegrees } from './model.js';
 import { radarDayIndex } from '../../data/stormDatasets.js';
 import { polygonsContain } from '../../data/adminBoundaries.js';
 import { boxesContain, resolveIsolation } from '../../data/isolation.js';
@@ -2771,4 +2772,170 @@ test('a small result set is not capped and makes no claim', async () => {
     /showing the/,
     'and the panel does not mention a cap that did not apply',
   );
+});
+
+
+// ===========================================================================
+// The fine 1 km render path. The single-day window is the case it exists for.
+// ===========================================================================
+
+test('a single-day window draws the wash from the FINE field, at 1 km', async () => {
+  // The seam: `dayFor` is the optional fine source. It is a SIBLING of `daysFor`
+  // because the two index spaces are 25x apart and index 0 means different
+  // places in each, so a layer without one must behave exactly as before.
+  const day = radarDayIndex('2026-06-01');
+  const asked = [];
+  const radarSource = {
+    daysFor: async () => new Map([[day, new Map([[cellKey(35.11, -97.4), 45]])]]),
+    // Fine cells are 1 km indices, i.e. 25x the coarse ones for the same place.
+    dayFor: async (date) => {
+      asked.push(date);
+      if (date !== '2026-06-01') return { cells: [], count: 0 };
+      // Denver, 2026-06-01, in fine indices: 39.625N / -104.875W at 0.01
+      // degrees per cell. Two cells side by side in longitude, which is the
+      // smallest real thing a swath can be.
+      return {
+        count: 2,
+        cells: [
+          { i: 3962, j: -10488, maxMm: 45 },
+          { i: 3962, j: -10487, maxMm: 45 },
+        ],
+      };
+    },
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(2, { lat: 35.11 })], [], {
+    radarSource,
+    viewer,
+  });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+
+  assert.ok(asked.includes('2026-06-01'), 'the fine source was asked for the day');
+  const swaths = swathEntities(viewer, 'radar');
+  assert.ok(swaths.length >= 1, 'and the wash drew something');
+  // Two ADJACENT fine cells must become ONE polygon. At the coarse grid these
+  // coordinates are 25 cells apart and would be two; the point of the fine field
+  // is that a real neighbourhood collapses into a shape rather than a grid.
+  assert.equal(
+    swaths.length,
+    1,
+    `two adjacent 1km cells are one polygon, not two squares (got ${swaths.length})`,
+  );
+
+  // And the polygon is drawn at the FINE step. This is the assertion that was
+  // missing: `ringsToDegrees` takes the step as an argument, so testing the
+  // function proves nothing about the CALLER. Hardcoding the coarse step here —
+  // which is exactly the bug — left every test in the file green while drawing
+  // 25x-too-large geometry.
+  const DEG = 180 / Math.PI;
+  const positions = value(swaths[0].polygon.hierarchy)?.positions ?? [];
+  // `cartesianToCartographic` returns RADIANS. Reading them as degrees makes
+  // Denver's 39.62N read as 0.6915, which is the trap this document lists
+  // second — and the span then looks like 0.0002 instead of 0.01.
+  const lats = positions.map(
+    (p) => Cesium.Ellipsoid.WGS84.cartesianToCartographic(p).latitude * DEG,
+  );
+  const lons = positions.map(
+    (p) => Cesium.Ellipsoid.WGS84.cartesianToCartographic(p).longitude * DEG,
+  );
+  assert.ok(lats.length >= 4, `a closed polygon, got ${positions.length} vertices`);
+  assert.ok(
+    Math.abs(Math.min(...lats) - 39.62) < 1e-6,
+    `it is drawn where the cells are (39.62N), not ${Math.min(...lats).toFixed(4)}`,
+  );
+  assert.ok(
+    Math.abs(Math.min(...lons) + 104.88) < 1e-6,
+    `and at the fine longitude (-104.88), not ${Math.min(...lons).toFixed(4)}`,
+  );
+  assert.ok(
+    Math.abs(Math.max(...lats) - Math.min(...lats) - 0.01) < 1e-6,
+    `spanning 0.01 degrees in latitude, not ${
+      Math.max(...lats) - Math.min(...lats)
+    }`,
+  );
+});
+
+test('a multi-day window stays coarse and never asks for a fine day', async () => {
+  // Combining dates is a regional question — "which streets took it more than
+  // once" — and a per-day fetch per selected day would be a fetch storm.
+  const asked = [];
+  const radarSource = {
+    daysFor: async () =>
+      new Map([[radarDayIndex('2026-08-09'), new Map([[cellKey(35.11, -97.4), 30]])]]),
+    dayFor: async (date) => {
+      asked.push(date);
+      return { cells: [], count: 0 };
+    },
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDateRange('2026-08-09', '2026-08-10');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  assert.deepEqual(asked, [], 'a range asks for no fine day at all');
+});
+
+test('a layer with no fine source renders exactly as before', async () => {
+  // The panel no longer ships the payload, and most tests construct no fine
+  // source. Neither may change behaviour.
+  const day = radarDayIndex('2026-08-10');
+  const radarSource = {
+    daysFor: async () => new Map([[day, new Map([[cellKey(35.11, -97.4), 45]])]]),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  assert.ok(
+    swathEntities(viewer, 'radar').length >= 1,
+    'the coarse path still draws',
+  );
+});
+
+test('a failing fine fetch falls back to the coarse field rather than to nothing', async () => {
+  // A day outside the retention window has no shard by design, and a network
+  // error must not empty the map.
+  const day = radarDayIndex('2026-08-10');
+  const radarSource = {
+    daysFor: async () => new Map([[day, new Map([[cellKey(35.11, -97.4), 45]])]]),
+    dayFor: async () => {
+      throw new Error('404');
+    },
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  assert.ok(
+    swathEntities(viewer, 'radar').length >= 1,
+    'the coarse field still drew after the fine one failed',
+  );
+});
+
+test('ringsToDegrees takes the grid step, and the fine step is 1 km', () => {
+  // Passing the wrong step displaces every ring by 25x — half a cell at the fine
+  // step — which is the kind of error that renders perfectly and is wrong.
+  const [coarse] = ringsToDegrees(gridCellRings([{ i: 140, j: -390 }]));
+  const [fine] = ringsToDegrees(gridCellRings([{ i: 140, j: -390 }]), GRID_DEG_FINE);
+  // Rounded: 140 * 0.01 is 1.4000000000000001 in binary floating point, and a
+  // degree off by 2e-16 is not the bug this test is here to catch.
+  assert.equal(Math.min(...coarse.outer.map((p) => p.lat)), 35, '140 x 0.25');
+  assert.equal(Number(Math.min(...fine.outer.map((p) => p.lat)).toFixed(6)), 1.4, '140 x 0.01');
+  assert.equal(GRID_DEG_FINE, 0.01, 'and the step is 1 km, not a literal');
 });

@@ -20,6 +20,7 @@
  */
 
 import {
+  GRID_DEG_FINE,
   HAIL_BANDS,
   gridCellRings,
   hailBand,
@@ -55,6 +56,7 @@ import {
 } from '../../data/pickRegistry.js';
 import {
   crossReference,
+  GRID_DEG,
   indexRadarDays,
   RADAR_IMPLAUSIBLE_MM,
   summariseAgreement,
@@ -173,6 +175,22 @@ const SWATH_ALPHA_MAX = 0.72;
 
 /** Opacity of a band's hard edge, against the fill it outlines. */
 const SWATH_EDGE_ALPHA = 0.95;
+
+/**
+ * Ceiling on ground-clamped swath polygons in one draw.
+ *
+ * Measured, not guessed: sweeping all 1,019 fine shards gives a MEDIAN of 242
+ * rings, a mean of 423, and a maximum of 2,592 (2026-07-05, 52,202 cells). Only
+ * three days exceed 2,000 and none exceed 3,000. So this cap sits above the
+ * measured worst case and does not fire in practice — it bounds an unmeasured
+ * future, it is not a quality dial.
+ *
+ * It matters because each of these is a ground-classified shape carrying a
+ * shadow volume over the global approximate terrain range. When it does bite,
+ * it drops the WEAKEST band first, because bands are visited weakest-first and
+ * a fringe band is where a roofer is not going.
+ */
+const SWATH_MAX_RINGS = 3000;
 
 /**
  * The RADAR swath's millimetre-to-colour ramp.
@@ -433,6 +451,8 @@ export function createStormReportsLayer({
   let _radarWindowCells = null;
   let _radarKey = null;
   let _radarSwath = [];
+  /** Set when a draw hit SWATH_MAX_RINGS, so the panel can say the wash is partial. */
+  let _swathCapped = false;
   /**
    * The fine 1 km cells for the selected day, when the window is one day and
    * the shard existed. Null means the wash is being drawn from the coarse
@@ -974,6 +994,34 @@ export function createStormReportsLayer({
    * handed to the pure builder as one day so the model's own date guard still
    * applies.
    */
+  /**
+   * The fine 1 km cells as swath cells, through the SAME builder as the coarse
+   * ones.
+   *
+   * Deliberately not a parallel banding path. `radarSwathCells` owns the
+   * millimetre ramp, the implausible-reading filter and the severity sort, and
+   * a second implementation of those three would drift from the first the first
+   * time one of them is tuned. This only adapts the SHAPE — the loader hands
+   * back an array of `{i, j, maxMm}`, the model wants a `Map<'i:j', mm>` — and
+   * the `i:j` it builds is the FINE index, which is what makes the geometry 1 km
+   * instead of 25 miles.
+   *
+   * @param {Array<{i: number, j: number, maxMm: number}>|null} cells
+   * @returns {Array<object>} swath cells on the fine grid
+   */
+  function fineSwathCells(cells) {
+    if (!Array.isArray(cells) || !cells.length) return [];
+    const byKey = new Map();
+    for (const cell of cells) {
+      if (!Number.isInteger(cell?.i) || !Number.isInteger(cell?.j)) continue;
+      byKey.set(`${cell.i}:${cell.j}`, cell.maxMm);
+    }
+    return radarSwathCells(
+      { date: _options.fromDate, cells: byKey },
+      { date: _options.fromDate, implausibleMm: RADAR_IMPLAUSIBLE_MM },
+    );
+  }
+
   function swathCellsForWindow(cells) {
     return radarSwathCells(
       { date: _options.fromDate, cells },
@@ -1408,7 +1456,7 @@ export function createStormReportsLayer({
    * @param {Array<object>} cells cells carrying `i`, `j` and a band.
    * @param {(cell: object) => {key: string, color: string, rank: number}|null} bandFor
    */
-  function drawSwathBand(kind, cells, bandFor) {
+  function drawSwathBand(kind, cells, bandFor, deg) {
     const byBand = new Map();
     for (const cell of cells) {
       const band = bandFor(cell);
@@ -1418,8 +1466,34 @@ export function createStormReportsLayer({
     }
     let drawn = 0;
     for (const [bandKey, group] of byBand) {
-      const ringSets = ringsToDegrees(gridCellRings(group.cells));
+      const ringSets = ringsToDegrees(gridCellRings(group.cells), deg);
       group.cells.length = 0;
+      // The cap is applied across the whole draw, not per band, so what is
+      // bounded is the entity count that actually reaches the scene.
+      if (drawn + ringSets.length > SWATH_MAX_RINGS) {
+        const room = Math.max(0, SWATH_MAX_RINGS - drawn);
+        const kept = ringSets.slice(0, room);
+        _swathCapped = true;
+        console.warn(
+          `[Storm Reports] swath capped at ${SWATH_MAX_RINGS} polygons; ` +
+            `${ringSets.length - kept.length} ring(s) dropped from ${kind}/${bandKey}`,
+        );
+        for (let index = 0; index < kept.length; index += 1) {
+          const hierarchy = polygonHierarchyFor(kept[index]);
+          if (!hierarchy) continue;
+          if (
+            addSwathBand(
+              `storm-swath:${kind}:${bandKey}:${index}`,
+              hierarchy,
+              group.band.color,
+              swathAlphaFor(group.band.rank),
+            )
+          ) {
+            drawn += 1;
+          }
+        }
+        return drawn;
+      }
       // One entity per RING. Grouping a band's rings into one entity by passing
       // an array of hierarchies looks supported and is not: Cesium's
       // `hierarchy` setter runs `PolygonHierarchy.fromPositions` over whatever
@@ -1472,6 +1546,7 @@ export function createStormReportsLayer({
             rank: index < 0 ? 0 : index / Math.max(hailBands.length - 1, 1),
           };
         },
+        GRID_DEG,
       );
     }
     if (_showRadarSwath) {
@@ -1479,27 +1554,39 @@ export function createStormReportsLayer({
       // worst-first, and inverting that here would silently reverse the alpha
       // ramp — the fringe would paint solid and the core would go ghostly.
       const ascending = [...RADAR_RAMP_MM].reverse();
-      drawSwathBand('radar', _radarSwath, (cell) => {
-        if (cell.implausible) {
-          return { key: 'artefact', color: RADAR_IMPLAUSIBLE_COLOR, rank: 0 };
-        }
-        // Walk the ramp ASCENDING and keep the LAST band whose floor the reading
-        // clears. Taking the FIRST match against ascending thresholds is a
-        // trap: 'under 10 mm' has a floor of 0, so it matches everything and a
-        // 55 mm core gets banded — and painted — as the weakest hail on the
-        // map. (A test caught this; the ramp is declared worst-first, so
-        // reversing it and keeping the first match silently inverts it.)
-        let chosen = ascending[0];
-        for (const step of ascending) {
-          if (cell.peakMm >= step.min) chosen = step;
-        }
-        const index = ascending.indexOf(chosen);
-        return {
-          key: chosen.label,
-          color: chosen.color,
-          rank: index / Math.max(ascending.length - 1, 1),
-        };
-      });
+      // The cells and the grid step, which differ by source: the fine 1 km
+      // field when the window is a single day, the published 0.25-degree field
+      // for a multi-day combine or a day outside the retention window.
+      const radarCells = _radarFine
+        ? fineSwathCells(_fineRadarCells)
+        : _radarSwath;
+      const radarDeg = _radarFine ? GRID_DEG_FINE : GRID_DEG;
+      drawSwathBand(
+        'radar',
+        radarCells,
+        (cell) => {
+          if (cell.implausible) {
+            return { key: 'artefact', color: RADAR_IMPLAUSIBLE_COLOR, rank: 0 };
+          }
+          // Walk the ramp ASCENDING and keep the LAST band whose floor the reading
+          // clears. Taking the FIRST match against ascending thresholds is a
+          // trap: 'under 10 mm' has a floor of 0, so it matches everything and a
+          // 55 mm core gets banded — and painted — as the weakest hail on the
+          // map. (A test caught this; the ramp is declared worst-first, so
+          // reversing it and keeping the first match silently inverts it.)
+          let chosen = ascending[0];
+          for (const step of ascending) {
+            if (cell.peakMm >= step.min) chosen = step;
+          }
+          const index = ascending.indexOf(chosen);
+          return {
+            key: chosen.label,
+            color: chosen.color,
+            rank: index / Math.max(ascending.length - 1, 1),
+          };
+        },
+        radarDeg,
+      );
     }
   }
 

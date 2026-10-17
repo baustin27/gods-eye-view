@@ -18,6 +18,13 @@ import {
   gridCell,
 } from '../../data/stormCrossReference.js';
 
+/**
+ * The fine 1 km grid step, re-exported so the renderer takes its step from a
+ * named constant rather than a literal. Mirrors the builder's CELL_DEG_FINE and
+ * the loader's RADAR_FINE_GRID.deg.
+ */
+export const GRID_DEG_FINE = 0.01;
+
 /** Hail diameter bands, in inches. The first band a size falls into wins. */
 export const HAIL_BANDS = Object.freeze([
   Object.freeze({
@@ -965,18 +972,26 @@ export function gridCellRings(cells) {
  * with. Kept separate from {@link gridCellRings} so the index arithmetic stays
  * testable without trigonometry or a viewer.
  *
+ * `deg` is the grid step the ring's indices were built on: 0.25 for the
+ * published field, 0.01 for the fine 1 km one. It is a parameter rather than a
+ * second function because the arithmetic is identical and the RISK is not —
+ * passing the wrong step displaces every ring by 25x, which is a quarter of a
+ * cell at the coarse step and half a cell at the fine one. Both callers pass a
+ * named constant rather than a literal.
+ *
  * @param {Array<{outer: Array<[number, number]>, holes: Array<Array<[number, number]>>}>} rings
+ * @param {number} [deg] grid step in degrees, default {@link GRID_DEG}
  * @returns {Array<{outer: Array<{lat: number, lon: number}>,
  *   holes: Array<Array<{lat: number, lon: number}>>}>}
  */
-export function ringsToDegrees(rings) {
+export function ringsToDegrees(rings, deg = GRID_DEG) {
   return (rings || []).map((ring) => ({
     outer: ring.outer.map(([i, j]) => ({
-      lat: i * GRID_DEG,
-      lon: j * GRID_DEG,
+      lat: i * deg,
+      lon: j * deg,
     })),
     holes: (ring.holes || []).map((hole) =>
-      hole.map(([i, j]) => ({ lat: i * GRID_DEG, lon: j * GRID_DEG })),
+      hole.map(([i, j]) => ({ lat: i * deg, lon: j * deg })),
     ),
   }));
 }
