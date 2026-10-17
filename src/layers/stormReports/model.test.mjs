@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { GRID_DEG, gridCell } from '../../data/stormCrossReference.js';
 import {
   HAIL_BANDS,
+  HAIL_NICKNAMES,
   MAX_FRAME_ALTITUDE_M,
   MAX_OUTLINE_RADIUS_KM,
   MIN_FRAME_ALTITUDE_M,
@@ -11,17 +13,22 @@ import {
   OUTLINE_POINT_COUNT,
   WIND_BANDS,
   bandFor,
+  bandHailNickname,
   destinationPointKm,
   frameAltitude,
   framingFor,
   hailBand,
+  hailNickname,
+  hailSizeLabel,
   haversineKm,
   isolationLine,
   magnitudeLabel,
   matchesFilter,
   outlineRing,
   parseStormDate,
+  radarSwathCells,
   radiusMetres,
+  reportedSwathCells,
   stormHeadline,
   stormMagnitude,
   stormMinuteLabel,
@@ -455,4 +462,176 @@ test('an isolation line with no counts reads as zero rather than NaN', () => {
     isolationLine('Texas', { inside: 4, active: false }),
     'isolation off — 4 of 4 reports inside Texas',
   );
+});
+
+/* -------------------------------------------------------------------------
+ * The REPORTED swath.
+ *
+ * A cell here is a claim that a stone was measured in it, so the tests are
+ * about what may not appear as much as what does: no report, no cell.
+ * ---------------------------------------------------------------------- */
+
+const FAR = { lat: 40.2, lon: -100.6 };
+
+test('a cell no report landed in is never drawn', () => {
+  const cells = reportedSwathCells([report()]);
+  assert.equal(cells.length, 1);
+  assert.equal(cells[0].key, `140:-390`);
+  // The empty cell next door has a key, and still must not appear.
+  assert.ok(
+    !cells.some((cell) => cell.key === `140:-391`),
+    'no report, no pixel',
+  );
+});
+
+test('the largest stone in a cell colours it', () => {
+  const cells = reportedSwathCells([
+    report({ size: 1.0 }),
+    report({ size: 2.5 }),
+    report({ size: 1.75 }),
+  ]);
+  assert.equal(cells.length, 1);
+  assert.equal(cells[0].peak, 2.5);
+  assert.equal(cells[0].count, 3);
+  assert.equal(cells[0].band.id, 'severe');
+});
+
+test('the floor keeps the trace of 0.01 inch off the map', () => {
+  const cells = reportedSwathCells(
+    [report({ size: 0.01, lat: 35.1 }), report({ size: 1.0, ...FAR })],
+    { hailFloor: 1.0 },
+  );
+  assert.equal(cells.length, 1, 'only the cell above the floor survives');
+  assert.equal(cells[0].peak, 1.0);
+  // Without the floor both are honest measurements and both appear.
+  assert.equal(
+    reportedSwathCells(
+      [report({ size: 0.01, lat: 35.1 }), report({ size: 1.0, ...FAR })],
+      { hailFloor: 0 },
+    ).length,
+    2,
+  );
+});
+
+test('two cells land in the bands their own stone earns', () => {
+  const cells = reportedSwathCells([
+    report({ size: 0.9, lat: 35.1 }),
+    report({ size: 2.5, ...FAR }),
+  ]);
+  const byKey = new Map(cells.map((cell) => [cell.key, cell]));
+  assert.equal(byKey.get(`140:-390`).band.id, 'small');
+  assert.equal(byKey.get(`160:-403`).band.id, 'severe');
+});
+
+test('a swath cell key is the exact key the cross-reference joins on', () => {
+  const [cell] = reportedSwathCells([report({ lat: 35.1, lon: -97.4 })]);
+  assert.equal(cell.key, `${gridCell(35.1)}:${gridCell(-97.4)}`);
+  assert.equal(cell.lat, gridCell(35.1) * GRID_DEG + GRID_DEG / 2);
+  assert.equal(cell.lon, gridCell(-97.4) * GRID_DEG + GRID_DEG / 2);
+  assert.equal(cell.bounds.south, gridCell(35.1) * GRID_DEG);
+  assert.equal(cell.bounds.east, (gridCell(-97.4) + 1) * GRID_DEG);
+});
+
+test('a wind report is not hail and does not paint a hail swath', () => {
+  assert.equal(
+    reportedSwathCells([report({ hazard: 'wind', size: 62 })]).length,
+    0,
+  );
+  assert.equal(reportedSwathCells([report({ size: null })]).length, 0);
+});
+
+/* -------------------------------------------------------------------------
+ * The RADAR swath.
+ * ---------------------------------------------------------------------- */
+
+const day = (date, entries) => ({
+  date,
+  cells: new Map(Object.entries(entries)),
+});
+
+test('a swath for the wrong day draws nothing, not every day', () => {
+  const radarDays = day('2026-08-10', { '140:-390': 80 });
+  assert.deepEqual(
+    radarSwathCells(radarDays, { date: '2026-08-11' }),
+    [],
+    'a mismatched date is empty, not a lifetime fallback',
+  );
+  assert.equal(radarSwathCells(radarDays, { date: '2026-08-10' }).length, 1);
+});
+
+test('a bare cell map names no day and so matches none', () => {
+  const bare = new Map([['140:-390', 80]]);
+  assert.deepEqual(radarSwathCells(bare, { date: '2026-08-10' }), []);
+});
+
+test('the peak per cell is the cell reading, and implausible is flagged', () => {
+  const radarDays = day('2026-08-10', {
+    '140:-390': 42.5,
+    '160:-403': 150,
+  });
+  const cells = radarSwathCells(radarDays, { date: '2026-08-10' });
+  assert.equal(cells.length, 2, 'the artefact cell is kept, not dropped');
+  const byKey = new Map(cells.map((cell) => [cell.key, cell]));
+  assert.equal(byKey.get(`140:-390`).peakMm, 42.5);
+  assert.equal(byKey.get(`140:-390`).implausible, false);
+  assert.equal(byKey.get(`160:-403`).peakMm, 150);
+  assert.equal(byKey.get(`160:-403`).implausible, true);
+});
+
+test('the artefact threshold is a parameter, not a hidden constant', () => {
+  const radarDays = day('2026-08-10', { '140:-390': 60 });
+  assert.equal(
+    radarSwathCells(radarDays, {
+      date: '2026-08-10',
+      implausibleMm: 50,
+    })[0].implausible,
+    true,
+  );
+});
+
+/* -------------------------------------------------------------------------
+ * Size-to-object nicknames.
+ * ---------------------------------------------------------------------- */
+
+test('the named sizes map to the objects the category uses', () => {
+  assert.equal(hailNickname(1.0), 'quarter');
+  assert.equal(hailNickname(1.75), 'golf ball');
+  assert.equal(hailNickname(2.0), 'hen egg');
+  assert.equal(hailNickname(2.5), 'tennis ball');
+});
+
+test('an unknown size yields no nickname rather than a wrong one', () => {
+  assert.equal(hailNickname(1.1), null);
+  assert.equal(hailNickname(null), null);
+  assert.equal(hailNickname(undefined), null);
+  assert.equal(hailNickname(1.1), null);
+  assert.equal(hailSizeLabel(1.1), '1.1"', 'the measurement still renders');
+});
+
+test('a label renders the size through trimInches', () => {
+  assert.equal(hailSizeLabel(2.5), '2.5" (tennis ball)');
+  assert.equal(hailSizeLabel(2), '2" (hen egg)', 'no padded 2.00');
+  assert.equal(hailSizeLabel(null), null);
+});
+
+test('a metric caller is refused rather than given a foreign object', () => {
+  // 25 mm is a hen egg in Denver and a large grape in Toulouse, so a table of
+  // US customary objects must not answer for a metric size at all.
+  assert.equal(hailNickname(25, { unit: 'mm' }), null);
+  assert.equal(hailNickname(2.5, { unit: 'mm' }), null, 'even on a match');
+  assert.equal(
+    hailSizeLabel(25, { unit: 'mm' }),
+    null,
+    'and no inch-formatted label either',
+  );
+});
+
+test('every band has a peer object, including the unnamed ones', () => {
+  for (const band of HAIL_BANDS) {
+    assert.ok(
+      bandHailNickname(band),
+      `${band.label} is drawn as a bare number otherwise`,
+    );
+  }
+  assert.equal(HAIL_NICKNAMES.find((n) => n.object === 'tennis ball').inches, 2.5);
 });

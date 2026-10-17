@@ -9,6 +9,15 @@
  * @module layers/storm-reports/model
  */
 
+// The grid helper is imported, not re-derived: a report and a radar cell have
+// to land on the same `i:j` or nothing downstream can join them, and rounding
+// here versus flooring there is exactly that bug. See `stormCrossReference`.
+import {
+  GRID_DEG,
+  RADAR_IMPLAUSIBLE_MM,
+  gridCell,
+} from '../../data/stormCrossReference.js';
+
 /** Hail diameter bands, in inches. The first band a size falls into wins. */
 export const HAIL_BANDS = Object.freeze([
   Object.freeze({
@@ -213,6 +222,108 @@ export function magnitudeLabel(report) {
 /** `1.75` reads as `1.75"`, `1.5` as `1.5"` rather than `1.50"`. */
 export function trimInches(value) {
   return String(Number(value.toFixed(2)));
+}
+
+/**
+ * The US hail-size chart: the measured size and the object it is compared to.
+ *
+ * This is the vocabulary the category uses — "2.5" (tennis ball)", "Hen Egg
+ * (2.00 in.)" — and it is US customary through and through. The four the plan
+ * names out (quarter, golf ball, tennis ball, hen egg) sit here as ordinary
+ * entries; the rest are the peers that fill the chart so no band is left
+ * without one. Only the listed sizes have a nickname: a 1.1" stone is nearer a
+ * golf ball than anything else, but nobody measured "1.1 inches of golf ball",
+ * so the honest answer is no nickname at all rather than a rounded guess.
+ */
+export const HAIL_NICKNAMES = Object.freeze([
+  Object.freeze({ inches: 0.25, object: 'pea' }),
+  Object.freeze({ inches: 0.5, object: 'marble' }),
+  Object.freeze({ inches: 0.75, object: 'dime' }),
+  Object.freeze({ inches: 0.875, object: 'nickel' }),
+  Object.freeze({ inches: 1.0, object: 'quarter' }),
+  Object.freeze({ inches: 1.25, object: 'half dollar' }),
+  Object.freeze({ inches: 1.5, object: 'walnut' }),
+  Object.freeze({ inches: 1.75, object: 'golf ball' }),
+  Object.freeze({ inches: 2.0, object: 'hen egg' }),
+  Object.freeze({ inches: 2.5, object: 'tennis ball' }),
+  Object.freeze({ inches: 2.75, object: 'baseball' }),
+  Object.freeze({ inches: 3.0, object: 'tea cup' }),
+  Object.freeze({ inches: 4.0, object: 'grapefruit' }),
+  Object.freeze({ inches: 4.5, object: 'softball' }),
+]);
+
+/** Sizes within this of a chart entry are that entry. Measured, not guessed. */
+const NICKNAME_TOLERANCE_IN = 0.001;
+
+/**
+ * The object a measured hail size is compared to, or null.
+ *
+ * The chart is inches. A caller who hands in millimetres — the radar field is
+ * in mm, the report record is in inches — is telling us the number is not on
+ * this chart, so they get no nickname rather than a foreign one: 25 mm is a hen
+ * egg in Denver and a large grape in Toulouse, and a table that answers "tennis
+ * ball" for a metric reading is lying about both. Convert to inches yourself
+ * only if a US object is what you actually want to show.
+ *
+ * @param {number|null} size
+ * @param {{unit?: string}} [options] Only `'in'` (the default) is nicknamed.
+ * @returns {string|null}
+ */
+export function hailNickname(size, { unit = 'in' } = {}) {
+  if (unit !== 'in') return null;
+  const inches = Number(size);
+  if (!Number.isFinite(inches)) return null;
+  const entry = HAIL_NICKNAMES.find(
+    (candidate) => Math.abs(candidate.inches - inches) <= NICKNAME_TOLERANCE_IN,
+  );
+  return entry ? entry.object : null;
+}
+
+/**
+ * A measured size rendered the way the category renders it: `2.5" (tennis
+ * ball)`, or the bare measurement when the size is not on the chart.
+ *
+ * Formatting goes through {@link trimInches}, which owns inch text here, so
+ * `2.0` reads as `2"` and not `2.00"`.
+ *
+ * @param {number|null} size
+ * @param {{unit?: string}} [options] Passed to {@link hailNickname}. Anything
+ *   but `'in'` (the default) returns null: an inch-formatted label for a
+ *   millimetre reading is a lie with a different noun.
+ * @returns {string|null} Null when the size is not a number, or not inches.
+ */
+export function hailSizeLabel(size, options = {}) {
+  if ((options.unit ?? 'in') !== 'in') return null;
+  if (size === null || size === undefined) return null;
+  const inches = Number(size);
+  if (!Number.isFinite(inches)) return null;
+  const text = `${trimInches(inches)}"`;
+  const object = hailNickname(inches, options);
+  return object ? `${text} (${object})` : text;
+}
+
+/**
+ * The peer object the legend shows for a whole band.
+ *
+ * A band claims a range, and a range has no single size to nickname, so this
+ * picks the chart entry at the band's lower edge — the smallest stone the band
+ * promises. That is what keeps the remaining bands, the ones with no headline
+ * object, from being drawn as bare numbers.
+ *
+ * @param {{min: number, max: number}|null} band From {@link HAIL_BANDS}.
+ * @returns {string|null}
+ */
+export function bandHailNickname(band) {
+  // `max` is `Infinity` on the top band, so it is finite only in spirit; test
+  // the type, not finiteness.
+  if (!band || !Number.isFinite(band.min) || typeof band.max !== 'number')
+    return null;
+  const entry =
+    HAIL_NICKNAMES.find(
+      (candidate) =>
+        candidate.inches >= band.min && candidate.inches < band.max,
+    ) || HAIL_NICKNAMES[HAIL_NICKNAMES.length - 1];
+  return entry ? entry.object : null;
 }
 
 /**
@@ -665,4 +776,171 @@ export function frameAltitude(radiusKm) {
     MAX_FRAME_ALTITUDE_M,
     Math.max(MIN_FRAME_ALTITUDE_M, Math.round(wanted)),
   );
+}
+
+/* -------------------------------------------------------------------------
+ * The swaths.
+ *
+ * The category draws size-banded polygon swaths and puts the report pins on
+ * top of them. These two builders are that wash. They stay pure so the banding
+ * and the date join are testable without a viewer — a swath that quietly falls
+ * back to "all days" is the lifetime bug this whole layer exists to avoid, and
+ * a viewer is the worst place to try to catch it.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The centre and the rectangle of a grid cell.
+ *
+ * Both come from the same floored index the join uses, never from rounding a
+ * coordinate: the centre is `index * step + step / 2`, which is the cell the
+ * index names.
+ *
+ * @param {number} i Row index (latitude).
+ * @param {number} j Column index (longitude).
+ * @returns {{lat: number, lon: number,
+ *   bounds: {west: number, south: number, east: number, north: number}}}
+ */
+function cellGeometry(i, j) {
+  return {
+    lat: i * GRID_DEG + GRID_DEG / 2,
+    lon: j * GRID_DEG + GRID_DEG / 2,
+    // Ordered as Cesium's `Rectangle.fromDegrees` takes them, so the renderer
+    // does not have to reorder the numbers and cannot reorder them wrongly.
+    bounds: {
+      west: j * GRID_DEG,
+      south: i * GRID_DEG,
+      east: (j + 1) * GRID_DEG,
+      north: (i + 1) * GRID_DEG,
+    },
+  };
+}
+
+/**
+ * The REPORTED swath: cells painted by the largest hail measured in them.
+ *
+ * Every cell is a stone somebody reported. A cell with no report is not drawn
+ * at all — that is the whole contract of the REPORTED layer — which is why
+ * `hailFloor` exists: a trace of 0.01" is a measurement, but painting the map
+ * for it would say hail fell where nothing was ever seen.
+ *
+ * The key is the canonical `i:j`, so these cells join the radar field and the
+ * cross-reference and nothing else.
+ *
+ * @param {Array<{hazard: string, size: number|null, lat: number, lon: number}>} reports
+ * @param {{hailFloor?: number}} [options] Smallest measured hail, in inches,
+ *   that may paint. Default 0 keeps every measured stone; to match the
+ *   category's lowest band, pass 0.75.
+ * @returns {Array<{key: string, i: number, j: number, peak: number,
+ *   count: number, band: object|null, lat: number, lon: number,
+ *   bounds: {west: number, south: number, east: number, north: number}}>}
+ *   Worst first, so a renderer that stops early stops on the strong cells.
+ */
+export function reportedSwathCells(reports, { hailFloor = 0 } = {}) {
+  const floor = Number.isFinite(hailFloor) ? hailFloor : 0;
+  const cells = new Map();
+  for (const report of reports || []) {
+    if (!report || report.hazard !== 'hail') continue;
+    if (!Number.isFinite(report.size) || report.size < floor) continue;
+    if (!Number.isFinite(report.lat) || !Number.isFinite(report.lon)) continue;
+    const i = gridCell(report.lat);
+    const j = gridCell(report.lon);
+    const key = `${i}:${j}`;
+    const cell = cells.get(key);
+    if (cell) {
+      cell.count += 1;
+      // The largest stone wins the cell's colour: a cell is a claim about the
+      // worst hail in it, not about whichever report arrived first.
+      if (report.size > cell.peak) cell.peak = report.size;
+      continue;
+    }
+    cells.set(key, {
+      key,
+      i,
+      j,
+      peak: report.size,
+      count: 1,
+      ...cellGeometry(i, j),
+    });
+  }
+  return [...cells.values()]
+    .map((cell) => ({ ...cell, band: hailBand(cell.peak) }))
+    .sort((a, b) => b.peak - a.peak || (a.key < b.key ? -1 : 1));
+}
+
+/**
+ * The cells a decoded radar structure holds for one calendar day, or null.
+ *
+ * Accepts `toRadarDays`'s `{date, cells: Map<'i:j', number>}` and a Map keyed
+ * by date to one of those. A bare cell map names no calendar day, so it can
+ * never match the day being drawn and yields nothing: a swath has to know which
+ * day it is, or it is a lifetime fallback wearing a per-day label.
+ *
+ * @param {object|Map} radarDays
+ * @param {string|null} date
+ * @returns {Map<string, number>|null}
+ */
+function radarCellsFor(radarDays, date) {
+  if (radarDays instanceof Map) {
+    const day = radarDays.get(date);
+    if (day === undefined) return null;
+    return day instanceof Map ? day : (day?.cells ?? null);
+  }
+  if (!radarDays || typeof radarDays !== 'object') return null;
+  if (radarDays.date !== date) return null;
+  return radarDays.cells instanceof Map ? radarDays.cells : null;
+}
+
+/**
+ * The RADAR swath for one day: cells coloured by that day's peak radar hail.
+ *
+ * `radarDays` is the decoded day the loader produces, passed in as a plain
+ * structure rather than imported, so this model owns no loader. `date` is the
+ * calendar day it must be: a structure whose date does not match draws nothing,
+ * because the failure this guards is a swath that silently sums every day in the
+ * archive and reads as one storm.
+ *
+ * Cells at or above `implausibleMm` are flagged, not dropped. Dropping them
+ * would leave holes in the grid, and a hole reads as "no hail here" when the
+ * truth is "the estimate here is not believable". The renderer styles them
+ * apart.
+ *
+ * @param {object|Map} radarDays `{date, cells: Map<'i:j', number>}`, or a Map
+ *   from date to such a day.
+ * @param {{date?: string|null, implausibleMm?: number}} [options] `date` is the
+ *   day this swath describes; `implausibleMm` defaults to
+ *   {@link RADAR_IMPLAUSIBLE_MM}.
+ * @returns {Array<{key: string, i: number, j: number, peakMm: number,
+ *   implausible: boolean, lat: number, lon: number,
+ *   bounds: {west: number, south: number, east: number, north: number}}>}
+ *   Worst first.
+ */
+export function radarSwathCells(
+  radarDays,
+  { date = null, implausibleMm = RADAR_IMPLAUSIBLE_MM } = {},
+) {
+  // Fall back to the structure's own date only when the caller did not name a
+  // day; a bare cell map has none, so it never matches and draws nothing.
+  const wanted =
+    date ?? (radarDays && !(radarDays instanceof Map) ? radarDays.date : null);
+  const cells = wanted ? radarCellsFor(radarDays, wanted) : null;
+  if (!cells) return [];
+  const threshold = Number.isFinite(implausibleMm)
+    ? implausibleMm
+    : RADAR_IMPLAUSIBLE_MM;
+  const out = [];
+  for (const [key, value] of cells) {
+    const peakMm = Number(value);
+    if (!Number.isFinite(peakMm)) continue;
+    const [i, j] = String(key).split(':').map(Number);
+    if (!Number.isInteger(i) || !Number.isInteger(j)) continue;
+    out.push({
+      key,
+      i,
+      j,
+      peakMm,
+      implausible: peakMm >= threshold,
+      ...cellGeometry(i, j),
+    });
+  }
+  return out.sort((a, b) => b.peakMm - a.peakMm || (a.key < b.key ? -1 : 1));
 }
