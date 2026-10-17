@@ -39,6 +39,8 @@ nothing here needs to be deleted for a commercial deployment.
 | `storm-radar-sources.json` | — | Build metadata for the radar snapshot: window, cell count, caveat | — |
 | `storm_radar_hail_perday_<year>.bin.gz` | Binary | Per-day radar field for **one year**: one record per (cell, day) that reached **10 mm**, the strongest reading in that cell that day | 2021:187,688 · 2022:247,689 · 2023:237,188 · 2024:221,573 · 2025:261,729 · 2026:252,051 — 1,407,918 total |
 | `storm-radar-days-sources_<year>.json` | — | Build metadata for that year's per-day file: encoding, index geometry, **day-index epoch**, threshold, caveat | — |
+| `storm_radar_hail_fine_<YYYY-MM-DD>.bin.gz` | Binary | **1 km** hail cells for **one calendar day**, ≥ **19 mm**. Four-byte `FINE` magic, then 6-byte records. What a single-day window draws | 1,019 days · 2024-01-01 → 2026-10-15 · 9,491,586 records · 34.6 MB |
+| `storm-radar-fine-sources.json` | — | Build metadata for the fine family: grid geometry, encoding, retention floor, window, per-day record counts, totals | — |
 
 ### The per-day radar field
 
@@ -73,6 +75,49 @@ Three things in that are load-bearing rather than incidental:
 `dayIndexEpoch`, `format`, `geometry`, both thresholds and the record count are
 all in `storm-radar-days-sources_<year>.json`. Read that before reading the
 binary.
+
+### The fine 1 km day field
+
+`storm_radar_hail_fine_<YYYY-MM-DD>.bin.gz` is the resolution the MRMS source
+actually has. The upstream grid is 1 km — the `_00.50` in the product name does
+not mean 0.50°, and the 0.25° everywhere else in this directory is a **25×
+downsample forced by the `uint16` cell index** in the per-year format, not a
+limit of NOAA's data.
+
+Geometry: `0.01°` per cell, 3,500 rows from row base 2,100 and 6,500 columns
+from column base −12,500, for 22,750,000 cells. That index space does not fit a
+`uint16` — hence its own `uint32` index and its own decoder.
+
+| Offset | Type | Meaning |
+|---|---|---|
+| 0 | 4 bytes | the ASCII magic `FINE` |
+| 4 | `u32` LE | cell index, `floor(index / 6500) + 2100` is `i`, `(index % 6500) − 12500` is `j` |
+| 8 | `u16` LE | that cell's peak MESH in tenths of a millimetre |
+
+Three details that are load-bearing:
+
+- **The magic is a safety interlock, not a label.** A coarse per-day record is
+  10 bytes; a fine one is 6. Read with the wrong decoder, a shard does not
+  error — it yields plausible millimetres for cells that are not there. The magic
+  makes the mismatch a `RangeError` instead. Every one of the 1,019 shards
+  carries it, and the build's GATE A check is what keeps the coarse artifacts
+  byte-identical while it is added.
+- **The two index spaces are 25× apart, in each axis, and index 0 means a
+  different place in each.** So the fine day is a *sibling* of the per-year
+  fetch in the layer — its own optional method, cache and decoder — never a mode
+  of the per-year one. Sharing a cache there returns confident numbers for the
+  wrong cells.
+- **The retention floor is 19 mm, not the per-day file's 10 mm.** Chosen by
+  measurement: decoding all 1,019 shards and counting rings gives a median of
+  242, a mean of 423, a maximum of 2,592 (2026-07-05, 52,202 cells) and zero
+  days over 3,000. A 10 mm floor is 245 MB and a mean of 3,065 rings. 19 mm
+  keeps the artifact shippable and the polygon count under the renderer's
+  ceiling. The consequence to know about: the fine field can never draw the
+  `under 10 mm` band, and only draws `10-25 mm` at its 19–25 mm top.
+
+Per-day counts, the grid, the encoding, the floor and the build totals are all in
+`storm-radar-fine-sources.json`; the totals are checked against the shards
+themselves, not only against the manifest.
 
 ### Report-level files
 

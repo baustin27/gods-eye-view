@@ -511,10 +511,57 @@ Phase F status:
 - [x] Production build ships the `.gz` payloads: 24 files, all byte-identical to
       source, 14,721,326 bytes (`find dist -name '*.gz'` went 0 → 24)
 - [ ] Swath toggles survive an HMR remount, with a regression test — **not done**
-- [ ] `polygon.outline` **rendering** verified, not just the property — **not
-      done.** The property is set and asserted; whether it strokes at a defined
-      height is unverified, and Cesium accepts it silently either way
-- [ ] Wash confirmed under photorealistic 3D Tiles — **not testable on this
-      machine.** There is no `.env`, so it boots keyless on `esri-imagery`. The
-      harness reports which regime it actually ran in (`report.regime`) so a
-      keyed run is distinguishable from a keyless one
+- [x] `polygon.outline` renders. Confirmed under both regimes in the QA shots.
+- [x] Wash confirmed under **photorealistic 3D Tiles**, the shipping regime —
+      the token lives in `pinokio/ENVIRONMENT`, not a `.env`, so the run has to
+      be launched through the operator's own environment. ΔE 51.86, wash 79.64%
+      of frame. The keyless globe regime also passes (ΔE 41.37, 77.66%), and the
+      harness reports which one it ran in so the two are never confused
+
+## Fine 1 km phase — done
+
+Shipped on `contrib/storm-scope-20261015`. Commits, in order:
+
+| Commit | What |
+|---|---|
+| `93b1555c` | build plugin: panel excludes payloads, pattern allowlist, atomic copy, `.gz` binary |
+| `c956dd85` | the fine builder: constants, `uint32` index, `FINE` magic, `--fine-only`, `--fine-years`, rolloff, manifest, GATE A |
+| `8c615be9` | the data: 1,019 shards, 34.6 MB, 2024-01-01 → 2026-10-15 |
+| `07b2730d` | the loader: `loadFineRadarDay`, bounded 12-day cache, fine day-index, all shards rebuilt with the magic |
+| `2016b8a9` | the render: `ringsToDegrees` takes the grid step; fine drawn at 0.01°; 3,000-ring ceiling |
+| `b40f476e` | QA proves it is fetched *and* drawn — **and commits the production `radarSource.dayFor`, which had been sitting unstaged** |
+| `a54e569a` | QA stages at roof altitude too, not only regional |
+
+- [x] 0.25° artifacts byte-identical across the rebuild — 1,038 payloads compared
+      in `dist`, 0 differ, with and without the Cesium token
+- [x] Every shard decodes to the manifest's totals: 1,019 present, 0 missing, 0
+      without magic, 0 with a bad length, 9,491,586 records, 0 orphans
+- [x] Full suite green at every gate — 7,152 pass, 0 fail
+- [x] A single-day window **fetches** the fine shard and **draws** it at 0.01°,
+      in both regimes. Colorado 2026-06-01: 2,153 radar polygons, smallest
+      spanning 0.0100°
+- [x] Multi-day windows stay coarse and ask for no fine day
+- [x] A failing fine fetch falls back to the coarse field, not to nothing
+- [x] `DATA_SOURCES.md` and the storm `README.md` document the family, the magic,
+      the index space and the retention floor
+
+Two things worth keeping, because both were found the hard way:
+
+- **The production `radarSource.dayFor` was uncommitted** while the loader
+  commit's message claimed it shipped. Every test passed either way — they inject
+  their own source — and the app worked only because the dirty file was on disk.
+  The new fetch check is what makes that omission visible; it is the check that
+  should have existed before.
+- **Drawing the fine field at the coarse step does not look wrong, it kills the
+  renderer.** 25×-too-large ground-clamped polygons over the whole ingest domain
+  take the tab down (`Target closed`), so the failure is a hang rather than a
+  visual. A pixel metric alone would never have caught it, and neither would a
+  unit test of `ringsToDegrees` — that tests the function, not the caller.
+
+Open, and deliberately not resolved without a decision: at regional and even
+near-roof altitudes a single fine day reads as a broad flat wash rather than a
+crisp band mosaic, because with a 19 mm floor the ≥0.75 in region on a big hail
+day is genuinely large and contiguous. That is correct rendering, not a
+regression — the geometry is verified at 0.01° and the largest single ring is
+6.6% of that day's cells — but it is a different *look* from the coarse field,
+and whether the fine field wants its own treatment is a product call.

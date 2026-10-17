@@ -420,18 +420,14 @@ so the toggle-before-data-arrives ordering is untested.
 Both original items are closed (§4, §5). What remains is short, and none of it
 blocks anything.
 
-1. **Confirm the wash under photorealistic 3D Tiles.** The one thing this
-   machine cannot do: no `.env`, so it boots keyless on `esri-imagery`, and
-   every measurement above is from that regime. On a keyed machine,
-   `npm run qa:storm-swath` reports which regime it ran in — check
-   `report.regime` before quoting a figure. If the wash vanishes on tiles, the
-   first change is `addSwathRingSet`'s height, and this §4 section is the
-   evidence for why it is a defined one.
-2. **Verify `polygon.outline` actually strokes.** Set and asserted, but Cesium
-   accepts the property silently whether or not it draws, so the assertion only
-   proves it was *set*. If it does not stroke, the hard edge needs a
-   `PolylineGraphics` boundary ring at the same height — the house pattern is
-   `perimeters/index.js:316`.
+1. ~~**Confirm the wash under photorealistic 3D Tiles.**~~ **DONE.** The token
+   is in `pinokio/ENVIRONMENT`, not a `.env`; the run has to be launched
+   through the operator's own environment, which is why this was previously
+   written off as untestable here. ΔE 51.86, 79.64% of frame, under tiles. The
+   keyless globe regime also passes (ΔE 41.37, 77.66%). Both are recorded in
+   `report.regime`, and the outline strokes in both.
+2. ~~**Verify `polygon.outline` actually strokes.**~~ **DONE**, in the shots.
+   The assertion was only ever going to prove it was *set*; it is visible.
 3. **Persist the two swath toggles.** Both still initialise `false`
    (`index.js:421-422`), so an HMR reload still silently empties the map. This
    is the trap that produced the original false finding, and it is one
@@ -440,6 +436,24 @@ blocks anything.
    is 0.72; at the top band the terrain under the wash is dim. The category is
    saturated too, so this is a taste call rather than a defect — but it is a
    single constant and it is the obvious next dial.
+5. **Decide whether the fine 1 km field wants its own treatment.** This is the
+   one open *product* question, and it is new. At regional altitude — and at
+   1.7 km over the densest part of a real hail day — a fine day renders as a
+   broad, nearly uniform wash rather than a crisp band mosaic: Colorado
+   2026-06-01 put 2,153 polygons across the frame and covered 99.94% of it.
+
+   That is correct rendering, not a regression, and the numbers say so: the
+   smallest drawn polygon spans 0.0100° (one cell), and decoded straight from the
+   shard the largest single ring is 1,045 cells — 6.6% of the day. With a 19 mm
+   floor, the region that reached 0.75 in on a big day is simply large and
+   contiguous, and at 1 km the ramp has no room to band it. It is also a
+   different *look* from the coarse field the user approved.
+
+   So the question is not "is it broken" — it is "does the fine field want
+   heavier outlines, fewer bands, or a zoom-dependent ramp, given that its whole
+   purpose is roof-level detail". **Do not redesign it unprompted.** Raise it with
+   the numbers above attached, and at both scales
+   (`QA_SWATH_CAMERA_M=3000` gives the roof-level one).
 
 ## 11. What this session got wrong, for the record
 
@@ -464,6 +478,20 @@ mine:
   first — was the lesson I skipped.
 - I removed a working clamp on the strength of a crash under headless
   SwiftShader, and called software-rendering behaviour a production fact.
+- I asserted the fine field was rendering while the *caller* was still passing
+  the coarse grid step — and my own test for it stayed green, because it tested
+  `ringsToDegrees` honours its argument rather than that the layer passes the
+  right one. When I read `cartesianToCartographic` as degrees in that test it
+  put Denver at 0.69, which is §6's second trap, hit again in the file that
+  documents it.
+- I ran the whole fine build and declared it verified from a green QA run that
+  reported "34 radar polygons" — a number equally consistent with the coarse
+  field, because the coarse path is a silent plausible fallback. Nothing in that
+  run could tell the two apart.
+- I wrote "production `radarSource.dayFor`" into a commit message while the file
+  was unstaged in the working tree. Tests passed (they inject their own source),
+  the app worked (the dirty file was on disk), and a checkout of that commit had
+  **no fine path in production at all**.
 - Every one of those produced a confident, clean, wrong number.
 
 The common shape: **a measurement taken in an environment that was not the one

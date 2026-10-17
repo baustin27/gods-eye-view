@@ -218,9 +218,41 @@ metadata: record counts, per-decade completeness, thresholds, sources).
 A sixth file, `storm_radar_hail.geojsonl`, is built separately by
 `scripts/build-storm-radar-snapshots.mjs` from NOAA MRMS and is an **optional**
 enrichment — the app loads fine without it, and a missing file leaves every score
-unchanged. It holds 0.25° radar hail-core statistics on the same index space as
-the fine grid, for 2021 onward. The full property-key encoding, the rebuild
-procedure, and the scoring model are documented in
+unchanged. It holds 0.25° radar hail-core statistics for 2021 onward.
+
+Two further families come from the same builder at a **1 km** resolution
+(0.01° per cell), and they are what the swath layer draws:
+
+- `storm_radar_hail_perday_<year>.bin.gz` — the 0.25° per-day cell field, one
+  file per year, packed binary.
+- `storm_radar_hail_fine_<YYYY-MM-DD>.bin.gz` — **1,019 per-day shards, one per
+  calendar day from 2024-01-01 to 2026-10-15, 34.6 MB total.** Each shard holds
+  that day's 1 km hail cells at ≥ 19 mm (0.75 in), as `uint32` cell index plus
+  `uint16` millimetres, behind a four-byte `FINE` magic. The magic is not
+  decoration: the coarse shards are ten bytes per record and the fine six, so
+  without it a shard read with the wrong decoder yields plausible numbers for
+  the wrong cells rather than an error.
+  `storm-radar-fine-sources.json` is the manifest — one entry per day, plus the
+  build totals it can be checked against.
+
+The 0.25° field is a **25× downsample of the 1 km source**, forced by a `uint16`
+cell index in the older per-year format — it is a resolution limit of the
+encoding, not of NOAA. A single-day window fetches the 1 km shard; a multi-day
+window stays on the per-year 0.25° field, because combining dates is a regional
+question and per-day fetching would mean a fetch per selected day. Days outside
+the 1,019-day retention window, and any failure to load, fall back to the coarse
+field rather than to an empty map.
+
+The retention floor was chosen by measurement, not taste. Decoding all 1,019
+shards and counting rings per day gives a median of 242, a mean of 423 and a
+maximum of 2,592; a 10 mm floor instead yields 245 MB and a mean of 3,065 rings.
+19 mm is where the artifact stays small enough to ship whole and the polygon
+count stays inside the renderer's 3,000-ring ceiling. It does mean the fine field
+cannot populate the `under 10 mm` or `10-25 mm` bands except at its very top:
+the lowest band it can draw is `10-25 mm`, at 19–25 mm.
+
+The full property-key encoding, the rebuild procedure, and the scoring model are
+documented in
 [`src/data/local_data/storm/README.md`](src/data/local_data/storm/README.md).
 
 Four upstream sources, aggregated offline so the app needs no key and no network:
