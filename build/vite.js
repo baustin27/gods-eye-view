@@ -3,6 +3,7 @@ import cesium from 'vite-plugin-cesium';
 import { DEFAULT_ALLOWED_HOSTS, hostCheckPlugin } from './allowedHosts.js';
 import { embedFramingPlugin } from './embed-framing.js';
 import { panelBuildPlugin } from './panel.js';
+import { stormAssetsPlugin } from './storm-assets.js';
 
 /**
  * Content-Security-Policy for every document the dev/preview server serves.
@@ -68,6 +69,11 @@ export function createBrowserViteConfig({
       ...plugins,
       embedFramingPlugin(),
       panelBuildPlugin(),
+      // The gzipped storm payloads, which nothing else emits. Registered here
+      // rather than in a per-build config so the panel build inherits it —
+      // `panelBuildConfig` spreads this config, plugins included, and hardcoding
+      // the destination would land the copy in the wrong outDir.
+      stormAssetsPlugin(),
     ],
     ...(publicDir === undefined ? {} : { publicDir }),
     // A production build must not clean the dependency cache a running dev

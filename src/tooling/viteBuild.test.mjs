@@ -74,9 +74,12 @@ test('build helper does not discover environment values or construct local provi
       config.define['import.meta.env.GOOGLE_MAPS_API_KEY'],
       undefined,
     );
+    // `gev-storm-assets` is the plugin that copies the gzipped storm payloads
+    // into a finished bundle; nothing else emits them, so without it a
+    // production build ships no storm data at all.
     assert.deepEqual(
       config.plugins.slice(3).map((plugin) => plugin.name),
-      ['embed-framing', 'panel-build'],
+      ['embed-framing', 'panel-build', 'gev-storm-assets'],
     );
   } finally {
     if (before === undefined) delete process.env.GOOGLE_MAPS_API_KEY;
@@ -88,16 +91,24 @@ test('root config retains existing named exports and standalone provider order',
   for (const [name, value] of Object.entries(providers))
     assert.equal(compatibility[name], value, name);
   const config = standaloneConfig({ mode: 'test' });
+  // The trailing browser plugins are skipped so this compares only the provider
+  // block. There are five of them now — embed-framing, panel-build,
+  // gev-storm-assets, gev-key-setup, local-mcp — so the bound tracks the count
+  // rather than assuming four.
   assert.deepEqual(
-    config.plugins.slice(3, -4).map((plugin) => plugin.name),
+    config.plugins.slice(3, -5).map((plugin) => plugin.name),
     providers.localProviderPlugins().map((plugin) => plugin.name),
   );
-  assert.equal(config.plugins.at(-5).name, 'gev-key-setup');
+  // One more trailing plugin than before, so each of these sits one further
+  // from the end. The order is: ... gev-key-setup, local-mcp, api-not-found,
+  // embed-framing, panel-build, gev-storm-assets.
+  assert.equal(config.plugins.at(-6).name, 'gev-key-setup');
   // The local MCP route follows every provider and precedes the API fallback.
-  assert.equal(config.plugins.at(-4).name, 'local-mcp');
-  assert.equal(config.plugins.at(-3).name, 'api-not-found');
-  assert.equal(config.plugins.at(-2).name, 'embed-framing');
-  assert.equal(config.plugins.at(-1).name, 'panel-build');
+  assert.equal(config.plugins.at(-5).name, 'local-mcp');
+  assert.equal(config.plugins.at(-4).name, 'api-not-found');
+  assert.equal(config.plugins.at(-3).name, 'embed-framing');
+  assert.equal(config.plugins.at(-2).name, 'panel-build');
+  assert.equal(config.plugins.at(-1).name, 'gev-storm-assets');
 });
 
 test('build export resolves in Node and has no browser fallback', async () => {
