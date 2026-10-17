@@ -1,5 +1,5 @@
 {
-  "builtAt": "2026-10-17T21:08:19.657Z",
+  "builtAt": "2026-10-17T22:06:32.276Z",
   "format": "fine-per-day",
   "geometry": {
     "gridDeg": 0.01,
@@ -11,6 +11,8 @@
   },
   "encoding": {
     "bytesPerRecord": 6,
+    "headerBytes": 4,
+    "magic": "FINE",
     "cellIndexBits": 32,
     "mmScale": 10,
     "dayIndexInFilename": true
@@ -28,7 +30,7 @@
   "dayCount": 1019,
   "recordCount": 9491586,
   "cellCount": 5103569,
-  "bytes": 34603812,
+  "bytes": 34608315,
   "days": [
     "20240101",
     "20240102",

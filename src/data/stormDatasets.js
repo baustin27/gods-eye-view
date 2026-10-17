@@ -216,6 +216,60 @@ export const RADAR_GRID = Object.freeze({
   cellCount: 140 * 260,
 });
 
+/**
+ * The FINE retained index space, mirroring the builder's
+ * `GRID_ROW_BASE_FINE` / `GRID_COL_BASE_FINE` / 3500 x 6500.
+ *
+ * A SIBLING of {@link RADAR_GRID}, not a parameterisation of it. The two grids
+ * are 25x apart in each axis and their index 0 means completely different
+ * places — Denver is 158:-420 on one and 3962:-10488 on the other — so a payload
+ * decoded with the wrong one returns plausible numbers for the wrong cells and
+ * throws nowhere. Keeping them separate types is the cheapest guard there is.
+ *
+ * 22.75 million cells, so the index is a 32-bit read, not a 16-bit one.
+ */
+export const RADAR_FINE_GRID = Object.freeze({
+  deg: 0.01,
+  rowBase: 2100,
+  colBase: -12500,
+  rows: 3500,
+  columns: 6500,
+  cellCount: 3500 * 6500,
+});
+
+/**
+ * The fine shard's floor, mirroring the builder's `HAIL_RETAIN_MM_FINE`.
+ *
+ * 19 mm, not 10: measured across the window that is 245 MB versus 28 MB, and
+ * 3,065 versus 979 rings a day. It is three-quarters of an inch — the NWS
+ * severe threshold and the lowest band the category draws.
+ */
+export const RADAR_RETAIN_MM_FINE = 19;
+
+/**
+ * The fine shard's record width, mirroring `FINE_DAY_RECORD_BYTES`.
+ *
+ * `u32 cellIndex, u16 maxMm x RADAR_PER_DAY_MM_SCALE`. The day is NOT in the
+ * payload; it is in the filename, so a shard cannot be misread as belonging to
+ * another day.
+ */
+export const FINE_DAY_RECORD_BYTES = 6;
+
+/**
+ * Magic at the head of a fine shard, ASCII `FINE`.
+ *
+ * Not decoration. The coarse per-day artifact has the SAME six-byte record
+ * width, so length alone cannot tell the families apart — and a coarse shard
+ * handed to the fine decoder reads `u16 index, u16 day, u16 mm` as
+ * `u32 index, u16 mm`, turning index 12,000 into 10,825,440 (inside the fine
+ * space) and 562 into a plausible 56.2 mm. Hail in the wrong county, no error
+ * raised anywhere. A length check catches most coarse shards by luck; this
+ * catches all of them.
+ */
+export const FINE_DAY_MAGIC = Object.freeze([0x46, 0x49, 0x4e, 0x45]);
+/** Bytes of magic before the first record. */
+export const FINE_DAY_HEADER_BYTES = FINE_DAY_MAGIC.length;
+
 const RADAR_EPOCH_MS = Date.parse(`${RADAR_DAY_INDEX_EPOCH}T00:00:00Z`);
 const MS_PER_DAY = 86_400_000;
 

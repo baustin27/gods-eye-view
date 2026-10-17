@@ -142,6 +142,20 @@ export const PER_DAY_RECORD_BYTES_FINE = 10;
 /** The narrower per-shard width, which omits the constant dayIndex. */
 export const FINE_DAY_RECORD_BYTES = 6;
 
+/**
+ * Magic at the head of a fine shard: ASCII `FINE`.
+ *
+ * It exists because the coarse per-day artifact has the SAME six-byte record
+ * width, so length alone cannot tell the two families apart. Handing a coarse
+ * shard to the fine decoder reads `u16 index, u16 day, u16 mm` as `u32 index,
+ * u16 mm`: index 12,000 becomes 10,825,440 — inside the fine space — and 562
+ * becomes a plausible 56.2 mm. Measured, not hypothesised. A magic word is the
+ * only thing standing between a swapped payload and hail in the wrong county.
+ */
+export const FINE_DAY_MAGIC = Buffer.from([0x46, 0x49, 0x4e, 0x45]);
+/** Bytes of magic before the first record. */
+export const FINE_DAY_HEADER_BYTES = FINE_DAY_MAGIC.length;
+
 /** Grid step of the emitted snapshot, degrees. Must match the report snapshot. */
 export const CELL_DEG = 0.25;
 
@@ -1115,6 +1129,8 @@ export function fineDayMeta(input) {
     },
     encoding: {
       bytesPerRecord: FINE_DAY_RECORD_BYTES,
+      headerBytes: FINE_DAY_HEADER_BYTES,
+      magic: FINE_DAY_MAGIC.toString('ascii'),
       cellIndexBits: 32,
       mmScale: PER_DAY_MM_SCALE,
       dayIndexInFilename: true,
@@ -1299,7 +1315,10 @@ export function encodeFineDayRecords(ymd, cells) {
     (a, b) =>
       cellIndexFine(a.i, a.j) - cellIndexFine(b.i, b.j),
   );
-  const buffer = Buffer.alloc(ordered.length * FINE_DAY_RECORD_BYTES);
+  const buffer = Buffer.alloc(
+    FINE_DAY_HEADER_BYTES + ordered.length * FINE_DAY_RECORD_BYTES,
+  );
+  FINE_DAY_MAGIC.copy(buffer, 0);
   let previousDay = dayIndex(String(ymd));
   if (!Number.isInteger(previousDay) || previousDay < 0) {
     throw new RangeError(`fine day ${ymd} does not resolve to a day index`);
@@ -1317,7 +1336,7 @@ export function encodeFineDayRecords(ymd, cells) {
         `fine maxMm x scale ${scaled} does not fit a uint16; raise PER_DAY_MM_SCALE's inverse or the threshold`,
       );
     }
-    const at = n * FINE_DAY_RECORD_BYTES;
+    const at = FINE_DAY_HEADER_BYTES + n * FINE_DAY_RECORD_BYTES;
     buffer.writeUInt32LE(index, at);
     buffer.writeUInt16LE(scaled, at + 4);
   });
@@ -1333,14 +1352,26 @@ export function encodeFineDayRecords(ymd, cells) {
  *   is also what rejects an SPA shell served with a 200.
  */
 export function decodeFineDayRecords(bytes) {
-  if (!bytes?.length || bytes.length % FINE_DAY_RECORD_BYTES !== 0) {
+  if (
+    !bytes?.length ||
+    bytes.length < FINE_DAY_HEADER_BYTES ||
+    bytes.length - FINE_DAY_HEADER_BYTES < 0 ||
+    (bytes.length - FINE_DAY_HEADER_BYTES) % FINE_DAY_RECORD_BYTES !== 0
+  ) {
     throw new RangeError(
-      `fine day payload is ${bytes?.length ?? 0} bytes, not a multiple of ${FINE_DAY_RECORD_BYTES}`,
+      `fine day payload is ${bytes?.length ?? 0} bytes, not a header plus a multiple of ${FINE_DAY_RECORD_BYTES}`,
     );
+  }
+  for (let at = 0; at < FINE_DAY_HEADER_BYTES; at += 1) {
+    if (bytes[at] !== FINE_DAY_MAGIC[at]) {
+      throw new RangeError(
+        `fine day payload does not start with the FINE magic — it is probably a coarse shard`,
+      );
+    }
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const out = [];
-  for (let at = 0; at < bytes.length; at += FINE_DAY_RECORD_BYTES) {
+  for (let at = FINE_DAY_HEADER_BYTES; at < bytes.length; at += FINE_DAY_RECORD_BYTES) {
     const { i, j } = cellIJFine(view.getUint32(at, true));
     out.push({ i, j, maxMm: view.getUint16(at + 4, true) / PER_DAY_MM_SCALE });
   }
@@ -1469,6 +1500,12 @@ async function main() {
   );
   const publishedByYear = restrictYearsToKeys(byYear, keptKeys);
 
+  // Hoisted ABOVE the fine-only guard because BOTH families stamp their
+  // sidecars with it. It was declared inside the coarse branch first, and
+  // the fine block could not see it — which a smoke run caught immediately
+  // with a ReferenceError rather than a silently wrong timestamp.
+  const builtAt = new Date().toISOString();
+
   // GATE A guard, opened here rather than at the sidecars: the combined file is
   // the first coarse artifact written, so a guard that started later would let
   // `--fine-only` truncate the climatology and still report success. That is
@@ -1501,7 +1538,6 @@ async function main() {
     step(`Unavailable days: ${failures.length} — ${sample}`);
   }
 
-  const builtAt = new Date().toISOString();
   await writeMetaJson(
     path.join(args.out, 'storm-radar-sources.json'),
     radarMeta({
@@ -1583,7 +1619,16 @@ async function main() {
     );
   }
 
+  } // end the coarse-only guard: everything above is the published climatology
+
   // The FINE field, written last and one file per calendar day.
+  //
+  // OUTSIDE the guard, deliberately, and that placement is load-bearing. The
+  // first version of `--fine-only` left this block inside the coarse `else`, so
+  // the flag skipped the fine shards as well as the coarse ones: the build
+  // reported success, printed nothing about fine output, and left the previous
+  // day's shards on disk untouched. Nothing failed. Two rebuilds "passed" with
+  // stale data before it was caught by checking a file's mtime.
   //
   // Two things happen here that do not happen for the coarse artifacts, both
   // because there are ~1,000 of these rather than six:
@@ -1652,8 +1697,6 @@ async function main() {
       `${(fineBytes / 1e6).toFixed(1)} MB total` +
       (pruned ? `, pruned ${pruned} outside ${fineYears}y` : ''),
   );
-  } // end the fine-only guard opened above the coarse sidecars
-
   step(`Done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 }
 

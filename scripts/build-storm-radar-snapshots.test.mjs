@@ -60,6 +60,7 @@ import {
   perDayRecordsByYear,
   fineDayFileName,
   fineDayMeta,
+  FINE_DAY_HEADER_BYTES,
   FINE_DAY_RECORD_BYTES,
   PER_DAY_MM_SCALE,
   PER_DAY_RECORD_BYTES,
@@ -1276,8 +1277,13 @@ test('a fine day shard round-trips exactly and sorts by cell', () => {
   const buffer = encodeFineDayRecords('20260601', cells);
   assert.equal(
     buffer.length,
-    cells.length * FINE_DAY_RECORD_BYTES,
-    'six bytes per cell — the day index is in the filename, not per record',
+    FINE_DAY_HEADER_BYTES + cells.length * FINE_DAY_RECORD_BYTES,
+    'a magic header, then six bytes per cell — the day index is in the',
+  );
+  assert.equal(
+    buffer.subarray(0, 4).toString('latin1'),
+    'FINE',
+    'and the magic, which is what tells the two six-byte families apart',
   );
   const back = decodeFineDayRecords(new Uint8Array(buffer));
   // Order is by cellIndex, so a consumer walks them geographically.
@@ -1296,9 +1302,25 @@ test('a fine day shard round-trips exactly and sorts by cell', () => {
 test('a truncated fine payload is refused, which is what rejects an SPA shell', () => {
   const buffer = encodeFineDayRecords('20260601', [{ i: 2100, j: -12500, maxMm: 19 }]);
   assert.throws(
-    () => decodeFineDayRecords(new Uint8Array(buffer.subarray(0, 5))),
+    () =>
+      decodeFineDayRecords(
+        new Uint8Array(buffer.subarray(0, buffer.length - 2)),
+      ),
     RangeError,
     'a length that is not a whole number of records is a refusal, not garbage',
+  );
+  assert.throws(
+    () => decodeFineDayRecords(buffer.subarray(0, FINE_DAY_HEADER_BYTES + 2)),
+    RangeError,
+    'and so is a payload with the magic but no whole record after it',
+  );
+  assert.throws(
+    () =>
+      decodeFineDayRecords(
+        new Uint8Array(Buffer.concat([Buffer.from('COAR'), buffer.subarray(4)])),
+      ),
+    RangeError,
+    'a coarse shard is refused by the magic',
   );
   assert.deepEqual(
     decodeFineDayRecords(new Uint8Array(buffer)).length,
@@ -1353,4 +1375,59 @@ test('the fine manifest records the geometry, the floor, and every day', () => {
   assert.deepEqual(meta.days, days, 'every published day is listed');
   assert.equal(meta.dayCount, 2);
   assert.equal(meta.recordCount, 2);
+});
+
+
+test('--fine-only skips the coarse artifacts and still writes the fine ones', async () => {
+  // The bug this pins: the fine emission was briefly left INSIDE the coarse
+  // `else` branch, so `--fine-only` skipped the fine shards as well. The build
+  // reported success, printed nothing about fine output, and left the previous
+  // day's shards on disk untouched. Two rebuilds "passed" with stale data before
+  // it was caught by checking a file's mtime — nothing failed, which is the
+  // whole problem with a flag that only turns things OFF.
+  //
+  // Asserted on the source structure rather than by running the 400-second
+  // build: the guard must close before the fine emission begins.
+  const source = fsSync.readFileSync(
+    new URL('./build-storm-radar-snapshots.mjs', import.meta.url),
+    'utf8',
+  );
+  const guard = source.indexOf('end the coarse-only guard');
+  const fine = source.indexOf('const fineOutDir');
+  assert.ok(guard > 0, 'the coarse guard is closed explicitly');
+  assert.ok(
+    fine > guard,
+    'and the fine emission comes AFTER it, not inside the coarse branch',
+  );
+  // The reverse is the bug: a fine emission before the guard close would mean
+  // --fine-only never runs.
+  assert.ok(
+    source.indexOf('Wrote ${emittedFine.length') > guard,
+    'and the fine summary line is outside too',
+  );
+});
+
+test('a built fine shard round-trips through the runtime decoder', async () => {
+  // Builder and runtime must agree on the format, or every shard is garbage in
+  // the app while the builder's own tests pass.
+  const runtime = await import('../src/data/stormReports.js');
+  const cells = [
+    { i: 2100, j: -12500, maxMm: 19 },
+    { i: 3962, j: -10488, maxMm: 38.5 },
+  ];
+  const bytes = new Uint8Array(encodeFineDayRecords('20260601', cells));
+  // Compared as bytes, not via toString('latin1'): that is a Buffer method and
+  // a Uint8Array's takes no argument, so it silently joins the numbers instead
+  // and the assertion reads '70,73,78,69'.
+  assert.deepEqual(
+    [...bytes.subarray(0, 4)],
+    [0x46, 0x49, 0x4e, 0x45],
+    'FINE, byte for byte',
+  );
+  const out = runtime.indexFineDay(bytes);
+  assert.equal(out.count, cells.length, 'and the runtime decodes it');
+  assert.deepEqual(
+    out.cells.map((c) => `${c.i}:${c.j}:${c.maxMm}`).sort(),
+    cells.map((c) => `${c.i}:${c.j}:${c.maxMm}`).sort(),
+  );
 });

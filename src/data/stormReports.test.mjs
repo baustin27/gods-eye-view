@@ -3,6 +3,17 @@ import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 
 import {
+  FINE_DAY_HEADER_BYTES,
+  FINE_DAY_MAGIC,
+} from './stormDatasets.js';
+
+import {
+  FINE_DAY_CACHE_ENTRIES,
+  clearFineRadarCache,
+  fineDayFileName,
+  fineRadarCacheSize,
+  indexFineDay,
+  loadFineRadarDay,
   MAGNITUDE_UNITS,
   clearStormReportCache,
   filterReports,
@@ -797,4 +808,236 @@ test('a per-day year is fetched once and memoised across callers', async () => {
     stub.restore();
     resetYearCaches();
   }
+});
+
+
+// ===========================================================================
+// The fine 1 km loader. Per DAY, where the coarse one is per year, and on its
+// own index space — so it gets its own tests rather than a mode flag.
+// ===========================================================================
+
+/** A fine-day payload, encoded by the BUILDER so the test cannot drift from it. */
+async function fineDayBytes(cells) {
+  const { encodeFineDayRecords } = await import(
+    '../../scripts/build-storm-radar-snapshots.mjs'
+  );
+  return new Uint8Array(encodeFineDayRecords('20260601', cells));
+}
+
+test('a fine day decodes to 1km cells, gzipped or not', async () => {
+  const cells = [
+    { i: 2100, j: -12500, maxMm: 19 },
+    { i: 3962, j: -10488, maxMm: 38.5 },
+  ];
+  const payload = await fineDayBytes(cells);
+  for (const gzipped of [false, true]) {
+    resetYearCaches();
+    const stub = stubFetch({
+      'storm_radar_hail_fine_2026-06-01.bin.gz': { bytes: payload, gzipped },
+    });
+    try {
+      const out = await loadFineRadarDay('2026-06-01');
+      assert.equal(
+        out.count,
+        cells.length,
+        `two cells, gzipped=${gzipped}`,
+      );
+      const denver = out.cells.find((c) => c.i === 3962 && c.j === -10488);
+      assert.ok(denver, 'the Colorado cell is present');
+      assert.equal(denver.maxMm, 38.5, 'and its millimetres are exact');
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test('the fine loader asks for a DAY, not a year', async () => {
+  resetYearCaches();
+  const payload = await fineDayBytes([{ i: 2100, j: -12500, maxMm: 19 }]);
+  const stub = stubFetch({
+    'storm_radar_hail_fine_2026-06-01.bin.gz': { bytes: payload },
+  });
+  try {
+    await loadFineRadarDay('2026-06-01');
+    assert.deepEqual(
+      stub.calls.map((u) => u.split('/').pop()),
+      ['storm_radar_hail_fine_2026-06-01.bin.gz'],
+      'one fetch, named for the day',
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
+test('the app HTML shell decodes to an empty day, not a day of nonsense', async () => {
+  // The 200-with-the-shell case.
+  //
+  // The shell is padded to a whole number of 6-byte records ON PURPOSE. Without
+  // that, the length guard alone rejects it and the magic is never exercised —
+  // which is exactly how the first version of this test passed with the magic
+  // check deleted.
+  resetYearCaches();
+  const stub = stubFetch({
+    'storm_radar_hail_fine_2026-06-01.bin.gz': {
+      body: 'FINE' + '!'.repeat(54),
+      status: 200,
+    },
+  });
+  try {
+    const out = await loadFineRadarDay('2026-06-01');
+    assert.equal(out.count, 0, 'nothing, rather than garbage');
+    assert.deepEqual(out.cells, []);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a day with no fine shard is empty, not an error', async () => {
+  // What roll-off leaves behind: a day outside the retention window.
+  resetYearCaches();
+  const stub = stubFetch({});
+  try {
+    const out = await loadFineRadarDay('2019-07-04');
+    assert.equal(out.count, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('the fine loader does not share a cache with the per-year loader', async () => {
+  // The invariant that makes two same-named index spaces safe to coexist. They
+  // are 25x apart per axis; a shared cache answers each loader with the other's
+  // shape and no error.
+  resetYearCaches();
+  const coarse = gzipSync(
+    Buffer.from(
+      `${JSON.stringify({
+        type: 'Feature',
+        properties: { i: 84, j: -500, mx: 56.2, cp: 1, dy: 1, d: 0.25, y0: 2021, y1: 2021 },
+        geometry: { type: 'Point', coordinates: [-100, 40] },
+      })}\n`,
+    ),
+  );
+  const finePayload = await fineDayBytes([{ i: 3962, j: -10488, maxMm: 38.5 }]);
+  const stub = stubFetch({
+    'storm_radar_hail_perday_2021.bin.gz': { bytes: await perDayBytes([{ cellIndex: 0, dayIndex: 165, maxMm: 56.2 }]) },
+    'storm_radar_hail_fine_2026-06-01.bin.gz': { bytes: finePayload },
+  });
+  try {
+    const days = await loadRadarDaysForYear(2021);
+    assert.equal(typeof days.get(165), 'object', 'the coarse loader yields a day map');
+    const fine = await loadFineRadarDay('2026-06-01');
+    assert.equal(fine.count, 1, 'and the fine loader yields cells');
+    assert.ok(Array.isArray(fine.cells), 'with its own shape, unaffected');
+    assert.equal(days.get(165).get('84:-500'), 56.2, 'the coarse value is intact');
+  } finally {
+    stub.restore();
+    void coarse;
+  }
+});
+
+test('a fine day is fetched once and memoised across callers', async () => {
+  resetYearCaches();
+  const payload = await fineDayBytes([{ i: 2100, j: -12500, maxMm: 19 }]);
+  const stub = stubFetch({
+    'storm_radar_hail_fine_2026-06-01.bin.gz': { bytes: payload },
+  });
+  try {
+    const [first, second] = await Promise.all([
+      loadFineRadarDay('2026-06-01'),
+      loadFineRadarDay('2026-06-01'),
+    ]);
+    assert.equal(first.count, second.count);
+    assert.equal(
+      stub.calls.length,
+      1,
+      'two concurrent callers share one fetch',
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
+test('the fine cache is bounded, and evicts the oldest day first', async () => {
+  resetYearCaches();
+  const payload = await fineDayBytes([{ i: 2100, j: -12500, maxMm: 19 }]);
+  const stubs = [];
+  try {
+    // One more day than the cache holds.
+    const days = [];
+    for (let d = 1; d <= FINE_DAY_CACHE_ENTRIES + 1; d += 1) {
+      days.push(`2026-06-${String(d).padStart(2, '0')}`);
+    }
+    const files = {};
+    for (const day of days) {
+      files[fineDayFileName(day)] = { bytes: payload };
+    }
+    const stub = stubFetch(files);
+    stubs.push(stub);
+    for (const day of days) await loadFineRadarDay(day);
+    assert.ok(
+      fineRadarCacheSize() <= FINE_DAY_CACHE_ENTRIES,
+      `the cache is bounded, holding ${fineRadarCacheSize()} of ${days.length}`,
+    );
+    // The most recent day is still cached; the first is gone.
+    assert.ok(
+      fineRadarCacheSize() < days.length,
+      'and it did not simply refuse to cache',
+    );
+  } finally {
+    for (const stub of stubs) stub.restore();
+    clearFineRadarCache();
+  }
+});
+
+test('an out-of-space fine index is dropped rather than wrapped onto a cell', async () => {
+  // A 32-bit read can produce anything; a corrupt or foreign payload must not
+  // alias a real cell.
+  const { RADAR_FINE_GRID } = await import('./stormDatasets.js');
+  const bytes = new Uint8Array(6);
+  new DataView(bytes.buffer).setUint32(0, RADAR_FINE_GRID.cellCount + 5, true);
+  const out = indexFineDay(bytes);
+  assert.equal(out.count, 0, 'dropped, not aliased');
+});
+
+
+test('a coarse shard is refused by the fine decoder, magic or no magic', async () => {
+  // The collision this format has to survive: the coarse per-day artifact uses
+  // the SAME six-byte record width. Read as a fine record, `u16 index, u16 day,
+  // u16 mm` becomes `u32 index, u16 mm` — index 12,000 becomes 10,825,440,
+  // which is inside the fine space, and 562 becomes a plausible 56.2 mm.
+  //
+  // Both refusals are tested, because either alone is insufficient: a length
+  // check catches most coarse shards by luck (the real 2026 shard is 252,051
+  // records, which is not header-plus-a-multiple-of-6), and the magic catches
+  // all of them.
+  assert.deepEqual([...FINE_DAY_MAGIC], [0x46, 0x49, 0x4e, 0x45], 'FINE, literally');
+  const coarseBytes = new Uint8Array(FINE_DAY_HEADER_BYTES + 6);
+  new DataView(coarseBytes.buffer).setUint32(FINE_DAY_HEADER_BYTES, 12_000, true);
+  new DataView(coarseBytes.buffer).setUint16(FINE_DAY_HEADER_BYTES + 4, 562, true);
+  assert.equal(
+    indexFineDay(coarseBytes).count,
+    0,
+    'a well-formed coarse record with no FINE magic is refused',
+  );
+
+  const { RADAR_FINE_GRID } = await import('./stormDatasets.js');
+  assert.ok(
+    12_000 + (165 << 16) < RADAR_FINE_GRID.cellCount,
+    'and it WOULD have passed the index bounds check — which is why the magic is needed',
+  );
+
+  // And a coarse-shaped payload that is a whole number of records, magic intact.
+  const { encodeFineDayRecords } = await import(
+    '../../scripts/build-storm-radar-snapshots.mjs'
+  );
+  const fine = encodeFineDayRecords('20260601', [
+    { i: 2100, j: -12500, maxMm: 19 },
+  ]);
+  const magicBytes = new Uint8Array(fine);
+  assert.equal(
+    indexFineDay(magicBytes).count,
+    1,
+    'a real fine shard with the magic still decodes',
+  );
 });

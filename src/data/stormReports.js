@@ -22,7 +22,15 @@ import {
   inflateBytes,
   inflateBytesUint8Array,
 } from './stormReports.inflateHelper.js';
-import { RADAR_GRID, RADAR_PER_DAY_MM_SCALE } from './stormDatasets.js';
+import {
+  FINE_DAY_HEADER_BYTES,
+  FINE_DAY_MAGIC,
+  FINE_DAY_RECORD_BYTES,
+  RADAR_FINE_GRID,
+  RADAR_GRID,
+  RADAR_PER_DAY_MM_SCALE,
+  RADAR_RETAIN_MM_FINE,
+} from './stormDatasets.js';
 
 /**
  * Where the snapshot lives, relative to this module.
@@ -49,6 +57,25 @@ const radarYears = new Map();
 // would be handed `Map<dayIndex, Map<'i:j', number>>` — no error, just a layer
 // that draws nothing and a reader with no reason to look further.
 const radarDayYears = new Map();
+/**
+ * The FINE 1 km field's cache: `Map<isoDate, Promise<cells>>`.
+ *
+ * Its own Map for the same reason `radarDayYears` has one — two year-keyed
+ * loaders sharing a cache answer each other's callers with the wrong shape and
+ * no error, which is a tested invariant rather than a style note. Here the keys
+ * are DATES, which collide with nothing today, but the isolation is what makes
+ * adding them safe rather than lucky.
+ *
+ * Bounded, unlike every other cache in this module. Those hold build artifacts
+ * that are immutable and few; this one holds up to `FINE_DAY_CACHE_ENTRIES`
+ * days of ~10k cells each, and an unbounded map over a browsing session would
+ * grow without limit. Eviction is oldest-first insertion order, which is also
+ * least-recently-written, and is good enough: the loader is only ever asked for
+ * a date the user is looking at.
+ */
+const fineDayCache = new Map();
+/** How many days of fine field to hold. ~10k cells a day, so this is ~100k. */
+export const FINE_DAY_CACHE_ENTRIES = 12;
 
 /**
  * A snapshot fetch that never answers must fail, not park. An unbounded fetch
@@ -541,6 +568,7 @@ export function clearStormReportCache() {
   eventYears.clear();
   radarYears.clear();
   radarDayYears.clear();
+  fineDayCache.clear();
 }
 
 /** Bytes per per-day record: `u16 cellIndex, u16 dayIndex, u16 maxMm × scale`. */
@@ -614,6 +642,131 @@ export function loadRadarDaysForYear(year, signal) {
     },
     signal,
   );
+}
+
+/**
+ * The filename one day's fine shard is published under.
+ * @param {string} date ISO `YYYY-MM-DD`.
+ * @returns {string}
+ */
+export function fineDayFileName(date) {
+  return `storm_radar_hail_fine_${date.replaceAll('-', '')}.bin.gz`.replace(
+    /(\d{4})(\d{2})(\d{2})/,
+    '$1-$2-$3',
+  );
+}
+
+/**
+ * Decode ONE fine day shard.
+ *
+ * Split out from the loader for the same reason {@link indexRadarDays} is: the
+ * decoding has to be testable without a fetch, and the "is this actually a fine
+ * payload?" decision has exactly one home.
+ *
+ * That decision is a LENGTH check, and it is load-bearing. A production build
+ * that did not copy the shards, served by a static host's SPA fallback, answers
+ * with the HTML shell and a **200**. Decoded as binary that is not a whole
+ * number of records, so it refuses — rather than producing a day of plausible
+ * numbers, which is the failure mode this whole loader shape exists to avoid.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {{cells: Array<{i: number, j: number, maxMm: number}>, count: number}}
+ *   `cells` is sorted by index, i.e. geographically, so a renderer can walk it.
+ */
+export function indexFineDay(bytes) {
+  const empty = { cells: [], count: 0 };
+  if (
+    !bytes?.length ||
+    bytes.length < FINE_DAY_HEADER_BYTES ||
+    (bytes.length - FINE_DAY_HEADER_BYTES) % FINE_DAY_RECORD_BYTES !== 0
+  ) {
+    return empty;
+  }
+  // The magic is checked BEFORE any decoding. The coarse artifact has the same
+  // six-byte record width, so a swapped payload would otherwise decode into tens
+  // of thousands of in-bounds indices and place hail in the wrong counties with
+  // nothing reporting an error anywhere.
+  for (let at = 0; at < FINE_DAY_HEADER_BYTES; at += 1) {
+    if (bytes[at] !== FINE_DAY_MAGIC[at]) return empty;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const { columns, colBase, rowBase, cellCount } = RADAR_FINE_GRID;
+  const cells = [];
+  for (
+    let at = FINE_DAY_HEADER_BYTES;
+    at < bytes.length;
+    at += FINE_DAY_RECORD_BYTES
+  ) {
+    const index = view.getUint32(at, true);
+    // A 32-bit read can yield anything. An index outside the retained space is
+    // refused per-record rather than allowed to wrap into a real cell.
+    if (index >= cellCount) continue;
+    cells.push({
+      i: Math.floor(index / columns) + rowBase,
+      j: (index % columns) + colBase,
+      maxMm: view.getUint16(at + 4, true) / RADAR_PER_DAY_MM_SCALE,
+    });
+  }
+  return { cells, count: cells.length };
+}
+
+/**
+ * Load ONE calendar day's fine 1 km field.
+ *
+ * Per day, where the coarse loader is per year. The measured reason: a per-year
+ * fine blob is ~85 MB to draw one neighbourhood's worth of detail, and a
+ * per-day shard is 28 KB. The consumer asks about a date, so the fetch is that
+ * date and nothing else.
+ *
+ * Degrades to an empty day in the two documented ways the coarse loader does —
+ * a 404, or a payload that is not a fine payload — because a missing artifact
+ * must never fail a layer enable. There is also a third, specific to the fine
+ * family: a day outside the retention window has no shard by design, so the
+ * roll-off pruning in the builder is not an error to report.
+ *
+ * @param {string} date ISO `YYYY-MM-DD`.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{cells: Array<{i: number, j: number, maxMm: number}>, count: number}>}
+ */
+export function loadFineRadarDay(date, signal) {
+  const key = String(date);
+  const pending = once(
+    fineDayCache,
+    key,
+    async () => {
+      let payload;
+      try {
+        payload = await inflateBytesUint8Array(
+          await fetchSnapshotBytes(fineDayFileName(key), signal),
+        );
+      } catch (error) {
+        if (error?.message?.includes('404')) return { cells: [], count: 0 };
+        throw error;
+      }
+      return indexFineDay(payload);
+    },
+    signal,
+  );
+  // Oldest-first eviction, after the load resolves so a rejected entry is
+  // already gone and does not occupy a slot.
+  return pending.then((result) => {
+    while (fineDayCache.size > FINE_DAY_CACHE_ENTRIES) {
+      const oldest = fineDayCache.keys().next().value;
+      if (oldest === key) break;
+      fineDayCache.delete(oldest);
+    }
+    return result;
+  });
+}
+
+/** How many fine days are held. Reported rather than asserted, for diagnostics. */
+export function fineRadarCacheSize() {
+  return fineDayCache.size;
+}
+
+/** Drop the fine cache. Paired with {@link clearStormReportCache}. */
+export function clearFineRadarCache() {
+  fineDayCache.clear();
 }
 
 /**

@@ -433,6 +433,15 @@ export function createStormReportsLayer({
   let _radarWindowCells = null;
   let _radarKey = null;
   let _radarSwath = [];
+  /**
+   * The fine 1 km cells for the selected day, when the window is one day and
+   * the shard existed. Null means the wash is being drawn from the coarse
+   * 0.25-degree field, which is the multi-day case and any day outside the
+   * retention window.
+   */
+  let _fineRadarCells = null;
+  /** Whether the current wash came from the fine field. Read by the renderer. */
+  let _radarFine = false;
   // The two swath toggles. Both exist; each paints independently, and both are
   // off until asked for: the pins are what this layer shipped, and a swath is
   // an added claim on top of them.
@@ -913,6 +922,12 @@ export function createStormReportsLayer({
       _radarKey = null;
       _radarWindowCells = null;
       _radarSwath = [];
+      // The fine cells belong to ONE day. Leaving them behind across a date
+      // change is how a swath drawn for yesterday's storm stays on screen
+      // tomorrow, which is the same class of bug as the HMR toggle reset this
+      // layer already had one of.
+      _fineRadarCells = null;
+      _radarFine = false;
       return;
     }
     // Already read for this exact window and still in memory: a repaint from a
@@ -924,6 +939,8 @@ export function createStormReportsLayer({
     _radarKey = key;
     _radarWindowCells = null;
     _radarSwath = [];
+    _fineRadarCells = null;
+    _radarFine = false;
     const token = ++_comparisonToken;
     try {
       const cells = await loadRadarWindow(_request?.signal);
@@ -971,6 +988,24 @@ export function createStormReportsLayer({
    * `Map<dayIndex, Map<'i:j', millimetres>>`. Anything unrecognised is an empty
    * map, which reads as "no radar that year", not as a failure.
    */
+  /**
+   * The FINE 1 km field for one day, or null when the source has none.
+   *
+   * A sibling of {@link radarDaysForYear} with its own optional method on the
+   * injected source, so a layer constructed without one — every test that does
+   * not care about fine detail, and the panel, which no longer ships the
+   * payload — behaves exactly as before.
+   */
+  async function radarFineDay(date, signal) {
+    const call = radarSource?.dayFor;
+    if (typeof call !== 'function' || !date) return null;
+    const raw = await call.call(radarSource, date, signal);
+    // The loader returns `{cells: [{i, j, maxMm}]}`. Anything else is treated as
+    // absent rather than half-believed, matching `normaliseRadarDays`.
+    if (!Array.isArray(raw?.cells)) return null;
+    return raw.cells;
+  }
+
   async function radarDaysForYear(year, signal) {
     const call = radarSource?.daysFor;
     if (typeof call !== 'function')
@@ -990,6 +1025,38 @@ export function createStormReportsLayer({
     const from = _options.fromDate;
     const to = _options.toDate || from;
     const merged = new Map();
+
+    // A SINGLE day prefers the fine 1 km field when there is one, because that
+    // is the case where the detail is worth a fetch: the coarse path merges a
+    // whole year to draw one date, and at 0.25 degrees the result is a flat
+    // 25-mile colour block. A multi-day window stays coarse — combining dates is
+    // the "which streets took it more than once" question, which is a regional
+    // one, and it would otherwise mean a fetch per day in the range.
+    //
+    // On failure it falls through to the coarse path rather than rendering
+    // nothing: a day outside the retention window has no shard by design.
+    if (from === to) {
+      try {
+        const fine = await radarFineDay(from, signal);
+        if (fine && fine.length) {
+          _fineRadarCells = fine;
+          _radarFine = true;
+          for (const cell of fine) {
+            merged.set(`${cell.i}:${cell.j}`, cell.maxMm);
+          }
+          return merged;
+        }
+      } catch (error) {
+        if (error?.name === 'AbortError') return merged;
+        console.warn(
+          '[Storm Reports] fine radar field unavailable, using the coarse one:',
+          error?.message || error,
+        );
+      }
+    }
+    _fineRadarCells = null;
+    _radarFine = false;
+
     for (const year of yearsInWindow()) {
       const days = await radarDaysForYear(year, signal);
       for (const [dayIndex, cells] of days) {
@@ -2103,6 +2170,12 @@ export function createStormReportsLayer({
       _radarKey = null;
       _radarWindowCells = null;
       _radarSwath = [];
+      // The fine cells belong to ONE day. Leaving them behind across a date
+      // change is how a swath drawn for yesterday's storm stays on screen
+      // tomorrow, which is the same class of bug as the HMR toggle reset this
+      // layer already had one of.
+      _fineRadarCells = null;
+      _radarFine = false;
       _loaded = false;
       _optionsDirty = true;
       if (_dataSource) {
