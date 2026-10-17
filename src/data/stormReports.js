@@ -18,7 +18,11 @@
  * @module data/stormReports
  */
 
-import { inflateBytes } from './stormReports.inflateHelper.js';
+import {
+  inflateBytes,
+  inflateBytesUint8Array,
+} from './stormReports.inflateHelper.js';
+import { RADAR_GRID, RADAR_PER_DAY_MM_SCALE } from './stormDatasets.js';
 
 /**
  * Where the snapshot lives, relative to this module.
@@ -39,6 +43,12 @@ const indexPromise = new Map();
 const reportYears = new Map();
 const eventYears = new Map();
 const radarYears = new Map();
+// The per-day field gets its own cache rather than sharing `radarYears`. The two
+// loaders key on the same year and would collide on it: whichever loaded first
+// would answer for both, and the caller that expected `Map<'i:j', {mx, cores}>`
+// would be handed `Map<dayIndex, Map<'i:j', number>>` — no error, just a layer
+// that draws nothing and a reader with no reason to look further.
+const radarDayYears = new Map();
 
 /**
  * A snapshot fetch that never answers must fail, not park. An unbounded fetch
@@ -46,6 +56,51 @@ const radarYears = new Map();
  * reports as an uncertain layer with no cause anywhere.
  */
 const LOAD_TIMEOUT_MS = 20000;
+
+/**
+ * Fetch one snapshot file as bytes, with the timeout and the error wording shared.
+ *
+ * The byte half of {@link loadSnapshotText}, for the one payload that is not
+ * text: the per-day radar artifact is `uint16` triples, and the shared part of
+ * this file — the 20s cap, the abort plumbing, and above all the exact wording of
+ * a 404, which the year loaders key their empty-result path on — has to be the
+ * *same* wording here, or one of them silently stops recognising its own 404.
+ *
+ * @param {string} file
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<Uint8Array>}
+ */
+async function fetchSnapshotBytes(file, signal) {
+  const timeout = AbortSignal.timeout(LOAD_TIMEOUT_MS);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const url = new URL(file, BASE);
+  let response;
+  try {
+    response = await fetch(url, { signal: combined });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (timeout.aborted)
+      throw new Error(
+        `Storm snapshot: ${file} timed out after ${LOAD_TIMEOUT_MS}ms`,
+      );
+    throw new Error(
+      `Storm snapshot: ${file} failed — ${error?.message || error}`,
+    );
+  }
+  if (!response.ok)
+    throw new Error(
+      `Storm snapshot: ${file} returned ${response.status} at ${url.href}`,
+    );
+  if (!response.body)
+    throw new Error(`Storm snapshot: ${file} returned no body`);
+  try {
+    return new Uint8Array(await response.arrayBuffer());
+  } catch (error) {
+    throw new Error(
+      `Storm snapshot: ${file} at ${url.href} could not be read — ${error?.message || error}`,
+    );
+  }
+}
 
 /**
  * Fetch one snapshot file, with the timeout and the error wording both shared.
@@ -485,4 +540,112 @@ export function clearStormReportCache() {
   reportYears.clear();
   eventYears.clear();
   radarYears.clear();
+  radarDayYears.clear();
+}
+
+/** Bytes per per-day record: `u16 cellIndex, u16 dayIndex, u16 maxMm × scale`. */
+const PER_DAY_RECORD_BYTES = 6;
+
+/**
+ * Flat cell index back to the `i:j` key every other radar lookup uses.
+ *
+ * The artifact stores a position, not a key, so this is where the encoding
+ * becomes a joinable value. Row-major over the retained domain — the inverse of
+ * `cellIndex` in `scripts/build-storm-radar-snapshots.mjs`.
+ *
+ * @param {number} index
+ * @returns {string}
+ */
+export function radarCellKey(index) {
+  const row = Math.floor(index / RADAR_GRID.columns) + RADAR_GRID.rowBase;
+  const col = (index % RADAR_GRID.columns) + RADAR_GRID.colBase;
+  return `${row}:${col}`;
+}
+
+/**
+ * One year of the per-day radar field, decoded.
+ *
+ * Fetches `storm_radar_hail_perday_<year>.bin.gz` and returns
+ * `Map<dayIndex, Map<'i:j', maxMm>>` — the day's per-cell peaks, keyed the same
+ * `i:j` way as {@link indexRadarYear}, so it joins with the climatology and with
+ * `crossReference` without a second convention.
+ *
+ * The payload is binary and comes through
+ * {@link module:data/stormReports.inflateHelper.inflateBytesUint8Array}, never the
+ * text path: `TextDecoder` turns every `uint16` into a wrong number without
+ * raising anything.
+ *
+ * A year with no usable payload resolves to an empty map rather than throwing,
+ * for two reasons. A missing file is normal — the newest year may not have been
+ * built yet. And a *present but wrong* payload is also normal in one deployment:
+ * a production `vite build` copies none of the storm `.gz` payloads into
+ * `dist/`, so the same request that returns the file from the dev server returns
+ * the app's HTML shell from a static host — with a 200, because of the SPA
+ * fallback. Keying the empty result on "this is not a per-day payload" rather
+ * than on the status code is what makes that degrade to an empty swath instead
+ * of throwing inside a layer enable.
+ *
+ * Memoised through {@link once}, so a second request for a year already in
+ * flight joins it rather than refetching.
+ *
+ * @param {string|number} year
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<Map<number, Map<string, number>>>}
+ */
+export function loadRadarDaysForYear(year, signal) {
+  const key = String(year);
+  return once(
+    radarDayYears,
+    key,
+    async () => {
+      let payload;
+      try {
+        payload = await inflateBytesUint8Array(
+          await fetchSnapshotBytes(
+            `storm_radar_hail_perday_${key}.bin.gz`,
+            signal,
+          ),
+        );
+      } catch (error) {
+        if (error?.message?.includes('404')) return new Map();
+        throw error;
+      }
+      return indexRadarDays(payload);
+    },
+    signal,
+  );
+}
+
+/**
+ * Decode a per-day payload into days of cells.
+ *
+ * Split out from the loader so the decoding is testable without a fetch, and so
+ * the "is this actually a per-day payload?" decision has one place. A payload
+ * that is empty or not a whole number of records is not one — that is the HTML
+ * shell, and decoding it would produce a day of nonsense rather than nothing.
+ *
+ * @param {Uint8Array} bytes Decompressed payload.
+ * @returns {Map<number, Map<string, number>>}
+ */
+export function indexRadarDays(bytes) {
+  const days = new Map();
+  if (!bytes?.length || bytes.length % PER_DAY_RECORD_BYTES !== 0) {
+    return days;
+  }
+  // `Uint8Array` has no `readUInt16LE` — that is a `Buffer` method, and calling
+  // it on the array a `fetch` hands back throws. `DataView` is the portable read.
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let at = 0; at < bytes.length; at += PER_DAY_RECORD_BYTES) {
+    const dayIndex = view.getUint16(at + 2, true);
+    let cells = days.get(dayIndex);
+    if (!cells) {
+      cells = new Map();
+      days.set(dayIndex, cells);
+    }
+    cells.set(
+      radarCellKey(view.getUint16(at, true)),
+      view.getUint16(at + 4, true) / RADAR_PER_DAY_MM_SCALE,
+    );
+  }
+  return days;
 }

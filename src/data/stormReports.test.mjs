@@ -6,9 +6,12 @@ import {
   MAGNITUDE_UNITS,
   clearStormReportCache,
   filterReports,
+  indexRadarDays,
   indexRadarYear,
+  loadRadarDaysForYear,
   loadRadarForYear,
   loadRadarForYears,
+  radarCellKey,
   rankStorms,
   stormDays,
   unpackReport,
@@ -299,10 +302,14 @@ function stubFetch(files) {
     const file = String(url).split('/').pop();
     const entry = files[file];
     if (!entry) return new Response('not found', { status: 404 });
+    // `bytes` carries a binary payload verbatim; `body` stays text so the
+    // existing text-path tests are untouched by this one field.
     const bytes =
-      entry.gzipped && entry.body !== undefined
-        ? gzipSync(Buffer.from(entry.body, 'utf8'))
-        : Buffer.from(entry.body ?? '', 'utf8');
+      entry.bytes !== undefined
+        ? Buffer.from(entry.bytes)
+        : entry.gzipped && entry.body !== undefined
+          ? gzipSync(Buffer.from(entry.body, 'utf8'))
+          : Buffer.from(entry.body ?? '', 'utf8');
     return new Response(bytes, { status: entry.status ?? 200 });
   };
   return {
@@ -596,6 +603,196 @@ test('one events request per year, shared between eventsFor and eventsForYears',
     assert.deepEqual(b.events, a);
     assert.deepEqual(c, a);
     assert.equal(stub.calls.length, 1, 'the year is memoised, not refetched');
+  } finally {
+    stub.restore();
+    resetYearCaches();
+  }
+});
+
+// ── Per-day radar ───────────────────────────────────────────────────────────
+//
+// The per-day artifact is `uint16` triples, not GeoJSONL. Everything below is
+// about the fact that the text path cannot read it: `TextDecoder` produces no
+// error, only wrong numbers.
+
+/** Encode through the builder's own encoder, so the tests cannot drift from it. */
+async function perDayBytes(records) {
+  const { encodePerDayRecords } = await import(
+    '../../scripts/build-storm-radar-snapshots.mjs'
+  );
+  return new Uint8Array(encodePerDayRecords(records));
+}
+
+test('a per-day year decodes to days of i:j cells, gzipped or not', async () => {
+  resetYearCaches();
+  const payload = await perDayBytes([
+    { cellIndex: 0, dayIndex: 165, maxMm: 56.2 },
+    { cellIndex: 1, dayIndex: 165, maxMm: 12.1 },
+    { cellIndex: 7, dayIndex: 166, maxMm: 25 },
+  ]);
+  // Both directions of the gzip sniff: the dev server hands back plain bytes
+  // because fetch has already honoured Content-Encoding, and another server
+  // hands back the compressed file as an opaque binary.
+  for (const gzipped of [false, true]) {
+    resetYearCaches();
+    const stub = stubFetch({
+      'storm_radar_hail_perday_2021.bin.gz': { bytes: payload, gzipped },
+    });
+    try {
+      const days = await loadRadarDaysForYear(2021);
+      assert.equal(days.size, 2, `two days, gzipped=${gzipped}`);
+      assert.equal(days.get(165).get('84:-500'), 56.2, 'the SW corner cell');
+      assert.equal(days.get(165).get('84:-499'), 12.1, 'the next column east');
+      assert.equal(days.get(166).get('84:-493'), 25);
+    } finally {
+      stub.restore();
+      resetYearCaches();
+    }
+  }
+});
+
+test('the millimetre scale is exact at both ends, not approximate', async () => {
+  resetYearCaches();
+  // The archive peak is 1,437.4mm, which is 14,374 at scale 10 and fits a
+  // uint16; at scale 100 it would be 143,740 and wrap silently.
+  const payload = await perDayBytes([
+    { cellIndex: 0, dayIndex: 0, maxMm: 1437.4 },
+    { cellIndex: 1, dayIndex: 0, maxMm: 10 },
+  ]);
+  const stub = stubFetch({
+    'storm_radar_hail_perday_2021.bin.gz': { bytes: payload },
+  });
+  try {
+    const cells = await loadRadarDaysForYear(2021).then((days) => days.get(0));
+    assert.equal(cells.get('84:-500'), 1437.4, 'the peak survives the scale');
+    assert.equal(cells.get('84:-499'), 10, 'the floor survives the scale');
+  } finally {
+    stub.restore();
+    resetYearCaches();
+  }
+});
+
+test('both ends of the cell-index space decode to the right i:j', async () => {
+  const { GRID_CELL_COUNT } = await import(
+    '../../scripts/build-storm-radar-snapshots.mjs'
+  );
+  assert.equal(radarCellKey(0), '84:-500', 'the first cell in the space');
+  assert.equal(radarCellKey(GRID_CELL_COUNT - 1), '223:-241', 'the last');
+  // A cell an hour into the space, so the row/column split is not accidentally
+  // right only at the corners.
+  assert.equal(radarCellKey(260), '85:-500', 'one row on is 260 cells on');
+  resetYearCaches();
+  const payload = await perDayBytes([
+    { cellIndex: GRID_CELL_COUNT - 1, dayIndex: 3, maxMm: 31.2 },
+  ]);
+  const stub = stubFetch({
+    'storm_radar_hail_perday_2021.bin.gz': { bytes: payload },
+  });
+  try {
+    const days = await loadRadarDaysForYear(2021);
+    assert.equal(days.get(3).get('223:-241'), 31.2);
+  } finally {
+    stub.restore();
+    resetYearCaches();
+  }
+});
+
+test('the text path cannot read this payload, which is why the byte path exists', async () => {
+  const { inflateBytes } = await import('./stormReports.inflateHelper.js');
+  const payload = await perDayBytes([
+    { cellIndex: 260, dayIndex: 165, maxMm: 56.2 },
+  ]);
+  const correct = indexRadarDays(payload).get(165).get('85:-500');
+  assert.equal(correct, 56.2, 'the byte path reads it');
+  // The regression this whole phase exists for: the same bytes through the
+  // existing text helper. No exception is raised — that is the problem.
+  const asText = await inflateBytes(payload);
+  const corrupted = indexRadarDays(new TextEncoder().encode(asText));
+  assert.notDeepEqual(
+    [...(corrupted.values() ?? [])],
+    [...indexRadarDays(payload).values()],
+    'the text path produces different readings, silently',
+  );
+});
+
+test('a year with no per-day file is empty, not an error', async () => {
+  resetYearCaches();
+  // Nothing registered: the stub answers 404, the way a missing year does.
+  const stub = stubFetch({});
+  try {
+    assert.equal((await loadRadarDaysForYear(2021)).size, 0);
+  } finally {
+    stub.restore();
+    resetYearCaches();
+  }
+});
+
+test('the app HTML shell decodes to empty rather than to a day of nonsense', async () => {
+  resetYearCaches();
+  // A production `vite build` copies no storm `.gz` into dist/, so the same
+  // request returns the SPA shell — with a 200, because of the fallback. The
+  // payload is text, is not a whole number of 6-byte records, and must not
+  // become a swath of garbage.
+  const stub = stubFetch({
+    'storm_radar_hail_perday_2021.bin.gz': {
+      body: '<!doctype html><html><head><title>God\'s Eye View</title></head></html>',
+    },
+  });
+  try {
+    assert.equal((await loadRadarDaysForYear(2021)).size, 0);
+  } finally {
+    stub.restore();
+    resetYearCaches();
+  }
+});
+
+test('the per-day loader does not share a cache with the year loader', async () => {
+  resetYearCaches();
+  // Both key on the year. If they shared a cache, whichever loaded first would
+  // answer for both and the caller would get the wrong shape with no error.
+  const stub = stubFetch({
+    'storm_radar_hail_2021.geojsonl.gz': { body: RADAR_LINE(140, -388) },
+    'storm_radar_hail_perday_2021.bin.gz': {
+      bytes: await perDayBytes([{ cellIndex: 0, dayIndex: 165, maxMm: 56.2 }]),
+    },
+  });
+  try {
+    const climatology = await loadRadarForYear(2021);
+    const days = await loadRadarDaysForYear(2021);
+    assert.ok(climatology.has('140:-388'), 'the climatology is a cell map');
+    assert.equal(
+      climatology.get('140:-388')?.mx,
+      41.2,
+      'not the per-day shape',
+    );
+    assert.equal(days.get(165).get('84:-500'), 56.2, 'the days are a day map');
+  } finally {
+    stub.restore();
+    resetYearCaches();
+  }
+});
+
+test('a per-day year is fetched once and memoised across callers', async () => {
+  resetYearCaches();
+  const stub = stubFetch({
+    'storm_radar_hail_perday_2021.bin.gz': {
+      bytes: await perDayBytes([{ cellIndex: 0, dayIndex: 1, maxMm: 40 }]),
+    },
+  });
+  try {
+    const [first, second] = await Promise.all([
+      loadRadarDaysForYear(2021),
+      loadRadarDaysForYear(2021),
+    ]);
+    assert.equal(first, second, 'concurrent callers share one load');
+    await loadRadarDaysForYear(2021);
+    assert.equal(
+      stub.calls.filter((url) => url.includes('perday')).length,
+      1,
+      'one fetch for three requests',
+    );
+    assert.equal(await loadRadarDaysForYear(2022).then((d) => d.size), 0);
+    assert.equal(stub.calls.length, 2, 'a second year is its own request');
   } finally {
     stub.restore();
     resetYearCaches();

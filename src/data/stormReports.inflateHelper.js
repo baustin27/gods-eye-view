@@ -22,6 +22,28 @@ export async function inflateBytes(bytes) {
   return new Response(stream).text();
 }
 
+/**
+ * Byte-returning sibling of {@link inflateBytes}. Shares the identical gzip
+ * magic-number sniff, but returns `Uint8Array` instead of decoded text. This
+ * avoids the silent corruption that occurs when binary per-day records are
+ * passed through `TextDecoder` — every `uint16` decode would be wrong.
+ *
+ * @param {ArrayBuffer|Uint8Array} bytes
+ * @returns {Promise<Uint8Array>} raw bytes (decompressed if gzipped, original
+ *   bytes if already plain)
+ */
+export async function inflateBytesUint8Array(bytes) {
+  const buffer = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const looksGzipped =
+    buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
+  if (!looksGzipped) return buffer;
+  const stream = new Blob([buffer])
+    .stream()
+    .pipeThrough(new DecompressionStream('gzip'));
+  const content = await new Response(stream).arrayBuffer();
+  return new Uint8Array(content);
+}
+
 export function createInflateHelper() {
   return Promise.resolve(inflateBytes);
 }
