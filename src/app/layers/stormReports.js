@@ -1,5 +1,5 @@
 import { createStormReportsLayer } from '../../layers/stormReports/index.js';
-import { loadRadarForYears } from '../../data/stormReports.js';
+import { loadRadarDaysForYear } from '../../data/stormReports.js';
 import {
   eventsFor,
   getSnapshot,
@@ -30,10 +30,11 @@ export function createApplicationStormReports({ source } = {}) {
     },
     overlayHost,
     radarSource: {
-      // Per-year radar files, year-scoped statistics: a cell's peak and day
-      // count are for that year alone, so one storm day compares against its
-      // own year rather than a 2021-2026 lifetime aggregate.
-      cellsFor: (years, signal) => loadRadarForYears(years, signal),
+      // Per-day radar files, day-scoped statistics: a cell's peak is for one
+      // calendar day, so a day's comparison and its swath are about that day
+      // rather than a 2021-2026 lifetime aggregate. The layer asks for one year
+      // at a time and selects the day's cells out of it.
+      daysFor: (year, signal) => loadRadarDaysForYear(year, signal),
     },
   });
 }

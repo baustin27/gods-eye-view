@@ -28,7 +28,9 @@ import {
   OUTLINE_CAVEAT,
   outlineRing,
   parseStormDate,
+  radarSwathCells,
   radiusMetres,
+  reportedSwathCells,
   stormHeadline,
   stormPlaces,
   stormTimeRange,
@@ -50,9 +52,11 @@ import {
 } from '../../data/pickRegistry.js';
 import {
   crossReference,
-  indexRadarCells,
+  indexRadarDays,
+  RADAR_IMPLAUSIBLE_MM,
   summariseAgreement,
 } from '../../data/stormCrossReference.js';
+import { radarDateFromDayIndex } from '../../data/stormDatasets.js';
 import { stormDays } from '../../data/stormReports.js';
 import { STORM_SOURCE_BADGE } from '../../data/stormAttribution.js';
 
@@ -135,26 +139,73 @@ const OVERLAY_COHORT_LIMIT = 2;
 const COMPARISON_ROW_LIMIT = 5000;
 
 /**
- * Read a radar payload into the cell lookup the comparison joins on.
+ * Tessellation coarseness for the swath rectangles, in radians.
  *
- * Deliberately permissive about shape — a Map, the builder's GeoJSONL text, or
- * `{cells}` wrapping either — so a per-year loader and a whole-record index can
- * both be handed in unchanged. An unrecognised shape is an empty Map, which
- * reads as "no cores that day" rather than as a failure.
- *
- * @param {Map<string, {mx: number, cores: number}>|{cells?: Map|string|Array}|string} raw
- * @returns {Map<string, {mx: number, cores: number}>}
+ * Cesium's default is one degree. A rectangle with an UNDEFINED height is
+ * routed to the ground-classified path, which extrudes it into a shadow volume
+ * spanning the global approximate terrain range and runs a stencil pass with no
+ * early-Z: measured for Denver, 66,067 vertices for a flat wash. A DEFINED
+ * height keeps it an ordinary depth-tested primitive, and five-degree
+ * granularity takes what remains from that to 2,851. Deliberately not coarser:
+ * Cesium's ground path grows the shadow volume with the granularity, so past
+ * roughly five degrees a coarser grid starts costing more than it saves.
+ * @see module:layers/isolation/index for the measurement behind this number.
  */
-function normaliseRadarCells(raw) {
-  if (raw instanceof Map) return raw;
-  if (typeof raw === 'string') return indexRadarCells(raw).cells;
-  if (Array.isArray(raw)) return indexRadarCells(raw.join('\n')).cells;
-  const cells = raw?.cells ?? raw?.radarCells;
-  if (cells instanceof Map) return cells;
-  if (typeof cells === 'string' || Array.isArray(cells))
-    return indexRadarCells(Array.isArray(cells) ? cells.join('\n') : cells)
-      .cells;
-  return new Map();
+const SWATH_GRANULARITY = Cesium.Math.toRadians(5);
+
+/** Alpha of a swath cell. A wash, not a wall: the pins have to stay legible. */
+const SWATH_ALPHA = 0.34;
+
+/**
+ * The RADAR swath's millimetre-to-colour ramp.
+ *
+ * Radar cells carry no band of their own — the REPORTED cells inherit one from
+ * the measured stone, and a millimetre reading is not on the inch chart — so
+ * the ramp lives here. Descending thresholds so the first match is the worst.
+ */
+const RADAR_RAMP_MM = Object.freeze([
+  Object.freeze({ min: 75, color: '#c81e1e', label: '75 mm+' }),
+  Object.freeze({ min: 50, color: '#e06020', label: '50-75 mm' }),
+  Object.freeze({ min: 25, color: '#e0a020', label: '25-50 mm' }),
+  Object.freeze({ min: 10, color: '#2fa84f', label: '10-25 mm' }),
+  Object.freeze({ min: 0, color: '#4a90d9', label: 'under 10 mm' }),
+]);
+
+/** How an implausible radar reading is drawn: present, but not ranked. */
+const RADAR_IMPLAUSIBLE_COLOR = '#8a8a8a';
+
+/** How many impacted places the panel keeps, and how many it names inline. */
+const IMPACTED_PLACES_LIMIT = 12;
+const IMPACTED_PLACES_INLINE = 4;
+
+/** The colour a radar peak paints, or the implausible grey. */
+function radarColorFor(cell) {
+  if (cell.implausible) return RADAR_IMPLAUSIBLE_COLOR;
+  for (const step of RADAR_RAMP_MM)
+    if (cell.peakMm >= step.min) return step.color;
+  return RADAR_RAMP_MM[RADAR_RAMP_MM.length - 1].color;
+}
+
+/**
+ * Read a per-year radar payload into `Map<dayIndex, Map<'i:j', millimetres>>`.
+ *
+ * The loader's contract is exactly that map; a `{cells}` wrapper is accepted
+ * too so a stub can wrap it without a second convention. An unrecognised shape
+ * is an empty Map, which reads as "no radar that year" rather than as a
+ * failure — the same safe default the year loaders take.
+ *
+ * @param {Map|{cells?: Map}|null} raw
+ * @returns {Map<number, Map<string, number>>}
+ */
+function normaliseRadarDays(raw) {
+  const out = new Map();
+  const source = raw instanceof Map ? raw : raw?.cells;
+  if (!(source instanceof Map)) return out;
+  for (const [dayIndex, value] of source) {
+    const cells = value instanceof Map ? value : value?.cells;
+    if (cells instanceof Map) out.set(Number(dayIndex), cells);
+  }
+  return out;
 }
 
 /** The hail threshold rungs offered, inches. */
@@ -206,13 +257,12 @@ export const STORM_REPORTS_DEFAULTS = Object.freeze({
  * default for a feature that was previously unreachable. When one is supplied it
  * must offer
  *
- *   cellsFor(years, signal) -> Promise<Map<'i:j', {mx: number, cores: number}>
- *                              | {cells: Map} | {cells: string}
+ *   daysFor(year, signal) -> Promise<Map<dayIndex, Map<'i:j', millimetres>>>
  *
- * where the string is the GeoJSONL the radar builder emits and
- * {@link module:data/stormCrossReference.indexRadarCells} reads it. It is asked
- * only for a single selected hail day, so a lazily-loading per-year radar pays
- * for one year and never for the record.
+ * the per-day map {@link module:data/stormDatasets.radarDateFromDayIndex} reads
+ * a day out of and {@link module:data/stormCrossReference.indexRadarDays} folds
+ * into cells. It is asked one year at a time for the days inside the selected
+ * window, so a range pays for the years it spans and never for the record.
  */
 /**
  * The chip handlers are called detached from the row, so they need a handle on
@@ -355,6 +405,21 @@ export function createStormReportsLayer({
   let _comparison = null;
   let _comparisonKey = null;
   let _comparisonToken = 0;
+  // The radar read for the current window, keyed by the DAY it was read for.
+  //
+  // The per-day artifact is fetched one year at a time and the day is selected
+  // out of it, so a memo keyed on the year alone would serve one day's cells
+  // under another day's label — a stale number that looks like nothing at all.
+  // `_radarKey` therefore carries the full window, and the day is the field
+  // that has to be in it.
+  let _radarWindowCells = null;
+  let _radarKey = null;
+  let _radarSwath = [];
+  // The two swath toggles. Both exist; each paints independently, and both are
+  // off until asked for: the pins are what this layer shipped, and a swath is
+  // an added claim on top of them.
+  let _showReportedSwath = false;
+  let _showRadarSwath = false;
   let _ordinalYears = new Set();
   let _firstStormByDate = null;
   let _firstStormByDateFrom = null;
@@ -671,10 +736,15 @@ export function createStormReportsLayer({
       storms: _events.length,
       scopedTotal: _scoped.length,
       insideIsolation: _inArea.length,
+      // The impacted places, derived from the county/state every report carries.
+      // Computed once per filter rather than per panel read: `_visible` is the
+      // full filtered set, and walking it on every publish would repeat work for
+      // a list that only moves with the filter itself.
+      places: impactedPlaces(_visible, IMPACTED_PLACES_LIMIT),
     };
     render();
     publish();
-    refreshComparison();
+    refreshRadar();
   }
 
   /** Forget a storm selection the date window has moved out from under. */
@@ -737,11 +807,42 @@ export function createStormReportsLayer({
     return _visible.length <= COMPARISON_ROW_LIMIT;
   }
 
-  /** What the current selection compares, or null when it compares nothing. */
+  /**
+   * The key the radar read is memoised on.
+   *
+   * The DAY is the load-bearing field. The per-day artifact is fetched one year
+   * at a time and the day selected out of it, so a memo keyed on the year — or
+   * on the size floor and row count, which can be identical across two quiet
+   * days — would render one day's cells under another day's label and the panel
+   * would show a number that was true yesterday. The hazard and size floor
+   * complete it, because each changes what is read.
+   *
+   * @returns {string|null} null when there is nothing to read radar for.
+   */
+  function radarRequestKey() {
+    if (!radarSource) return null;
+    if (_options.hazard !== 'hail') return null;
+    if (!_options.fromDate) return null;
+    return [
+      _options.fromDate,
+      _options.toDate,
+      _options.minHailIn,
+      _visible.length,
+    ].join('|');
+  }
+
+  /**
+   * What the radar line is a statement about, or null when it states nothing.
+   *
+   * The day is the field that must stay in the key: the comparison is re-run
+   * only when this changes, so dropping the day would let a panel keep quoting
+   * the previous day's split when two days carry the same number of reports.
+   */
   function comparisonKey() {
     if (!comparisonEligible()) return null;
     return [
       _options.fromDate,
+      _options.toDate,
       _options.hazard,
       _options.minHailIn,
       _visible.length,
@@ -750,38 +851,70 @@ export function createStormReportsLayer({
   }
 
   /**
-   * Re-run the radar comparison for the selected day, if there is one.
+   * Derive the panel's comparison from the window's cells already in memory.
    *
-   * Fire-and-forget: the panel line is additive and the layer is already
-   * correct without it, so a radar source that is absent, slow, or broken must
-   * never be able to fail a load or block a repaint. Every failure ends with no
-   * comparison and the layer exactly as it was.
+   * Called only after a radar read lands, so `_radarWindowCells` is the day the
+   * comparison names. Gated by {@link comparisonKey} rather than recomputed per
+   * repaint: the panel line reads a sentence, and re-running the join on every
+   * option change would be work for a number that did not move.
    */
-  async function refreshComparison() {
+  function computeComparison() {
     const key = comparisonKey();
-    if (key === null) {
-      _comparisonToken += 1;
+    if (key === null || !_radarWindowCells) {
+      _comparisonKey = key;
       _comparison = null;
-      _comparisonKey = null;
       return;
     }
     if (key === _comparisonKey) return;
     _comparisonKey = key;
-    _comparison = null;
-    const token = ++_comparisonToken;
     // The visible rows are already filtered by hazard, size bar and window, so
     // they are the whole population for this day. `ordinal` is the row's index
     // in the packed array, which is how the tuples are recovered for the join.
     const rows = _visible.map((r) => _packed[r.ordinal]);
+    const index = indexRadarDays(_radarWindowCells);
+    _comparison = {
+      day: _options.fromDate,
+      ...summariseAgreement(crossReference(rows, index.cells)),
+    };
+  }
+
+  /**
+   * Read the selected window's radar and derive the line and the swath.
+   *
+   * Fire-and-forget: the panel line and the swath are additive and the layer is
+   * already correct without them, so a radar source that is absent, slow, or
+   * broken must never be able to fail a load or block a repaint. Every failure
+   * ends with no radar and the layer exactly as it was.
+   */
+  async function refreshRadar() {
+    const key = radarRequestKey();
+    if (key === null) {
+      _comparisonToken += 1;
+      _comparison = null;
+      _comparisonKey = null;
+      _radarKey = null;
+      _radarWindowCells = null;
+      _radarSwath = [];
+      return;
+    }
+    // Already read for this exact window and still in memory: a repaint from a
+    // size or hazard change must not re-fetch a year.
+    if (key === _radarKey && _radarWindowCells) {
+      computeComparison();
+      return;
+    }
+    _radarKey = key;
+    _radarWindowCells = null;
+    _radarSwath = [];
+    const token = ++_comparisonToken;
     try {
-      const cells = await radarCellsFor(yearsInWindow(), _request?.signal);
-      // The window can move while radar is in flight; a stale split for a day
-      // nobody is looking at is worse than no line at all.
+      const cells = await loadRadarWindow(_request?.signal);
+      // The window can move while radar is in flight; a stale swath or split
+      // for a day nobody is looking at is worse than nothing at all.
       if (token !== _comparisonToken) return;
-      _comparison = {
-        day: _options.fromDate,
-        ...summariseAgreement(crossReference(rows, cells)),
-      };
+      _radarWindowCells = cells;
+      _radarSwath = _showRadarSwath ? swathCellsForWindow(cells) : [];
+      computeComparison();
     } catch (error) {
       if (error?.name === 'AbortError') return;
       // Logged rather than swallowed: silence here is how a wired-up radar
@@ -792,19 +925,65 @@ export function createStormReportsLayer({
       );
       return;
     }
+    render();
     publish();
   }
 
   /**
-   * Ask the injected radar source for the window's cells, in whatever shape it
-   * keeps them. Anything else is a Map of nothing, which reads as "no cores",
-   * not as a failure — see the caveat in `normaliseRadarCells`.
+   * The radar swath cells for the window, as one merged day.
+   *
+   * The window is the existing date-range slider, so "combine" is that same
+   * control rather than a new one: a single day yields that day's cells, and a
+   * range yields the per-cell maximum across every selected day — the
+   * repeatedly-hit areas the category overlays dates to find. The merged map is
+   * handed to the pure builder as one day so the model's own date guard still
+   * applies.
    */
-  async function radarCellsFor(years, signal) {
-    const call = radarSource?.cellsFor || radarSource?.radarFor;
+  function swathCellsForWindow(cells) {
+    return radarSwathCells(
+      { date: _options.fromDate, cells },
+      { date: _options.fromDate, implausibleMm: RADAR_IMPLAUSIBLE_MM },
+    );
+  }
+
+  /**
+   * Ask the injected radar source for one year of per-day cells.
+   *
+   * The source offers `daysFor(year, signal)`, the loader's
+   * `Map<dayIndex, Map<'i:j', millimetres>>`. Anything unrecognised is an empty
+   * map, which reads as "no radar that year", not as a failure.
+   */
+  async function radarDaysForYear(year, signal) {
+    const call = radarSource?.daysFor;
     if (typeof call !== 'function')
-      throw new TypeError('radarSource needs a cellsFor(years, signal) method');
-    return normaliseRadarCells(await call.call(radarSource, years, signal));
+      throw new TypeError('radarSource needs a daysFor(year, signal) method');
+    return normaliseRadarDays(await call.call(radarSource, year, signal));
+  }
+
+  /**
+   * The selected window's radar cells, merged per cell.
+   *
+   * One year at a time, and only the days inside the window: the artifact is
+   * per-year, and a cell is maxed across the days selected so a range overlays
+   * rather than sums. The per-year payload holds every day of its year, so days
+   * outside the window are dropped here rather than upstream.
+   */
+  async function loadRadarWindow(signal) {
+    const from = _options.fromDate;
+    const to = _options.toDate || from;
+    const merged = new Map();
+    for (const year of yearsInWindow()) {
+      const days = await radarDaysForYear(year, signal);
+      for (const [dayIndex, cells] of days) {
+        const date = radarDateFromDayIndex(dayIndex);
+        if (!date || date < from || date > to) continue;
+        for (const [cellKey, mm] of cells) {
+          const seen = merged.get(cellKey);
+          if (seen === undefined || mm > seen) merged.set(cellKey, mm);
+        }
+      }
+    }
+    return merged;
   }
 
   /**
@@ -989,11 +1168,118 @@ export function createStormReportsLayer({
     );
   }
 
+  /**
+   * The places the visible reports came from, worst-hit first.
+   *
+   * Built from the county and state every report already carries — no second
+   * dataset, and no city table to join. A report with no county yields no row:
+   * an "unknown place" row would put a name on the list the data does not
+   * support, and the count it holds is the one number a canvasser reads.
+   *
+   * @param {object[]} reports
+   * @param {number} [limit]
+   * @returns {Array<{county: string, state: string, count: number}>}
+   */
+  function impactedPlaces(reports, limit = IMPACTED_PLACES_LIMIT) {
+    const byPlace = new Map();
+    for (const report of reports || []) {
+      const county = report?.county;
+      if (!county) continue;
+      const state = report?.state || '';
+      const key = `${county}|${state}`;
+      const row = byPlace.get(key);
+      if (row) row.count += 1;
+      else byPlace.set(key, { county, state, count: 1 });
+    }
+    return [...byPlace.values()]
+      .sort((a, b) => b.count - a.count || (a.county < b.county ? -1 : 1))
+      .slice(0, limit);
+  }
+
+  /** One line naming the worst-hit places, or null when none carries a county. */
+  function impactedPlacesLine(places) {
+    if (!places?.length) return null;
+    return (
+      'impacted: ' +
+      places
+        .slice(0, IMPACTED_PLACES_INLINE)
+        .map(
+          (place) =>
+            `${place.county}${place.state ? ` ${place.state}` : ''} (${place.count})`,
+        )
+        .join(', ')
+    );
+  }
+
+  /**
+   * A swath cell as a Cesium rectangle on this layer's own data source.
+   *
+   * A DEFINED height, NOT `CLAMP_TO_GROUND`. Cesium routes a rectangle with an
+   * undefined height to the ground-classified path, which extrudes every cell
+   * into a shadow volume spanning the global approximate terrain range — 66,067
+   * vertices for a flat Denver wash — and coarsening to five degrees is what
+   * takes that to 2,851. Static axes on purpose: a `CallbackProperty` here would
+   * re-tessellate thousands of rectangles on every frame.
+   */
+  function addSwathCell(id, bounds, color) {
+    _dataSource.entities.add(
+      new Cesium.Entity({
+        id,
+        rectangle: {
+          coordinates: Cesium.Rectangle.fromDegrees(
+            bounds.west,
+            bounds.south,
+            bounds.east,
+            bounds.north,
+          ),
+          material:
+            Cesium.Color.fromCssColorString(color).withAlpha(SWATH_ALPHA),
+          height: 0,
+          granularity: SWATH_GRANULARITY,
+        },
+        properties: { swath: true, key: id },
+      }),
+    );
+  }
+
+  /**
+   * Paint the swaths UNDER the pins.
+   *
+   * Drawn before the report markers so the entity ordering puts the pins on
+   * top, which is the HailMaps model this copies: the measured stones sit over
+   * the radar estimate. REPORTED paints a cell only where a stone was measured
+   * in it; RADAR paints the selected day's — or the selected range's combined —
+   * radar field, with artefacts greyed rather than dropped.
+   */
+  function renderSwaths() {
+    if (!_dataSource) return;
+    if (_showReportedSwath && _options.hazard === 'hail') {
+      for (const cell of reportedSwathCells(_visible, { hailFloor: 0 })) {
+        addSwathCell(
+          `storm-swath:reported:${cell.key}`,
+          cell.bounds,
+          cell.band?.color || '#cccccc',
+        );
+      }
+    }
+    if (_showRadarSwath) {
+      for (const cell of _radarSwath) {
+        addSwathCell(
+          `storm-swath:radar:${cell.key}`,
+          cell.bounds,
+          radarColorFor(cell),
+        );
+      }
+    }
+  }
+
   /** Paint the visible reports. */
   function render() {
     if (!_dataSource) return;
     _dataSource.entities.removeAll();
     _outlineEntity = null;
+    // The swaths first, so the pins land on top of them in the entity ordering.
+    renderSwaths();
     // The WORST of the current filter, capped. `_visible` itself is never
     // truncated - it is what the count, the storm list, the radar comparison
     // and the isolation maths all read. Only the DRAWN markers are bounded.
@@ -1359,32 +1645,25 @@ export function createStormReportsLayer({
   }
 
   /**
-   * The radar split for the selected day, as one line.
+   * The radar line for the current day: how much hail radar saw and how much of
+   * it nobody reported.
    *
-   * Radar hail is a vertically-integrated estimate derived from reflectivity.
-   * It is not a measurement of a stone, and putting it in the same sentence as
-   * a reported size without saying so is how someone ends up driving after a
-   * radar artefact. The caveat travels with the number.
+   * This publishes the radar-only count, and it can, now. The field behind it is
+   * per day — a cell's millimetres belong to the calendar day being read — so "a
+   * cell with radar hail and no report" is a finding about this day rather than
+   * about the year. Against the annual snapshot the same figure enumerated every
+   * cell that ever had hail that year ("14,832 unreported radar cores" on a
+   * 33-report day), which was the year talking and a roofer would have read as a
+   * list of streets. That unreported-cell count is the honey hole the category
+   * charges for, and it is now about the day on screen.
+   *
+   * Radar hail is a vertically-integrated estimate derived from reflectivity,
+   * not a measured stone, and the caveat travels with the number. The artefact
+   * count is per day too: a 100mm day reading is a credible extreme, so a cell
+   * is flagged on the day's value rather than on a six-year maximum, and the
+   * count legitimately differs from the lifetime figure.
    *
    * @returns {string|null}
-   */
-  /**
-   * The radar line for the current day.
-   *
-   * It quotes ONLY the two figures an annual radar snapshot can honestly answer
-   * about one day: how many of that day's reports sit in a cell that had a
-   * core that year, and how many sit outside one.
-   *
-   * It deliberately does NOT quote the radar-only count. The snapshot is a
-   * per-year climatology - peak millimetres, core points and a distinct-day
-   * count per cell - so "a core with no report" enumerates every cell that ever
-   * had hail that year. Against a 33-report day in a 14,850-cell year that
-   * produced "14,832 unreported radar cores", which is not a finding about that
-   * day, it is the year. A roofer would read it as a list of streets.
-   *
-   * The radar-only figure is still meaningful for the question it was built
-   * for - canvassing across the whole record - and {@link getComparison} keeps
-   * exposing it for that.
    */
   function comparisonLine() {
     const split = _comparison;
@@ -1394,16 +1673,27 @@ export function createStormReportsLayer({
     // the cell count would understate a day's reports several-fold.
     const compared = split.reportsCompared ?? 0;
     const withCore = split.reportsWithCore ?? 0;
+    const without = split.reportsWithoutCore ?? 0;
+    // The honey hole: cells where radar showed hail and no stone was reported.
+    const hailCells = (split.both ?? 0) + (split.radarOnly ?? 0);
+    const unreported = split.radarOnly ?? 0;
+    const cell = (n) => (n === 1 ? 'cell' : 'cells');
+    const report = (n) => (n === 1 ? 'report' : 'reports');
     const parts = [
-      `${withCore} of ${compared} report${compared === 1 ? '' : 's'} sat in a cell with a radar core in ${String(split.day).slice(0, 4)}`,
+      `on ${split.day}, radar showed hail in ${hailCells} ${cell(hailCells)}, ${unreported} of them with no report`,
     ];
-    if (split.reportsWithoutCore)
-      parts.push(`${split.reportsWithoutCore} sat outside one`);
+    if (compared)
+      parts.push(
+        `${withCore} of ${compared} ${report(compared)} sat in a cell with a radar core`,
+      );
+    if (without) parts.push(`${without} sat outside one`);
     if (split.artefacts)
-      parts.push(`${split.artefacts} cells read as radar artefacts`);
+      parts.push(
+        `${split.artefacts} ${cell(split.artefacts)} read as radar artefacts`,
+      );
     return (
-      `radar ${parts.join(', ')} — an estimate, and an annual one: this is where ` +
-      'hail was seen at some point that year, not on this day'
+      `radar: ${parts.join(' · ')} — an estimate from reflectivity for this day ` +
+      'alone, not a measured stone'
     );
   }
 
@@ -1477,6 +1767,11 @@ export function createStormReportsLayer({
     const isolation = isolationPanelLine();
     if (isolation) parts.push(isolation);
     if (_outlineVisible) parts.push(OUTLINE_CAVEAT);
+    // The places the reports came from, worst-hit first. Beside the count and the
+    // dates because it is the same sentence's next clause - how many, when, and
+    // where - and a canvasser reads the three together.
+    const places = impactedPlacesLine(_stats?.places);
+    if (places) parts.push(places);
     const radar = comparisonLine();
     if (radar) parts.push(radar);
     return parts.join(' · ');
@@ -1567,6 +1862,23 @@ export function createStormReportsLayer({
       };
     });
   }
+  /**
+   * Recompute the radar swath from the cells already in memory, then repaint.
+   *
+   * The toggle must not re-fetch: flipping RADAR on after a comparison has
+   * landed should paint the day already read, not spend a year fetch to draw a
+   * shape the layer already holds.
+   */
+  function rebuildRadarSwath() {
+    _radarSwath =
+      _showRadarSwath && _radarWindowCells
+        ? swathCellsForWindow(_radarWindowCells)
+        : [];
+    render();
+    publish();
+    notifyRowControls();
+  }
+
   const api = {
     id: STORM_REPORTS_ID,
     // The panel reads `name`, `icon` and `source`; without them it renders
@@ -1622,6 +1934,12 @@ export function createStormReportsLayer({
       _comparison = null;
       _comparisonKey = null;
       _comparisonToken += 1;
+      // The radar read is dropped with the reports: its cells describe a window
+      // that is no longer loaded, and re-enabling with the map empty must not
+      // paint yesterday's swath from a memo.
+      _radarKey = null;
+      _radarWindowCells = null;
+      _radarSwath = [];
       _loaded = false;
       _optionsDirty = true;
       if (_dataSource) {
@@ -2137,6 +2455,30 @@ export function createStormReportsLayer({
           active: _options.hazard === 'wind',
           onClick: () => self().setHazard('wind'),
         },
+        {
+          id: 'storm-reports-swath-reported',
+          label: 'REPORTED',
+          // Says what it colours, not what it means: the cells carry the
+          // measured stone's band, and the caveat about a cell being 25 miles
+          // wide lives with the legend.
+          title:
+            'Colour each grid cell by the largest hail stone reported in it',
+          disabled: !ready || _options.hazard !== 'hail',
+          active: _showReportedSwath,
+          onClick: () => self().setReportedSwath(!_showReportedSwath),
+        },
+        {
+          id: 'storm-reports-swath-radar',
+          label: 'RADAR',
+          // Disabled, not hidden, with no radar wired: a chip that silently
+          // does nothing is the failure mode, so it says it has no source.
+          title: radarSource
+            ? 'Colour each grid cell by this day\u2019s radar hail estimate'
+            : 'No radar source is wired',
+          disabled: !ready || !radarSource,
+          active: _showRadarSwath,
+          onClick: () => self().setRadarSwath(!_showRadarSwath),
+        },
       ];
       return {
         readout: false,
@@ -2205,6 +2547,40 @@ export function createStormReportsLayer({
                   label: 'Storm outline (approximate)',
                   color: OUTLINE_COLOR,
                   blurb: OUTLINE_CAVEAT,
+                },
+              ]
+            : []),
+          ...(_showReportedSwath && _options.hazard === 'hail'
+            ? [
+                {
+                  label: 'Reported hail cell',
+                  color: '#f0a92e',
+                  // Says the cell's size, because 25 miles is the fact that
+                  // stops a cell count being read as a report count.
+                  blurb:
+                    'A quarter-degree cell coloured by the largest reported ' +
+                    'stone - about 25 miles across, so a county of reports is one cell',
+                },
+              ]
+            : []),
+          ...(_showRadarSwath
+            ? RADAR_RAMP_MM.map((step) => ({
+                label: `Radar hail ${step.label}`,
+                color: step.color,
+                // The caveat travels with the colour: a millimetre read off a
+                // radar is not a stone anyone measured.
+                blurb:
+                  'Vertically-integrated radar estimate, not a measured stone',
+              }))
+            : []),
+          ...(_showRadarSwath
+            ? [
+                {
+                  label: 'Radar artefact',
+                  color: RADAR_IMPLAUSIBLE_COLOR,
+                  blurb:
+                    `Above ${RADAR_IMPLAUSIBLE_MM} mm: beyond what hail reaches, ` +
+                    'kept so the grid has no holes, and never ranked as a lead',
                 },
               ]
             : []),
@@ -2312,6 +2688,68 @@ export function createStormReportsLayer({
      */
     getComparison() {
       return _comparison;
+    },
+
+    /**
+     * The places the visible reports came from, worst-hit first.
+     *
+     * Empty when nothing visible carries a county. The map's own answer, not a
+     * second dataset: a report names its county, so the list of impacted places
+     * is a read of the reports already on screen rather than a join.
+     *
+     * @returns {Array<{county: string, state: string, count: number}>}
+     */
+    getImpactedPlaces() {
+      return _stats?.places ?? [];
+    },
+
+    /** Whether the reported-hail swath is drawn. */
+    getReportedSwath() {
+      return _showReportedSwath;
+    },
+
+    /**
+     * Show or hide the reported-hail swath.
+     *
+     * Hail only: a wind report has no size band to colour a cell with, so the
+     * chip is disabled under WIND and this refuses there too.
+     *
+     * @param {boolean} on
+     * @returns {boolean} whether the toggle moved
+     */
+    setReportedSwath(on) {
+      const next = Boolean(on);
+      if (next === _showReportedSwath) return false;
+      if (next && _options.hazard !== 'hail') return false;
+      _showReportedSwath = next;
+      render();
+      publish();
+      notifyRowControls();
+      return true;
+    },
+
+    /** Whether the radar-hail swath is drawn. */
+    getRadarSwath() {
+      return _showRadarSwath;
+    },
+
+    /**
+     * Show or hide the radar-hail swath.
+     *
+     * Refuses with no radar source wired, mirroring the disabled chip: a wedge
+     * that turns on a shape the layer cannot draw is the silent no-op this
+     * surface exists to avoid.
+     *
+     * @param {boolean} on
+     * @returns {boolean} whether the toggle moved
+     */
+    setRadarSwath(on) {
+      const next = Boolean(on);
+      if (next === _showRadarSwath) return false;
+      if (next && !radarSource) return false;
+      _showRadarSwath = next;
+      rebuildRadarSwath();
+      return true;
     },
 
     /**

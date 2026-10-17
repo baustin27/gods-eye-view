@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as Cesium from 'cesium';
+
 import { gridCell } from '../../data/stormCrossReference.js';
+import { radarDayIndex } from '../../data/stormDatasets.js';
 import { polygonsContain } from '../../data/adminBoundaries.js';
 import { boxesContain, resolveIsolation } from '../../data/isolation.js';
 import {
@@ -923,15 +926,16 @@ test('without a radar source the layer behaves exactly as before', async () => {
 test('the panel carries the radar split for a selected day', async () => {
   const north = REPORT(2, { lat: 35.11 });
   const marginal = REPORT(1.75, { lat: 35.61 });
+  const day = radarDayIndex('2026-08-10');
   const cells = new Map([
-    [cellKey(35.11, -97.4), { mx: 45, cores: 12 }],
-    [cellKey(36.9, -98.1), { mx: 60, cores: 3 }],
+    [cellKey(35.11, -97.4), 45],
+    [cellKey(36.9, -98.1), 60],
   ]);
   const asked = [];
   const radarSource = {
-    cellsFor: async (years) => {
-      asked.push(years);
-      return { cells };
+    daysFor: async (year) => {
+      asked.push(year);
+      return new Map([[day, cells]]);
     },
   };
   const { layer } = makeLayer([north, marginal], [], { radarSource });
@@ -955,28 +959,32 @@ test('the panel carries the radar split for a selected day', async () => {
     'the reported cell with no core is counted',
   );
   assert.equal(split.total, 3);
-  assert.deepEqual(asked, [['2026']], 'asked for the years in the window');
+  assert.deepEqual(asked, ['2026'], 'asked for the year in the window');
   const info = layer.getRowControls().info;
+  assert.match(
+    info,
+    /radar showed hail in 2 cells, 1 of them with no report/,
+    'the day’s own unreported radar cells are the headline',
+  );
   assert.match(info, /1 of 2 reports sat in a cell with a radar core/);
   assert.match(info, /1 sat outside one/);
   assert.match(
     info,
-    /an estimate, and an annual one/,
-    'radar is never read as a measured stone, nor as a same-day reading',
+    /an estimate from reflectivity for this day alone/,
+    'radar is never read as a measured stone, nor as a lifetime reading',
   );
 });
 
-test('a radar source may hand back the builder GeoJSONL', async () => {
+test('a radar source may wrap its day map, and days outside the window are dropped', async () => {
   const rows = [REPORT(2, { lat: 35.11 })];
-  const line = (i, j, mx) =>
-    JSON.stringify({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [0, 0] },
-      properties: { i, j, d: 0.25, mx, cp: 5, dy: 1 },
-    });
+  const inDay = radarDayIndex('2026-08-10');
+  const outDay = radarDayIndex('2026-07-01');
   const radarSource = {
-    cellsFor: async () => ({
-      cells: [line(140, -390, 45), line(200, -384, 60)].join('\n'),
+    daysFor: async () => ({
+      cells: new Map([
+        [inDay, new Map([[cellKey(35.11, -97.4), 45]])],
+        [outDay, new Map([[cellKey(36.9, -98.1), 90]])],
+      ]),
     }),
   };
   const { layer } = makeLayer(rows, [], { radarSource });
@@ -985,13 +993,18 @@ test('a radar source may hand back the builder GeoJSONL', async () => {
   await layer.update();
   layer.setDate('2026-08-10');
   const split = await settled(layer);
-  assert.equal(split.both, 1, 'the text form indexes onto the same grid keys');
-  assert.equal(split.radarOnly, 1);
+  assert.equal(split.both, 1, 'the in-window day indexed onto the grid');
+  assert.equal(
+    split.radarOnly,
+    0,
+    'the out-of-window day is dropped, not merged into the swath',
+  );
 });
 
 test('the comparison stays off a window wider than one day', async () => {
-  const cells = new Map([[cellKey(35.11, -97.4), { mx: 45, cores: 12 }]]);
-  const radarSource = { cellsFor: async () => ({ cells }) };
+  const day = radarDayIndex('2026-08-10');
+  const cells = new Map([[cellKey(35.11, -97.4), 45]]);
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
   const { layer } = makeLayer([REPORT(2), REPORT(1.5)], [], { radarSource });
   layer.init(stubViewer());
   layer.enable();
@@ -1014,7 +1027,7 @@ test('a radar source that fails costs the line, not the layer', async () => {
   console.warn = () => {};
   try {
     const radarSource = {
-      cellsFor: async () => {
+      daysFor: async () => {
         throw new Error('radar file missing');
       },
     };
@@ -1043,6 +1056,229 @@ test('a radar source that fails costs the line, not the layer', async () => {
   } finally {
     console.warn = warn;
   }
+});
+
+/* =========================================================================
+ * The swaths: the REPORTED and RADAR chips, the rectangles they draw, the
+ * ordering under the pins, the merged window, and the impacted places.
+ * ====================================================================== */
+
+/** Swath entities of one kind, on the layer's own data source. */
+const swathEntities = (viewer, kind) =>
+  drawn(viewer).filter((e) => String(e.id).startsWith(`storm-swath:${kind}:`));
+
+/** A ConstantProperty-wrapped graphics field, read through. */
+const value = (property) =>
+  property && typeof property.getValue === 'function'
+    ? property.getValue()
+    : property;
+
+/** Wait for a fire-and-forget radar read to paint something. */
+async function waitFor(fn, tries = 25) {
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const got = fn();
+    if (got) return got;
+  }
+  return fn();
+}
+
+test('the swath chips are offered, and each draws only its own layer', async () => {
+  const day = radarDayIndex('2026-08-10');
+  const cells = new Map([
+    [cellKey(35.11, -97.4), 45],
+    [cellKey(36.9, -98.1), 60],
+  ]);
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
+  const viewer = stubViewer();
+  const { layer } = makeLayer(
+    [REPORT(2, { lat: 35.11 }), REPORT(1.5, { lat: 35.61 })],
+    [],
+    { radarSource, viewer },
+  );
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+
+  const chips = layer.getRowControls().chips;
+  const reportedChip = chips.find(
+    (chip) => chip.id === 'storm-reports-swath-reported',
+  );
+  const radarChip = chips.find(
+    (chip) => chip.id === 'storm-reports-swath-radar',
+  );
+  assert.ok(reportedChip && radarChip, 'both swath chips are on the row');
+  assert.equal(radarChip.disabled, false, 'radar is wired, so RADAR is live');
+  assert.equal(layer.getReportedSwath(), false, 'off until asked for');
+  assert.equal(layer.getRadarSwath(), false, 'the same for radar');
+  assert.equal(swathEntities(viewer, 'reported').length, 0);
+  assert.equal(swathEntities(viewer, 'radar').length, 0);
+
+  assert.equal(layer.setReportedSwath(true), true);
+  assert.equal(
+    swathEntities(viewer, 'reported').length,
+    2,
+    'one rectangle per reported grid cell',
+  );
+  assert.equal(swathEntities(viewer, 'radar').length, 0, 'and no radar cells');
+
+  assert.equal(layer.setReportedSwath(false), true);
+  assert.equal(swathEntities(viewer, 'reported').length, 0, 'REPORTED off');
+  assert.equal(layer.setRadarSwath(true), true);
+  assert.equal(swathEntities(viewer, 'radar').length, 2, 'two radar cells');
+  assert.equal(
+    swathEntities(viewer, 'reported').length,
+    0,
+    'and no reported cells',
+  );
+});
+
+test('a swath rectangle is a defined-height rectangle, not a ground one', async () => {
+  const day = radarDayIndex('2026-08-10');
+  const cells = new Map([[cellKey(35.11, -97.4), 45]]);
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(2, { lat: 35.11 })], [], {
+    radarSource,
+    viewer,
+  });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  const [entity] = swathEntities(viewer, 'radar');
+  assert.ok(entity, 'a radar cell is drawn');
+  assert.equal(entity.position, undefined, 'a rectangle, not a point entity');
+  // The scrim lesson, applied here: an UNDEFINED height routes the rectangle to
+  // the ground-classified path and a shadow volume over the global terrain
+  // range - 66,067 vertices for a flat Denver wash. A DEFINED height is what
+  // keeps it an ordinary depth-tested primitive.
+  assert.equal(value(entity.rectangle.height), 0, 'an explicit height');
+  assert.equal(
+    value(entity.rectangle.heightReference) ?? null,
+    null,
+    'no ground clamping',
+  );
+  assert.ok(
+    Number(value(entity.rectangle.granularity)) > 0,
+    'coarsened, so a cell is a bounded number of triangles',
+  );
+  const colour = value(entity.rectangle.material).color;
+  assert.ok(
+    colour.alpha > 0 && colour.alpha < 1,
+    `a wash, not a wall: alpha ${colour.alpha}`,
+  );
+});
+
+test('the pins are drawn over the swaths', async () => {
+  const day = radarDayIndex('2026-08-10');
+  const cells = new Map([[cellKey(35.11, -97.4), 45]]);
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(2, { lat: 35.11 })], [], {
+    radarSource,
+    viewer,
+  });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+  layer.setReportedSwath(true);
+  layer.setRadarSwath(true);
+  const ids = drawn(viewer).map((entity) => String(entity.id));
+  const lastSwath = ids.findLastIndex((id) => id.startsWith('storm-swath:'));
+  const firstPin = ids.findIndex((id) => id.startsWith('storm-report-'));
+  assert.ok(lastSwath >= 0 && firstPin >= 0, 'both layers are drawn');
+  assert.ok(
+    lastSwath < firstPin,
+    'every swath entity is added before the first pin, so the stones sit on top',
+  );
+});
+
+test('the radar swath merges a window per cell, worst reading wins', async () => {
+  const d1 = radarDayIndex('2026-08-09');
+  const d2 = radarDayIndex('2026-08-10');
+  const repeated = cellKey(35.11, -97.4);
+  const extra = cellKey(36.9, -98.1);
+  const radarSource = {
+    daysFor: async () =>
+      new Map([
+        [d1, new Map([[repeated, 30], [extra, 10]])],
+        [d2, new Map([[repeated, 55]])],
+      ]),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer(
+    [
+      REPORT(2, { date: '2026-08-09', lat: 35.11 }),
+      REPORT(2, { date: '2026-08-10', lat: 35.11 }),
+    ],
+    [],
+    {
+      radarSource,
+      viewer,
+      days: {
+        '2026-08-09': { hail: 1, wind: 0, total: 1 },
+        '2026-08-10': { hail: 1, wind: 0, total: 1 },
+      },
+    },
+  );
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setRadarSwath(true);
+  layer.setDateRange('2026-08-09', '2026-08-10');
+  const cells = await waitFor(() => {
+    const found = swathEntities(viewer, 'radar');
+    return found.length >= 2 ? found : null;
+  });
+  assert.equal(cells.length, 2, 'the union of both days is two cells');
+  // The repeatedly-hit cell keeps the WORST reading across the window, not the
+  // first day's: 55mm from the 10th, over 30mm from the 9th. 55 lands in the
+  // 50-75mm band, 30 in the 25-50mm one, and the two differ in green.
+  const merged = cells.find((entity) => String(entity.id).endsWith(repeated));
+  assert.ok(merged, 'the repeated cell is drawn');
+  assert.ok(
+    value(merged.rectangle.material).color.equals(
+      Cesium.Color.fromCssColorString('#e06020').withAlpha(0.34),
+    ),
+    'the windowed cell is coloured by its maximum, not its first day',
+  );
+});
+
+test('the impacted places skip a report with no county and rank the rest', async () => {
+  const viewer = stubViewer();
+  // The REPORT helper defaults an absent county, so the blank is set on the
+  // packed row directly - the loader packs an empty slot as null, not "".
+  const noCounty = REPORT(2);
+  noCounty[7] = '';
+  noCounty[8] = '';
+  const { layer } = makeLayer(
+    [
+      REPORT(2, { fips: '40027', state: 'OK', county: 'Cleveland' }),
+      REPORT(2, { fips: '40027', state: 'OK', county: 'Cleveland' }),
+      REPORT(2, { fips: '40109', state: 'OK', county: 'Oklahoma' }),
+      noCounty,
+    ],
+    [],
+    { viewer },
+  );
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  const places = layer.getImpactedPlaces();
+  assert.equal(places.length, 2, 'the county-less report is not a place');
+  assert.deepEqual(places[0], { county: 'Cleveland', state: 'OK', count: 2 });
+  assert.deepEqual(places[1], { county: 'Oklahoma', state: 'OK', count: 1 });
+  assert.match(
+    layer.getRowControls().info,
+    /impacted: Cleveland OK \(2\), Oklahoma OK \(1\)/,
+  );
 });
 
 /* =========================================================================
@@ -1535,8 +1771,9 @@ test('picking a day keeps a share link’s own thresholds', async () => {
 });
 
 test('the storm view reports the storm, not the day', async () => {
-  const cells = new Map([[cellKey(35.11, -97.4), { mx: 45, cores: 12 }]]);
-  const radarSource = { cellsFor: async () => ({ cells }) };
+  const day = radarDayIndex('2026-08-10');
+  const cells = new Map([[cellKey(35.11, -97.4), 45]]);
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
   const { layer, north } = twoStormDay({ radarSource });
   layer.init(stubViewer());
   layer.enable();
@@ -1552,7 +1789,7 @@ test('the storm view reports the storm, not the day', async () => {
   assert.match(info, /supercell/, 'and its narrative');
   assert.match(
     info,
-    /an estimate, and an annual one/,
+    /an estimate from reflectivity for this day alone/,
     'the radar caveat stays',
   );
   assert.match(
@@ -1580,17 +1817,17 @@ test('a storm with no reports at this threshold says so instead of looking empty
   );
 });
 
-test('a thin day never quotes the whole year as unreported hail', async () => {
-  // The radar snapshot is a per-year climatology: peak millimetres, core points
-  // and a distinct-day count per cell, with no per-day detail. So "a core with
-  // no report" enumerates every cell that had hail that year. Quoting that
-  // next to a 2-report day produced "14,832 unreported radar cores" - not a
-  // finding about that day, just the year, and a list a roofer would drive to.
+test('a thin day quotes its own unreported radar cells, not the year', async () => {
+  // The artifact is per day now, so "a cell with radar hail and no report" is a
+  // finding about this day and is published. The old annual snapshot summed the
+  // year into the same figure ("14,832 unreported radar cores" next to a
+  // 2-report day), which read as a list of streets; that count is what the
+  // category charges for, and it is now attributed to the day on screen.
+  const day = radarDayIndex('2026-08-10');
   const cells = new Map();
-  for (let i = 0; i < 500; i += 1)
-    cells.set(`${300 + i}:${400 + i}`, { mx: 30, cores: 4 });
+  for (let i = 0; i < 500; i += 1) cells.set(`${300 + i}:${400 + i}`, 30);
   const reports = [REPORT(2, { lat: 35.11 }), REPORT(1.5, { lat: 35.61 })];
-  const radarSource = { cellsFor: async () => ({ cells }) };
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
   const { layer } = makeLayer(reports, [], { radarSource });
   layer.init(stubViewer());
   layer.enable();
@@ -1599,19 +1836,22 @@ test('a thin day never quotes the whole year as unreported hail', async () => {
   await settled(layer);
 
   const info = layer.getRowControls().info;
-  assert.doesNotMatch(
-    info,
-    /\b\d{3,} unreported radar core/,
-    'the year-wide radar-only count is not a same-day finding',
-  );
-  assert.doesNotMatch(info, /500 unreported/);
   assert.match(
     info,
-    /an annual one/,
-    'and the line says what radar actually is',
+    /radar showed hail in 500 cells, 500 of them with no report/,
+    'the day’s own unreported radar cells are the headline',
   );
-  assert.match(info, /not on this day/);
-  // The figure is still available for the question it is valid for.
+  assert.doesNotMatch(
+    info,
+    /annual one/,
+    'the count is no longer withheld behind an annual caveat',
+  );
+  assert.doesNotMatch(info, /not on this day/, 'nor dated to the wrong day');
+  assert.match(
+    info,
+    /for this day alone/,
+    'and the line says what radar actually is, for this day',
+  );
   assert.equal(layer.getComparison().radarOnly, 500);
 });
 
