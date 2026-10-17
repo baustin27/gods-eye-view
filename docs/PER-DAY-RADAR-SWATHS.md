@@ -260,6 +260,25 @@ _(agents 5: `src/layers/stormReports/`; agent 6: pure model helpers in
   `hailwind/index.js:589-591`).
 - **Pins stay on top.** That is the HailMaps model.
 
+> **AMENDED — D2's height instruction is superseded. Do not apply it.**
+>
+> This subsection told the implementer `height: 0` + `granularity`, **NOT**
+> `CLAMP_TO_GROUND`, citing a Denver vertex measurement — taken on the
+> **isolation** layer, two instructions after naming `hailwind/index.js:587-605`
+> as the pattern to copy. **`hailwind` clamps to ground** (`:611`), tens of
+> thousands of cells, visibly. So the instruction contradicted its own
+> precedent, and the swaths it produced are per-cell translucent rectangles at
+> the ellipsoid surface, which the operator could not see.
+>
+> Three controls in this repo prove clamping renders here: `renderOutline`
+> (`src/layers/stormReports/index.js:1386-1392`) is a clamped, outlined polygon
+> in the same data source; `hailwind/index.js:611`; `perimeters/index.js:316-322`
+> (clamped polygons **with holes**, which Phase F needs).
+>
+> **Phase F replaces D2's geometry entirely.** D2's other instruction — static
+> axes, never a `CallbackProperty` — stands, and its pins-on-top requirement is
+> asserted at `layerLifecycle.test.mjs:1177-1199` and must survive the swap.
+
 **GATE D:** full suite green; live check for both toggles.
 
 ### Phase E — Category details (agents 7 and 8, in parallel)
@@ -272,6 +291,79 @@ _(agents 5: `src/layers/stormReports/`; agent 6: pure model helpers in
   multi-date combine riding the **existing** date-range slider.
 
 **GATE E:** full suite green, format, token checker, import directions.
+
+### Phase F — HailTrace fidelity _(not yet started)_
+
+**Why this phase exists.** Phases A–E made the data correct and drew it. What
+they drew does not read like the category. The reference behaviour, from
+HailMate's own description of a HailTrace substitute:
+
+> hail swaths **colour-banded by stone size, from yellow through red to
+> purple**… "**not a county blob**… the polygon follows the storm"… legend at
+> **0.75″ / 1″ / 1.5″ / 2″+**… **pins sit on top of the swaths**.
+
+`renderSwaths` currently emits **one independent `RectangleGraphics` per 0.25°
+cell** at a flat `SWATH_ALPHA = 0.34`. Neighbouring translucent rectangles
+double-blend along shared edges, so the wash reads as a **grid with darker
+seams** rather than a swath — even when fully visible. Contrast alone does not
+fix that, and the handoff's earlier "the fix is contrast and nothing more
+structural" is withdrawn.
+
+**F1 — pure ring extraction** _(agent; `src/layers/stormReports/model.js` +
+`model.test.mjs`)_
+
+- Per band, take the occupied `i:j` cell set and trace its boundary on the
+  integer lattice (**marching squares**, hand-rolled — no new dependency) into
+  `{ outer, holes[] }` rings in cell-corner coordinates.
+- Pure, node-testable, no Cesium — the D1 rule.
+- Deterministic vertex order, so the renderer cannot reorder differently per
+  run and so tests can assert exact rings.
+
+**F2 — polygon render** _(agent; `src/layers/stormReports/index.js` + lifecycle
+tests, after F1 merges)_
+
+- One entity **per ring set**, not per cell: `PolygonHierarchy(outer, holes)`,
+  `heightReference: CLAMP_TO_GROUND`, `outline: true` — the `renderOutline`
+  recipe at `index.js:1386-1392`, and holes per `perimeters/index.js:316-322`.
+- **Band-ramped alpha**, mirroring `hailwind`'s `alphaForRank`, replacing the
+  flat 0.34: the core band reads far more opaque than the fringe.
+- Static axes only (D2's rule survives). Pins still added last.
+
+**Acceptance criteria — checkable, not aesthetic:**
+
+| # | Criterion |
+|---|---|
+| 1 | Drawn swath entity count equals **ring** count, never cell count |
+| 2 | No alpha seams: adjacent same-band cells share an edge in one polygon |
+| 3 | Alpha is non-decreasing with band rank; two bands never share an alpha |
+| 4 | Every swath polygon entity has `outline === true` |
+| 5 | Pins still render above every swath (existing assertion must pass) |
+| 6 | Legend covers every band actually drawn (entries already exist) |
+| 7 | Legible at **both** 40 km and neighbourhood zoom |
+
+**On `polygon.outline`:** whether Cesium draws it under photorealistic 3D Tiles
+depends on its ground depth-test path and is **not to be asserted from memory**.
+`npm run qa:storm-swath` measures it. If it does not draw, fall back to a
+`PolylineGraphics` boundary ring at the same height.
+
+**Honest limit:** the category's grid is ~1 km; ours is 0.25° ≈ 28 km. Phase F
+matches their **visual language**, not their street-level resolution. At
+neighbourhood zoom one cell covers the neighbourhood. That is the MRMS feed we
+ingest, not a defect, and it is stated so it is not filed as one.
+
+**Tests, each required to fail with its bug restored** (§8's rule):
+
+| Test | Restored bug must fail it |
+|---|---|
+| donut of cells → 1 outer ring + 1 hole ring | per-cell rectangles |
+| entity count == ring count | any per-cell emission |
+| alpha non-decreasing with band rank | flat `0.34` |
+| `outline === true` on every swath entity | missing hard edge |
+| re-mount preserves both swath toggles | HMR reset (the trap that produced a false finding) |
+
+**GATE F:** `qa:storm-swath` shows the wash in both ground regimes, with
+before/after shots; all five tests above observed failing against the old
+behaviour; full suite green; format, tokens, import directions pass.
 
 ---
 
@@ -297,6 +389,13 @@ _(agents 5: `src/layers/stormReports/`; agent 6: pure model helpers in
 7. **Phase C changes a user-visible number.** `split.artefacts` and the radar
    comparison line change value under per-day data. Intended, but it is a
    behaviour change wearing an ETL costume.
+8. **Correct data, unreadable picture.** Per-cell translucent rectangles at a
+   flat alpha read as a grid with seams, not as a swath. This risk was live for
+   the whole of Phases A–E and is only now addressed, by Phase F. It is the
+   reason "the entities exist" was never evidence that the feature worked.
+9. **Both swath toggles default to `false`** (`index.js:421-422`), and an HMR
+   reload resets them. Any visual judgement made without reading the chip states
+   is measuring a scene that legitimately has no swaths in it.
 
 ### Coupled constants that must hold
 
@@ -321,8 +420,15 @@ Carried over from the bugs this plan responds to, all of which shipped green:
 - **Test through the real seam.** The hover feature shipped gated behind a
   cohort that only the direct API bypassed, and the suite was green because the
   harness only ever drove the click handler.
-- **Live checks are orchestrator-only**, via `scripts/gev-control.mjs`. Nothing
-  that navigates or reloads a CDP target aimed at the Pinokio shell.
+- **Live checks are orchestrator-only** via `scripts/gev-control.mjs`, **and by an
+  independent browser.** Nothing may navigate or reload a CDP target aimed at
+  the Pinokio shell, and **nothing may touch port 9222** — that is the
+  operator's running session, and an agent reload there has cost him the session
+  three times. A **separate** headless Chrome launched by
+  `scripts/qa-storm-swath.mjs` against its own server on its own port is safe,
+  is the house pattern (`scripts/qa-map-source-tray.mjs`), and is the preferred
+  way to answer a question about what is visible, because it produces a
+  screenshot and a sampled contrast figure instead of an impression.
 
 ---
 
@@ -338,3 +444,16 @@ Carried over from the bugs this plan responds to, all of which shipped green:
       including the record-count drift (docs say 12,119 / 3,507 / 37,727; the
       files say 12,094 / 3,514 / 37,245) and the combined-file artefact rate
       (10.9% of cells exceed 100 mm, versus the 1.4% quoted, which is 2026-only)
+
+Phase F additions:
+
+- [ ] Swaths drawn as contiguous per-band polygons with holes, **not** per-cell
+      rectangles — entity count equals ring count
+- [ ] Alpha ramps by band; a hard edge on every band boundary
+- [ ] `qa:storm-swath` shows the wash in **both** ground regimes (keyless
+      `esri-imagery` and photorealistic tiles), with before/after shots written
+      to `qa-shots/storm-swath/` (gitignored — quote the figures from
+      `report.json`, do not commit the PNGs)
+- [ ] Swath toggles survive an HMR remount, with a regression test
+- [ ] `polygon.outline` behaviour under photorealistic tiles **measured**, not
+      assumed, with the `PolylineGraphics` fallback recorded either way
