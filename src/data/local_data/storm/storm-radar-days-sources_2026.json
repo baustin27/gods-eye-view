@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "builtAt": "2026-10-17T00:45:17.528Z",
+  "builder": "scripts/build-storm-radar-snapshots.mjs",
+  "artifact": "storm_radar_hail_perday_<year>.bin.gz",
+  "product": "CONUS/MESH_Max_1440min_00.50",
+  "productLabel": "MRMS MESH 24-hour maximum",
+  "bucket": "s3://noaa-mrms-pds",
+  "license": "US Government public domain (NOAA/NWS/NSSL)",
+  "attribution": "NOAA/NWS/NSSL — Multi-Radar/Multi-Sensor (MRMS)",
+  "commercialUse": true,
+  "requiresKey": false,
+  "units": "millimetres",
+  "format": {
+    "description": "Sorted 6-byte little-endian triples: u16 cellIndex, u16 dayIndex, u16 maxMm x 10. Gzipped, no mtime.",
+    "recordBytes": 6,
+    "order": "ascending (dayIndex, cellIndex)",
+    "mmScale": 10
+  },
+  "geometry": {
+    "cellIndex": "(i - rowBase) * columns + (j - colBase), row-major over the retained domain",
+    "gridDeg": 0.25,
+    "rowBase": 84,
+    "colBase": -500,
+    "rows": 140,
+    "columns": 260,
+    "cellCount": 36400
+  },
+  "dayIndexEpoch": "2021-01-01",
+  "hailRetainThresholdMm": 10,
+  "hailCoreThresholdMm": 25,
+  "window": {
+    "from": "2026-01-01",
+    "to": "2026-10-15",
+    "days": 288
+  },
+  "unavailableDays": [],
+  "recordCount": 252051,
+  "cellCount": 20995,
+  "maxCells": 40000,
+  "truncated": false,
+  "cellsBeforeTruncation": 21947,
+  "caveat": "MESH is a radar estimate and is known to over-report relative to ground reports. A cell here means hail fell in it on that day, not that a stone was measured."
+}

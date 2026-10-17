@@ -37,21 +37,25 @@ nothing here needs to be deleted for a commercial deployment.
 | `storm_radar_hail_<year>.geojsonl.gz` | Point | 0.25° radar hail cores for **one year**, year-scoped: `mx`, `cp` and `dy` are that year's peak, core-point count and distinct hail days | 2021:11,918 · 2022:15,364 · 2023:13,321 · 2024:14,836 · 2025:14,401 · 2026:14,850 |
 | `storm-radar-sources_<year>.json` | — | Build metadata for that year's radar file: window, cell count, caveat | — |
 | `storm-radar-sources.json` | — | Build metadata for the radar snapshot: window, cell count, caveat | — |
-| `storm_radar_hail_perday.bin.gz` | Binary | Per-day radar field: one record per (cell, day) that reached **10 mm**, the strongest reading in that cell that day | 1,407,918 cell-days across 21,947 cells |
-| `storm-radar-days-sources.json` | — | Build metadata for the per-day file: encoding, index geometry, **day-index epoch**, window, caveat | — |
+| `storm_radar_hail_perday_<year>.bin.gz` | Binary | Per-day radar field for **one year**: one record per (cell, day) that reached **10 mm**, the strongest reading in that cell that day | 2021:187,688 · 2022:247,689 · 2023:237,188 · 2024:221,573 · 2025:261,729 · 2026:252,051 — 1,407,918 total |
+| `storm-radar-days-sources_<year>.json` | — | Build metadata for that year's per-day file: encoding, index geometry, **day-index epoch**, threshold, caveat | — |
 
 ### The per-day radar field
 
-`storm_radar_hail_perday.bin.gz` is the only file here that is not GeoJSONL, and
-it is not readable with `TextDecoder` — decoding the bytes as text destroys the
-`uint16` triples. It is gzipped, sorted ascending by `(dayIndex, cellIndex)`, and
-holds 6-byte little-endian records:
+`storm_radar_hail_perday_<year>.bin.gz` is the only file here that is not
+GeoJSONL, and it is not readable with `TextDecoder` — decoding the bytes as text
+destroys the `uint16` triples. Each file is gzipped, sorted ascending by
+`(dayIndex, cellIndex)`, and holds 6-byte little-endian records:
 
 | Offset | Type | Meaning |
 |---|---|---|
 | 0 | `u16` | cell index, `(i - 84) * 260 + (j + 500)` |
 | 2 | `u16` | day index, days since `dayIndexEpoch` |
 | 4 | `u16` | that cell's peak MESH in tenths of a millimetre |
+
+Per-year files, not one whole-archive payload, for the same reason the
+climatology is sharded: the consumer asks about a date, the loader fetches that
+date's year, and nothing else crosses the network. A year is 0.7-1.0 MB gzipped.
 
 Three things in that are load-bearing rather than incidental:
 
@@ -67,7 +71,8 @@ Three things in that are load-bearing rather than incidental:
   25 mm. This is why the two thresholds are separate constants.
 
 `dayIndexEpoch`, `format`, `geometry`, both thresholds and the record count are
-all in `storm-radar-days-sources.json`. Read that before reading the binary.
+all in `storm-radar-days-sources_<year>.json`. Read that before reading the
+binary.
 
 ### Report-level files
 

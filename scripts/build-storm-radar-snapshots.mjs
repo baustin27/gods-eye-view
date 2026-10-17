@@ -757,6 +757,24 @@ export function dayIndex(ymd) {
 }
 
 /**
+ * The inverse of {@link dayIndex}: the day a stored index refers to.
+ *
+ * @param {number} index
+ * @returns {string} `YYYYMMDD`.
+ * @throws {RangeError} when the index is outside what a `uint16` can hold.
+ */
+export function dayFromIndex(index) {
+  if (!Number.isInteger(index) || index < 0 || index > 65_535) {
+    throw new RangeError(
+      `day index ${index} is not a uint16; a stored index cannot address it`,
+    );
+  }
+  const epoch = Date.parse(`${DAY_INDEX_EPOCH}T00:00:00Z`);
+  const iso = new Date(epoch + index * 86_400_000).toISOString().slice(0, 10);
+  return iso.replaceAll('-', '');
+}
+
+/**
  * The inverse of the per-day encoding, for tests and for anyone checking an
  * artifact by hand.
  *
@@ -921,7 +939,7 @@ export function perDayMeta(input) {
     version: 1,
     builtAt: input.builtAt,
     builder: 'scripts/build-storm-radar-snapshots.mjs',
-    artifact: 'storm_radar_hail_perday.bin.gz',
+    artifact: `storm_radar_hail_perday_<year>.bin.gz`,
     product: PRODUCT,
     productLabel: PRODUCT_LABEL,
     bucket: 's3://noaa-mrms-pds',
@@ -963,6 +981,30 @@ export function perDayMeta(input) {
     caveat:
       'MESH is a radar estimate and is known to over-report relative to ground reports. A cell here means hail fell in it on that day, not that a stone was measured.',
   };
+}
+
+/**
+ * Split records by the calendar year of the day they describe.
+ *
+ * Per-year shards, not one whole-archive file, for the same reason the
+ * climatology ships per year: the consumer asks about a date, the loader fetches
+ * that date's year, and nothing else crosses the network. A single 5.4 MB
+ * payload would have to be fetched and inflated whole to answer a question about
+ * one storm day.
+ *
+ * @param {Array<{cellIndex: number, dayIndex: number, maxMm: number}>} records
+ * @returns {Map<number, Array<{cellIndex: number, dayIndex: number, maxMm: number}>>}
+ *   Ascending by year.
+ */
+export function perDayRecordsByYear(records) {
+  const byYear = new Map();
+  for (const record of records ?? []) {
+    const year = Number(dayFromIndex(record.dayIndex).slice(0, 4));
+    const bucket = byYear.get(year);
+    if (bucket) bucket.push(record);
+    else byYear.set(year, [record]);
+  }
+  return new Map([...byYear.entries()].sort((a, b) => a[0] - b[0]));
 }
 
 /**
@@ -1142,24 +1184,39 @@ async function main() {
   // The per-day artifact, written last so the file on disk is never newer than
   // the kept-cell set it is filtered against.
   const records = perDayRecords(perDay, keptKeys);
-  const perDayFile = path.join(args.out, 'storm_radar_hail_perday.bin.gz');
-  const perDayBytes = await writePerDayBin(perDayFile, records);
+  const perDayByYear = perDayRecordsByYear(records);
+  for (const [year, list] of perDayByYear) {
+    const yearDays = days.filter((ymd) => ymd.slice(0, 4) === String(year));
+    const perDayFile = path.join(
+      args.out,
+      `storm_radar_hail_perday_${year}.bin.gz`,
+    );
+    const perDayBytes = await writePerDayBin(perDayFile, list);
+    await writeMetaJson(
+      path.join(args.out, `storm-radar-days-sources_${year}.json`),
+      perDayMeta({
+        builtAt,
+        window: {
+          from: yearDays.length ? isoDay(yearDays[0]) : null,
+          to: yearDays.length ? isoDay(yearDays[yearDays.length - 1]) : null,
+          days: daysByYear.get(year) ?? yearDays.length,
+        },
+        unavailableDays: failures.filter(
+          (f) => f.ymd.slice(0, 4) === String(year),
+        ),
+        recordCount: list.length,
+        cellCount: new Set(list.map((r) => r.cellIndex)).size,
+        truncated,
+        cellsBeforeTruncation,
+      }),
+    );
+    step(
+      `Wrote storm_radar_hail_perday_${year}.bin.gz — ${list.length.toLocaleString()} cell-days ≥${HAIL_RETAIN_MM}mm, ${(perDayBytes / 1e6).toFixed(2)} MB`,
+    );
+  }
   step(
-    `Wrote storm_radar_hail_perday.bin.gz — ${records.length.toLocaleString()} cell-days ≥${HAIL_RETAIN_MM}mm, ${(perDayBytes / 1e6).toFixed(2)} MB`,
+    `${records.length.toLocaleString()} per-day cell-days across ${perDayByYear.size} year files`,
   );
-  await writeMetaJson(
-    path.join(args.out, 'storm-radar-days-sources.json'),
-    perDayMeta({
-      builtAt,
-      window: { from, to, days: days.length },
-      unavailableDays: failures,
-      recordCount: records.length,
-      cellCount: new Set(records.map((r) => r.cellIndex)).size,
-      truncated,
-      cellsBeforeTruncation,
-    }),
-  );
-  step('Wrote storm-radar-days-sources.json');
 
   step(`Done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 }

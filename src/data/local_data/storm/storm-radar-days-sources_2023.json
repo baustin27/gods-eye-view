@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "builtAt": "2026-10-17T00:06:33.565Z",
+  "builtAt": "2026-10-17T00:45:17.528Z",
   "builder": "scripts/build-storm-radar-snapshots.mjs",
-  "artifact": "storm_radar_hail_perday.bin.gz",
+  "artifact": "storm_radar_hail_perday_<year>.bin.gz",
   "product": "CONUS/MESH_Max_1440min_00.50",
   "productLabel": "MRMS MESH 24-hour maximum",
   "bucket": "s3://noaa-mrms-pds",
@@ -30,13 +30,13 @@
   "hailRetainThresholdMm": 10,
   "hailCoreThresholdMm": 25,
   "window": {
-    "from": "2021-01-01",
-    "to": "2026-10-15",
-    "days": 2114
+    "from": "2023-01-01",
+    "to": "2023-12-31",
+    "days": 365
   },
   "unavailableDays": [],
-  "recordCount": 1407918,
-  "cellCount": 21947,
+  "recordCount": 237188,
+  "cellCount": 19733,
   "maxCells": 40000,
   "truncated": false,
   "cellsBeforeTruncation": 21947,

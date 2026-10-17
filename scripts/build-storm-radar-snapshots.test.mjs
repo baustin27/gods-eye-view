@@ -24,6 +24,7 @@ import {
   cellIndex,
   compareBySeverity,
   DAY_INDEX_EPOCH,
+  dayFromIndex,
   dayIndex,
   decodePerDayRecords,
   DOMAIN_MAX_LAT,
@@ -45,6 +46,7 @@ import {
   mergeYearFeatures,
   perDayMeta,
   perDayRecords,
+  perDayRecordsByYear,
   PER_DAY_MM_SCALE,
   PER_DAY_RECORD_BYTES,
   radarMeta,
@@ -1015,4 +1017,38 @@ test('the per-day sidecar states the epoch, the scale and the geometry', () => {
     truncated: false,
     cellsBeforeTruncation: 1,
   }).dayIndexEpoch, undefined);
+});
+
+test('per-day records shard by the calendar year of their day', () => {
+  const records = [
+    { cellIndex: 1, dayIndex: dayIndex('20211231'), maxMm: 20 },
+    { cellIndex: 2, dayIndex: dayIndex('20220101'), maxMm: 30 },
+    { cellIndex: 3, dayIndex: dayIndex('20260615'), maxMm: 40 },
+  ];
+  const byYear = perDayRecordsByYear(records);
+  assert.deepEqual([...byYear.keys()], [2021, 2022, 2026], 'ascending by year');
+  // The boundary matters: 31 December and 1 January are one index apart and a
+  // year apart, so a sharding bug here would move a record across the year
+  // boundary and mis-date it in the file that is supposed to hold one year.
+  assert.equal(byYear.get(2021).length, 1);
+  assert.equal(byYear.get(2021)[0].dayIndex, dayIndex('20211231'));
+  assert.equal(byYear.get(2022)[0].dayIndex, dayIndex('20220101'));
+  // And the year round-trips through the epoch both ways.
+  for (const [year, list] of byYear) {
+    for (const record of list) {
+      assert.equal(Number(dayFromIndex(record.dayIndex).slice(0, 4)), year);
+    }
+  }
+});
+
+test('a day index round-trips through its epoch', () => {
+  for (const ymd of ['20210101', '20211231', '20220101', '20240229', '20261015']) {
+    assert.equal(dayFromIndex(dayIndex(ymd)), ymd);
+  }
+  assert.equal(dayFromIndex(0), '20210101', 'day zero is the epoch');
+  assert.throws(
+    () => dayFromIndex(70_000),
+    RangeError,
+    'an index past the uint16 range is refused rather than dated',
+  );
 });
