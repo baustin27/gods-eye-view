@@ -479,30 +479,73 @@ test('optional JSON metadata degrades to null instead of throwing', () => {
 // nothing.
 // ---------------------------------------------------------------------------
 
-/** The committed sidecar, so the geometry cannot drift from the artifact. */
-const RADAR_DAYS_META = JSON.parse(
-  readFileSync(
-    new URL(
-      './local_data/storm/storm-radar-days-sources.json',
-      import.meta.url,
+/**
+ * The committed sidecars, so the geometry cannot drift from the artifact.
+ *
+ * One per year: the per-day field is sharded the way the climatology is, so a
+ * consumer fetches the year it is asking about and nothing else crosses the
+ * network. Reading every year's sidecar rather than one of them is what turns
+ * "the constants agree with the file" into "they agree with all of them" — a
+ * shard written by a different run with different constants would still pass a
+ * single-file check.
+ */
+const RADAR_DAYS_META = [
+  2021, 2022, 2023, 2024, 2025, 2026,
+].map((year) =>
+  JSON.parse(
+    readFileSync(
+      new URL(
+        `./local_data/storm/storm-radar-days-sources_${year}.json`,
+        import.meta.url,
+      ),
+      'utf8',
     ),
-    'utf8',
   ),
 );
 
-test('the retained per-day geometry matches the committed sidecar', () => {
+test('the retained per-day geometry matches every committed sidecar', () => {
   // These are load-bearing 16-bit geometry: a one-unit error misplaces every
-  // cell and no error is raised anywhere. Pinning them against the sidecar the
+  // cell and no error is raised anywhere. Pinning them against the sidecars the
   // builder wrote is what makes that failure loud.
   assert.equal(RADAR_DAY_INDEX_EPOCH, '2021-01-01');
-  assert.equal(RADAR_DAYS_META.dayIndexEpoch, RADAR_DAY_INDEX_EPOCH);
   assert.equal(RADAR_PER_DAY_MM_SCALE, 10);
-  assert.equal(RADAR_DAYS_META.format.mmScale, RADAR_PER_DAY_MM_SCALE);
-  assert.equal(RADAR_GRID.rowBase, RADAR_DAYS_META.geometry.rowBase);
-  assert.equal(RADAR_GRID.colBase, RADAR_DAYS_META.geometry.colBase);
-  assert.equal(RADAR_GRID.rows, RADAR_DAYS_META.geometry.rows);
-  assert.equal(RADAR_GRID.columns, RADAR_DAYS_META.geometry.columns);
-  assert.equal(RADAR_GRID.cellCount, RADAR_DAYS_META.geometry.cellCount);
+  assert.equal(RADAR_GRID.rowBase, 84);
+  assert.equal(RADAR_GRID.colBase, -500);
+  assert.equal(RADAR_GRID.rows, 140);
+  assert.equal(RADAR_GRID.columns, 260);
+  assert.equal(RADAR_GRID.cellCount, 36_400);
+  assert.equal(RADAR_DAYS_META.length, 6);
+  for (const meta of RADAR_DAYS_META) {
+    assert.equal(meta.dayIndexEpoch, RADAR_DAY_INDEX_EPOCH);
+    assert.equal(meta.format.mmScale, RADAR_PER_DAY_MM_SCALE);
+    assert.equal(meta.format.recordBytes, 6);
+    assert.equal(meta.geometry.rowBase, RADAR_GRID.rowBase);
+    assert.equal(meta.geometry.colBase, RADAR_GRID.colBase);
+    assert.equal(meta.geometry.rows, RADAR_GRID.rows);
+    assert.equal(meta.geometry.columns, RADAR_GRID.columns);
+    assert.equal(meta.geometry.cellCount, RADAR_GRID.cellCount);
+    assert.equal(meta.hailRetainThresholdMm, 10);
+    assert.equal(meta.hailCoreThresholdMm, 25);
+  }
+  // One shard per year, and each holds that year's days and no other year's.
+  // A sharding bug would show up here as a window that crosses a boundary.
+  assert.deepEqual(
+    RADAR_DAYS_META.map((meta) => meta.window.from),
+    [
+      '2021-01-01',
+      '2022-01-01',
+      '2023-01-01',
+      '2024-01-01',
+      '2025-01-01',
+      '2026-01-01',
+    ],
+  );
+  assert.equal(RADAR_DAYS_META.at(-1).window.to, '2026-10-15');
+  assert.equal(
+    RADAR_DAYS_META.reduce((sum, meta) => sum + meta.recordCount, 0),
+    1_407_918,
+    'the shards hold every cell-day the builder wrote, and none twice',
+  );
 });
 
 test('a cell index at both ends of the space decodes to the right i:j', () => {
