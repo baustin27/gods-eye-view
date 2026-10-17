@@ -654,14 +654,19 @@ async function settle(page, frames = 12) {
   await page
     .waitForFunction(
       () => {
-        const globe = window.__godsEyeView?.viewer?.scene?.globe;
-        if (!globe) return false;
-        if (globe.tilesLoaded !== true) return false;
-        // Under photorealistic tiles the globe is hidden and imagery layers do
-        // not report on it, so treat a hidden globe as settled by definition.
-        return globe.show === false ? true : globe.imageryLayers?.length >= 0;
+        const app = window.__godsEyeView;
+        const scene = app?.viewer?.scene;
+        if (!scene) return false;
+        // Wait on the TILESET, not just the globe. Under photorealistic tiles
+        // `globe.show` is false, so the globe loads nothing and reports
+        // `tilesLoaded === true` immediately — the wait used to pass while the
+        // actual ground was still streaming, and a Colorado capture came back
+        // with blank terrain behind a perfectly visible wash. Cesium3DTileset
+        // has its own `tilesLoaded`, which is the honest signal.
+        if (app.tileset) return app.tileset.tilesLoaded === true;
+        return scene.globe?.tilesLoaded === true;
       },
-      { timeout: 30_000, polling: 250 },
+      { timeout: 120_000, polling: 300 },
     )
     .catch(() => note('tiles never reported loaded; capturing anyway'));
   await page.evaluate(async (count) => {
