@@ -13,10 +13,28 @@ export const PANEL_BASE = '/panel/';
 export const PANEL_WORKER_PRELUDE_PATH = 'cesium/worker-prelude.js';
 export const PANEL_OUT_DIR = 'dist/panel';
 
+/** The storm-payload plugin's name, filtered out of this build. */
+export const STORM_ASSETS_PLUGIN = 'gev-storm-assets';
+
 /** A browser Vite config changed to produce the panel build. */
 export function panelBuildConfig(config) {
   return {
     ...config,
+    // The payload-copying plugin is inherited by the spread above and would
+    // otherwise duplicate every storm `.gz` into `dist/panel` as well. It must
+    // not: the panel is a constrained transport (`panel_request` chunks at
+    // 512 KB and caps at 64 MB per response), it ships the whole app bundle so
+    // the storm code is present either way, and nothing in the panel surfaces
+    // uses the swaths. At the current 14.7 MB that duplication is wasteful; with
+    // the fine 1 km per-day family it would be a second full copy of a payload
+    // the panel cannot enumerate, let alone fetch.
+    //
+    // Dropping it is safe because the loaders already degrade: a missing
+    // artifact is an empty map (`src/data/stormReports.test.mjs`, "a year with
+    // no per-day file is empty, not an error"), not a thrown error.
+    plugins: (config.plugins || []).filter(
+      (plugin) => plugin?.name !== STORM_ASSETS_PLUGIN,
+    ),
     base: PANEL_BASE,
     build: {
       ...config.build,

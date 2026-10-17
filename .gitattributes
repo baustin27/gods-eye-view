@@ -18,3 +18,9 @@
 *.glb binary
 *.wav binary
 *.pbf binary
+# Gzipped storm payloads, and the fine 1 km per-day family of ~1,000 of them.
+# Without this line they fall through to `* text=auto` and are only safe by
+# Git's content sniff. That heuristic holds today, but it is implicit: a file
+# whose first 8,000 bytes happen to look like text would be rewritten to LF and
+# corrupted, and there is no test that would catch it. Declare it instead.
+*.gz binary
