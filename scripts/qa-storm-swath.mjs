@@ -92,6 +92,12 @@ const expectTier = String(process.env.QA_SWATH_EXPECT_TIER || 'any').toLowerCase
 const isolateText = process.env.QA_SWATH_ISOLATE || '';
 
 /**
+ * What the camera aims at: `storm` (a drawn cell, the default) or `area` (the
+ * isolated area's centre).
+ */
+const frameTarget = String(process.env.QA_SWATH_FRAME || 'storm').toLowerCase();
+
+/**
  * Draw the isolated area's REAL polygon outline, not its bounding box.
  *
  * The isolation layer frames an area with its bounding box on purpose (the
@@ -104,6 +110,7 @@ const isolateText = process.env.QA_SWATH_ISOLATE || '';
 const drawAreaOutline = !/^(0|false|no)$/i.test(
   String(process.env.QA_SWATH_OUTLINE ?? '1'),
 );
+
 /**
  * The lift probe's height. 200 km clears any terrain this app can show and is
  * far enough below the horizon that the rectangle still faces the camera.
@@ -672,90 +679,6 @@ async function stageScene(page) {
     }
   }
 
-  // The real state outline. Drawn after isolation so it can read the same
-  // `area.polygons` the clip uses, and before the camera move so the framing
-  // accounts for it.
-  if (isolateText && drawAreaOutline) {
-    const outlined = await page.evaluate(async () => {
-      const record = window.__godsEyeView?.dataManager?.layers?.get('isolation');
-      const layer = record?.module ?? record;
-      const area = layer?.getIsolation?.()?.area ?? null;
-      const polygons = area?.polygons ?? [];
-      if (!Array.isArray(polygons) || !polygons.length)
-        return { ok: false, error: 'area carries no polygon geometry' };
-      const viewer = window.__godsEyeView.viewer;
-
-      // No `window.Cesium` in this app — the same constraint qa-transit and
-      // qa-height-datum work under. Borrow the constructors off live objects
-      // rather than importing them, so the outline is drawn by the very Cesium
-      // instance rendering the map. If a borrow fails, report which one: a
-      // silently-missing outline reads as "the wash ignores the border", which
-      // is the opposite of what happened.
-      let sample = null;
-      const existing = viewer.dataSources;
-      const n = existing?.length ?? 0;
-      for (let i = 0; i < n && !sample; i += 1) {
-        const vals = existing[i]?.entities?.values ?? [];
-        sample = vals.find((e) => e.polygon?.hierarchy?.positions?.length) ?? null;
-      }
-      if (!sample) return { ok: false, error: 'no drawn polygon to borrow constructors from' };
-      const Cartesian3 = sample.position?.constructor ?? null;
-      const PolygonHierarchy = sample.polygon.hierarchy.constructor;
-      const Color = sample.polygon.material?.color?.constructor ?? null;
-      const DataSource =
-        existing.getByName?.('isolation')?.constructor ?? existing[0]?.constructor ?? null;
-      if (!Cartesian3 || !PolygonHierarchy || !Color || !DataSource) {
-        return {
-          ok: false,
-          error: `could not borrow: ${[
-            ['Cartesian3', Cartesian3],
-            ['PolygonHierarchy', PolygonHierarchy],
-            ['Color', Color],
-            ['DataSource', DataSource],
-          ]
-            .filter(([, c]) => !c)
-            .map(([n]) => n)
-            .join(', ')}`,
-        };
-      }
-      // Read the enum off a polygon already on the map rather than guessing the
-      // number: CLAMP_TO_GROUND is 1 today and the constant is what the swaths
-      // use, so borrowing keeps the two in step.
-      const clampToGround = sample.polygon.heightReference;
-
-      const ds = new DataSource('qa-area-outline');
-      const colour = Color.fromCssColorString('#22e0ff');
-      for (const rings of polygons) {
-        const hierarchy = new PolygonHierarchy(
-          (rings[0] ?? []).map(([lat, lon]) => Cartesian3.fromDegrees(lon, lat)),
-          // Holes are the later rings; a state boundary is not holed, but a
-          // country with exclaves can be, and ignoring them fills the gaps.
-          rings.slice(1).map((hole) =>
-            new PolygonHierarchy(
-              hole.map(([lat, lon]) => Cartesian3.fromDegrees(lon, lat)),
-            ),
-          ),
-        );
-        ds.entities.add({
-          hierarchy,
-          material: colour.withAlpha(0.0),
-          outline: true,
-          outlineColor: colour,
-          outlineWidth: 3,
-          // A `height: 0` polygon over the approximate terrain range draws
-          // nothing at all — 0px, measured. Clamped to the ground it reads as a
-          // border drawn on the map.
-          heightReference: clampToGround,
-        });
-      }
-      viewer.dataSources.add(ds);
-      window.__qaAreaOutline = ds;
-      return { ok: true, polygons: polygons.length, vertices: polygons[0]?.[0]?.length ?? 0 };
-    });
-    report.areaOutline = outlined;
-    if (!outlined.ok) note(`state outline: ${outlined.error}`);
-  }
-
   // `rangeM` is the verb's own argument and is clamped to [100, 20e6] m by the
   // app, so the requested altitude is honoured in one move. The earlier
   // version iterated `adjust_camera_zoom` by a 2.4x factor and overshot to a
@@ -1063,6 +986,59 @@ async function diffMetrics(nameA, nameB) {
   };
 }
 
+/**
+ * Colorado's counties, as [lat, lon] rings, read from the bundled snapshot.
+ *
+ * Colorado is the union of its 64 counties, and the county pack carries real
+ * geometry where the admin1 pack carries only a bounding box - so this is what a
+ * state outline has to be drawn from in this checkout.
+ *
+ * Filtered on a substring before parsing: the file is 6.8 MB of GeoJSON and
+ * JSON.parse on 3,234 features to keep 64 of them is waste, in a script that
+ * runs on every QA invocation.
+ *
+ * @returns {Promise<Array<Array<Array<[number, number]>>>} rings of [lat, lon]
+ */
+async function coloradoCountyRings() {
+  // fs.promises, not fs: this module imports the CALLBACK api, and
+  // `fs.readFile(file, 'utf8')` throws ERR_INVALID_ARG_TYPE rather than
+  // reading anything.
+  const text = await fs.promises.readFile(
+    path.join(repoRoot, 'src/data/local_data/storm/storm_counties.geojsonl'),
+    'utf8',
+  );
+  const rings = [];
+  for (const line of text.split('\n')) {
+    // `"st":"CO"` is the filter. Cheap, and it cannot match a county NAME
+    // containing CO because the key is quoted and case-exact.
+    if (!line.includes('"st":"CO"')) continue;
+    let feature;
+    try {
+      feature = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const geom = feature?.geometry;
+    if (geom?.type !== 'Polygon' || !Array.isArray(geom.coordinates)) continue;
+    rings.push(geom.coordinates.map((ring) => ring.map(([lon, lat]) => [lat, lon])));
+  }
+  return rings;
+}
+
+/**
+ * A Cesium property, read.
+ *
+ * `entity.polygon.hierarchy` is a ConstantProperty, not a hierarchy. Reading
+ * `.positions` off it yields undefined, which is why the first version of the
+ * outline step found no polygon to borrow from and the first version of the
+ * border check measured nothing - on runs where both were supposed to be the
+ * whole point.
+ */
+function unwrapProperty(value) {
+  if (value == null) return undefined;
+  return typeof value.getValue === 'function' ? value.getValue() : value;
+}
+
 // ---------------------------------------------------------------------------
 
 const page = await browser.newPage();
@@ -1162,6 +1138,319 @@ try {
 
   const swaths = await collectSwaths(page);
   report.swaths = swaths;
+
+  // Wait for the ENTITIES, not for frames.
+  //
+  // `settle` waits on the scene and the tileset, and a chip click paints
+  // asynchronously - so both measurements below read an empty collection while
+  // `collectSwaths` a few lines later read 61 entities in one source. Waiting a
+  // few more frames did not fix it; waiting for the thing being measured does.
+  const swathsArrived = await page
+    .waitForFunction(
+      () => {
+        const ds = window.__godsEyeView?.viewer?.dataSources;
+        const n = ds?.length ?? 0;
+        // `.get(i)`, NOT `ds[i]`. A Cesium DataSourceCollection is not
+        // indexable: `ds[i]` is undefined, so `ds[i]?.entities` is undefined and
+        // the whole scan reports empty. collectSwaths has always used `.get(i)`
+        // - these three places were the only ones that did not, which is why they
+        // measured nothing while the collection next to them held 61 entities.
+        for (let i = 0; i < n; i += 1) {
+          const values = ds.get(i)?.entities?.values;
+          const entities = typeof values === 'function' ? values.call(ds.get(i).entities) : values;
+          for (const e of entities ?? []) {
+            if (String(e.id ?? '').startsWith('storm-swath:radar:')) return true;
+          }
+        }
+        return false;
+      },
+      { timeout: 30_000, polling: 250 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  if (!swathsArrived)
+    note('no radar swath entities appeared within 30s — the outline and border checks below will have nothing to read');
+
+  // The real state outline, drawn AFTER the swaths are on.
+  //
+  // The constructors are borrowed from a drawn polygon, and in its first
+  // place this ran during staging - before any swath existed to borrow from,
+  // so it reported 'no polygon to borrow' on a perfectly good run.
+  if (isolateText && drawAreaOutline) {
+    // Read the county rings in NODE and hand them to the page.
+    //
+    // `__qaCountyRings` is [lat, lon] throughout: GeoJSON is [lon, lat] and the
+    // rest of this harness is [lat, lon], so the conversion happens once, here,
+    // where it can be checked, rather than in a page closure where a swapped
+    // pair looks exactly like an outline in the wrong hemisphere.
+    const countyRings = await coloradoCountyRings();
+    await page.evaluate((rings) => {
+      window.__qaCountyRings = rings;
+    }, countyRings);
+    const outlined = await page.evaluate(async () => {
+      const record = window.__godsEyeView?.dataManager?.layers?.get('isolation');
+      const layer = record?.module ?? record;
+      const raw = layer?.getIsolation?.() ?? null;
+      const area = raw?.area?.polygons ? raw.area : raw;
+      const injected = window.__qaCountyRings ?? null;
+      let polygons = area?.polygons ?? [];
+      let source = 'admin1';
+      // The admin1 pack in this checkout resolves the NAME and the bbox but
+      // carries no geometry: Colorado's `area.polygons` is a single ring of the
+      // four bbox corners, so `hasGeometry` is satisfied by a rectangle and a
+      // "state outline" drawn from it outlines nothing but the frame.
+      //
+      // The county pack IS real (Denver County is 134 points) and a state is the
+      // union of its counties, so the outline comes from there. Those rings are
+      // read in node and handed in, rather than fetched: the file is not in the
+      // runtime payload directory, and decoding gzip in the page to draw a
+      // screenshot is the wrong amount of machinery for the job.
+      const degenerate =
+        Array.isArray(polygons) &&
+        polygons.length === 1 &&
+        Array.isArray(polygons[0]?.[0]) &&
+        polygons[0][0].length <= 5;
+      if (degenerate && Array.isArray(injected) && injected.length) {
+        polygons = injected;
+        source = 'counties';
+      }
+      if (!Array.isArray(polygons) || !polygons.length)
+        return { ok: false, error: 'area carries no polygon geometry' };
+      const viewer = window.__godsEyeView.viewer;
+
+      // No `window.Cesium` in this app — the same constraint qa-transit and
+      // qa-height-datum work under. Borrow the constructors off live objects
+      // rather than importing them, so the outline is drawn by the very Cesium
+      // instance rendering the map. If a borrow fails, report which one: a
+      // silently-missing outline reads as "the wash ignores the border", which
+      // is the opposite of what happened.
+      const unwrap = (v) =>
+        v == null ? undefined : typeof v.getValue === 'function' ? v.getValue() : v;
+      let sample = null;
+      let samplePositions = null;
+      const existing = viewer.dataSources;
+      const n = existing?.length ?? 0;
+      for (let i = 0; i < n && !sample; i += 1) {
+        const collection = existing.get(i)?.entities;
+        const vals = collection?.values;
+        const vals2 = typeof vals === 'function' ? vals.call(collection) : vals;
+        for (const e of vals2 ?? []) {
+          const h = unwrap(e.polygon?.hierarchy);
+          const pts = h?._coordinates ?? h?.positions ?? null;
+          if (pts?.length) {
+            sample = e;
+            samplePositions = pts;
+            break;
+          }
+        }
+      }
+      if (!sample) {
+        const seen = [];
+        for (let i = 0; i < n; i += 1) {
+          const collection = existing.get(i)?.entities;
+          const raw = collection?.values;
+          const vals = typeof raw === 'function' ? raw.call(collection) : raw;
+          seen.push(`ds[${i}]=${vals?.length ?? 0}`);
+          for (const e of (vals ?? []).slice(0, 4)) {
+            const h = unwrap(e.polygon?.hierarchy);
+            seen.push(
+              `  ${String(e.id)} poly=${!!e.polygon} hCtor=${h?.constructor?.name} keys=${Object.keys(h ?? {}).join(",")}`,
+            );
+          }
+        }
+        return { ok: false, error: 'no drawn polygon to borrow constructors from', debug: seen.join(' | ') };
+      }
+      // From a hierarchy position, not `entity.position` - a polygon has no
+      // position of its own, which is the whole reason this failed first time.
+      const Cartesian3 = samplePositions[0]?.constructor ?? null;
+      const PolygonHierarchy = unwrap(sample.polygon.hierarchy).constructor;
+      const DataSource = existing.get(0)?.constructor ?? null;
+      if (!Cartesian3 || !PolygonHierarchy || !DataSource) {
+        return {
+          ok: false,
+          error: `could not borrow: ${[
+            ['Cartesian3', Cartesian3],
+            ['PolygonHierarchy', PolygonHierarchy],
+            ['DataSource', DataSource],
+          ]
+            .filter(([, c]) => !c)
+            .map(([n]) => n)
+            .join(', ')}`,
+        };
+      }
+      // A Color INSTANCE, not the Color class. Borrowing the class off
+      // `material.color.constructor` yields the material's own type, which has
+      // no static `fromCssColorString` - the outline died on exactly that. So
+      // take a live colour and clone it.
+      //
+      // From the isolation layer's own box, so the state outline is the same
+      // colour as the boundary the app already draws rather than an arbitrary
+      // one invented here.
+      let baseColour = null;
+      for (let i = 0; i < n && !baseColour; i += 1) {
+        const collection = existing.get(i)?.entities;
+        const raw = collection?.values;
+        const entities = typeof raw === 'function' ? raw.call(collection) : raw;
+        for (const e of entities ?? []) {
+          if (!String(e.id ?? '').startsWith('isolation-box:')) continue;
+          const mat = unwrap(e.rectangle?.material);
+          const c = mat?.color ?? mat;
+          if (c?.clone) baseColour = c.clone();
+          break;
+        }
+      }
+      if (!baseColour) {
+        const mat = unwrap(sample.polygon.material);
+        const c = mat?.color ?? mat;
+        if (c?.clone) baseColour = c.clone();
+      }
+      if (!baseColour) return { ok: false, error: 'no colour instance to clone' };
+      // Read the enum off a polygon already on the map rather than guessing the
+      // number: CLAMP_TO_GROUND is 1 today and the constant is what the swaths
+      // use, so borrowing keeps the two in step.
+      const clampToGround = sample.polygon.heightReference;
+
+      const ds = new DataSource('qa-area-outline');
+      const outlineColour = baseColour.clone();
+      outlineColour.alpha = 1.0;
+      const fillColour = baseColour.clone();
+      fillColour.alpha = 0.0;
+      for (const rings of polygons) {
+        const hierarchy = new PolygonHierarchy(
+          (rings[0] ?? []).map(([lat, lon]) => Cartesian3.fromDegrees(lon, lat)),
+          // Holes are the later rings; a state boundary is not holed, but a
+          // country with exclaves can be, and ignoring them fills the gaps.
+          rings.slice(1).map((hole) =>
+            new PolygonHierarchy(
+              hole.map(([lat, lon]) => Cartesian3.fromDegrees(lon, lat)),
+            ),
+          ),
+        );
+        // A POLYLINE, not a polygon outline.
+        //
+        // Cesium's `polygon.outline` is a 1px edge that `outlineWidth` does not
+        // widen on most platforms - so the first version of this drew 58
+        // county polygons and showed nothing at all. A ground-clamped polyline
+        // takes a real width and actually reads as a border.
+        for (const ring of rings) {
+          if (!ring?.length) continue;
+          ds.entities.add({
+            polyline: {
+              positions: ring.map(([lat, lon]) => Cartesian3.fromDegrees(lon, lat)),
+              width: 2,
+              material: outlineColour,
+              // Clamped, not at a height: a fixed height over the approximate
+              // terrain range floats the line off the ground or hides it in a
+              // valley. The same reasoning the isolation layer uses for its box.
+              clampToGround: true,
+            },
+          });
+        }
+        void hierarchy;
+        void fillColour;
+      }
+      viewer.dataSources.add(ds);
+      window.__qaAreaOutline = ds;
+      return {
+        ok: true,
+        source,
+        polygons: polygons.length,
+        vertices: polygons.reduce((n, rings) => n + (rings[0]?.length ?? 0), 0),
+      };
+    });
+    report.areaOutline = outlined;
+    if (!outlined.ok)
+      note(`state outline: ${outlined.error} :: ${outlined.debug ?? ''}`);
+  }
+
+  if (isolateText) {
+    await settle(page, 4);
+    // The point of the isolated run: does the RADAR wash stop at the border?
+    //
+    // Asserted on the drawn GEOMETRY, not on the isolation flag, because the
+    // isolation layer and the swath layer are different code and only one of
+    // them ever clipped. Read the swath polygons' own bounds and require them
+    // inside the isolated box. A bounding box is a weak test for a state - it
+    // is not the border - so it is paired with the outline being drawn, which
+    // is what makes a wash visibly crossing it readable as a failure.
+    // The unwrap helper is inlined: this closure is serialised into the page
+    // and cannot see anything defined out here.
+    const swathsInside = await page.evaluate(() => {
+      const unwrap = (v) =>
+        v == null ? undefined : typeof v.getValue === 'function' ? v.getValue() : v;
+      const record = window.__godsEyeView?.dataManager?.layers?.get('isolation');
+      const layer = record?.module ?? record;
+      const raw = layer?.getIsolation?.() ?? null;
+      const area = raw?.area?.polygons ? raw.area : raw;
+      const bbox = area?.bbox;
+      if (!Array.isArray(bbox) || bbox.length !== 4) return null;
+      const [west, south, east, north] = bbox;
+      const viewer = window.__godsEyeView.viewer;
+      const DEG = 180 / Math.PI;
+      let inside = 0;
+      let total = 0;
+      let worst = null;
+      const ds = viewer.dataSources;
+      const n = ds?.length ?? 0;
+      for (let i = 0; i < n; i += 1) {
+        const collection = ds.get(i)?.entities;
+        const raw = collection?.values;
+        const entities = typeof raw === 'function' ? raw.call(collection) : raw;
+        for (const e of entities ?? []) {
+          const id = String(e.id ?? '');
+          if (!id.startsWith('storm-swath:radar')) continue;
+          // A ConstantProperty until asked, and `_coordinates` is the internal
+          // a `PolygonHierarchy` actually stores.
+          const hierarchy = unwrap(e.polygon?.hierarchy);
+          const pts = hierarchy?._coordinates ?? hierarchy?.positions ?? null;
+          if (!pts || !pts.length) continue;
+          total += 1;
+          let allIn = true;
+          for (const p of pts) {
+            const c = viewer.scene.ellipsoid.cartesianToCartographic(p);
+            const lat = c.latitude * DEG;
+            const lon = c.longitude * DEG;
+            if (lat < south - 1e-6 || lat > north + 1e-6 || lon < west - 1e-6 || lon > east + 1e-6) {
+              allIn = false;
+              if (!worst) worst = { lat, lon };
+            }
+          }
+          if (allIn) inside += 1;
+        }
+      }
+      const ids = [];
+      for (let i = 0; i < n; i += 1) {
+        const collection = ds.get(i)?.entities;
+        const raw = collection?.values;
+        const entities = typeof raw === 'function' ? raw.call(collection) : raw;
+        for (const e of (entities ?? []).slice(0, 6)) ids.push(String(e.id));
+      }
+      return { inside, total, worst, bbox: [west, south, east, north], ids };
+    });
+    if (!swathsInside) {
+      // Fail closed. An isolation run whose border check quietly measured
+      // nothing is an isolated run that proved nothing, and it would still have
+      // exited 0.
+      check(
+        'the RADAR wash stops at the isolated border',
+        false,
+        'could not read the isolated area, so the border was never measured',
+      );
+    } else {
+      check(
+        'the RADAR wash stops at the isolated border',
+        swathsInside.total > 0 && swathsInside.inside === swathsInside.total,
+        swathsInside.total === 0
+          ? 'no radar polygons drawn to measure'
+          : `${swathsInside.inside}/${swathsInside.total} inside ids=${JSON.stringify(swathsInside.ids)} ` +
+            `bbox [${swathsInside.bbox.map((v) => v.toFixed(2)).join(', ')}]` +
+            (swathsInside.worst
+              ? `; furthest out ${swathsInside.worst.lat.toFixed(2)}, ${swathsInside.worst.lon.toFixed(2)}`
+              : ''),
+      );
+    }
+  }
+
   report.payloadRequests = payloadRequests;
   // Not a failure when no fine payload is shipped: the keyless panel build
   // deliberately omits it, and a missing 1,019-shard payload there is correct.
@@ -1193,14 +1482,11 @@ try {
   // for; the tier boundary itself is deliberately NOT duplicated here, because a
   // copy of a threshold in a QA script is a copy that drifts.
   const finest = swaths.finestRadarSpanDeg;
+  // A coarse polygon is 0.25 degrees PER CELL, so a contiguous run of them can
+  // be any multiple of that — Colorado's is 0.5. Classifying on an exact match
+  // to 0.25 called a correct coarse wash "unexpected".
   const observedTier =
-    finest === null
-      ? 'none'
-      : finest <= 0.011
-        ? 'fine'
-        : Math.abs(finest - 0.25) < 1e-3
-          ? 'coarse'
-          : `unexpected(${finest.toFixed(4)})`;
+    finest === null ? 'none' : finest <= 0.011 ? 'fine' : finest > 0.1 ? 'coarse' : 'unexpected';
   report.lodTier = observedTier;
   if (payloadRequests.fine.length) {
     if (expectTier === 'fine') {
@@ -1224,65 +1510,6 @@ try {
       );
     }
   }
-  if (isolateText) {
-    // The point of the isolated run: does the RADAR wash stop at the border?
-    //
-    // Asserted on the drawn GEOMETRY, not on the isolation flag, because the
-    // isolation layer and the swath layer are different code and only one of
-    // them ever clipped. Read the swath polygons' own bounds and require them
-    // inside the isolated box. A bounding box is a weak test for a state - it
-    // is not the border - so it is paired with the outline being drawn, which
-    // is what makes a wash visibly crossing it readable as a failure.
-    const swathsInside = await page.evaluate(() => {
-      const record = window.__godsEyeView?.dataManager?.layers?.get('isolation');
-      const area = (record?.module ?? record)?.getIsolation?.()?.area ?? null;
-      const bbox = area?.bbox;
-      if (!Array.isArray(bbox) || bbox.length !== 4) return null;
-      const [west, south, east, north] = bbox;
-      const viewer = window.__godsEyeView.viewer;
-      const DEG = 180 / Math.PI;
-      let inside = 0;
-      let total = 0;
-      let worst = null;
-      const ds = viewer.dataSources;
-      const n = ds?.length ?? 0;
-      for (let i = 0; i < n; i += 1) {
-        for (const e of ds[i]?.entities?.values ?? []) {
-          const id = String(e.id ?? '');
-          if (!id.startsWith('storm-swath:radar')) continue;
-          const pts = e.polygon?.hierarchy?._coordinates ?? null;
-          if (!pts || !pts.length) continue;
-          total += 1;
-          let allIn = true;
-          for (const p of pts) {
-            const c = viewer.scene.ellipsoid.cartesianToCartographic(p);
-            const lat = c.latitude * DEG;
-            const lon = c.longitude * DEG;
-            if (lat < south - 1e-6 || lat > north + 1e-6 || lon < west - 1e-6 || lon > east + 1e-6) {
-              allIn = false;
-              if (!worst) worst = { lat, lon };
-            }
-          }
-          if (allIn) inside += 1;
-        }
-      }
-      return { inside, total, worst, bbox: [west, south, east, north] };
-    });
-    if (swathsInside) {
-      check(
-        'the RADAR wash stops at the isolated border',
-        swathsInside.total > 0 && swathsInside.inside === swathsInside.total,
-        swathsInside.total === 0
-          ? 'no radar polygons drawn to measure'
-          : `${swathsInside.inside}/${swathsInside.total} inside ` +
-            `bbox [${swathsInside.bbox.map((v) => v.toFixed(2)).join(', ')}]` +
-            (swathsInside.worst
-              ? `; furthest out ${swathsInside.worst.lat.toFixed(2)}, ${swathsInside.worst.lon.toFixed(2)}`
-              : ''),
-      );
-    }
-  }
-
   check(
     'swath entities are present and discoverable',
     swaths.total > 0,
@@ -1317,7 +1544,29 @@ try {
   // so a camera aimed at one point frames a lot of nothing with the wash
   // clipped at the top of the frame. Framing from the measured extent means
   // the contrast figure below describes the swath and not the composition.
-  const aim = swaths.focus || swaths.extent;
+  // `QA_SWATH_FRAME=area` aims at the isolated area instead of at one drawn
+  // cell. For a shot of a whole state, framing on a single storm cell parks the
+  // camera over that cell and crops the state it is meant to be showing - the
+  // first Colorado run framed on one reported cell and left most of the state's
+  // own outline outside the frame.
+  const isolationBox = await page.evaluate(() => {
+    const record = window.__godsEyeView?.dataManager?.layers?.get('isolation');
+    const layer = record?.module ?? record;
+    const raw = layer?.getIsolation?.() ?? null;
+    const area = raw?.area?.polygons ? raw.area : raw;
+    const bbox = area?.bbox;
+    return Array.isArray(bbox) && bbox.length === 4
+      ? { west: bbox[0], south: bbox[1], east: bbox[2], north: bbox[3] }
+      : null;
+  });
+  const wantAreaFrame = frameTarget === 'area' && isolationBox;
+  const aim = wantAreaFrame
+    ? {
+        centerLat: (isolationBox.south + isolationBox.north) / 2,
+        centerLon: (isolationBox.west + isolationBox.east) / 2,
+        ...isolationBox,
+      }
+    : swaths.focus || swaths.extent;
   if (aim) {
     const { centerLat, centerLon, west, east, south, north } = aim;
     // Frame the CENTROID at the requested altitude, rather than scaling range
@@ -1352,10 +1601,12 @@ try {
       lon: centerLon,
       rangeM: Math.round(rangeM),
       spanKm: Number(spanKm.toFixed(1)),
-      basis: swaths.focus?.key
-        ? `single drawn cell ${swaths.focus.key}`
-        : 'bounding box',
-      targetCell: swaths.focus?.key ?? null,
+      basis: wantAreaFrame
+        ? 'isolated area centre'
+        : swaths.focus?.key
+          ? `single drawn cell ${swaths.focus.key}`
+          : 'bounding box',
+      targetCell: wantAreaFrame ? null : (swaths.focus?.key ?? null),
     };
     await settle(page);
     const framed = await cameraHeight(page);
