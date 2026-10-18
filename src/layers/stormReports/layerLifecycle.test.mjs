@@ -3349,3 +3349,85 @@ test('turning isolation OFF restores the whole swath', async () => {
     'and back to the whole day when switched off',
   );
 });
+
+
+test('the coarse tier is built from COARSE cells, never from fine indices', async () => {
+  // The LOD bug, in one test. A single-day window loads BOTH fields, and the
+  // coarse band must be built from the coarse one. It used to be built from the
+  // fine map, whose 1km indices were read as 0.25-degree indices - so every
+  // coarse cell landed 25x from its true position.
+  //
+  // Asserted on POSITION. An earlier version of this only checked that the
+  // polygon was 0.25 degrees wide, which the mis-built wash also was, so the
+  // whole thing passed while the map was nonsense.
+  const day = radarDayIndex('2026-06-01');
+  const radarSource = {
+    daysFor: async () =>
+      new Map([[day, new Map([[cellKey(39.6, -104.9), 45]])]]),
+    dayFor: async () => ({ count: 1, cells: [{ i: 3962, j: -10488, maxMm: 45 }] }),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+
+  setCameraHeight(viewer, 40_000);
+  const polys = swathEntities(viewer, 'radar')
+    .map((e) => value(e.polygon?.hierarchy)?.positions ?? [])
+    .filter((p) => p.length >= 4);
+  assert.ok(polys.length >= 1, 'a coarse polygon drew');
+
+  const centres = polys.flatMap((p) =>
+    p.map((q) => {
+      const c = Cesium.Ellipsoid.WGS84.cartesianToCartographic(q);
+      return [c.latitude * (180 / Math.PI), c.longitude * (180 / Math.PI)];
+    }),
+  );
+  const lats = centres.map(([la]) => la);
+  const lons = centres.map(([, lo]) => lo);
+  // The coarse cell was authored at 39.6N / -104.9. Read as fine indices it
+  // would have been drawn near 990N, which is not a latitude.
+  assert.ok(
+    Math.min(...lats) > 38 && Math.max(...lats) < 42,
+    `drawn near the cell, not 25x away (lat ${Math.min(...lats).toFixed(1)}..${Math.max(...lats).toFixed(1)})`,
+  );
+  assert.ok(
+    Math.min(...lons) > -107 && Math.max(...lons) < -102,
+    `and near its longitude (${Math.min(...lons).toFixed(1)}..${Math.max(...lons).toFixed(1)})`,
+  );
+});
+
+test('a single-day window loads the coarse field even when a fine day exists', async () => {
+  // The cost of the fix above, stated as a test so it cannot be quietly dropped:
+  // the coarse year file is fetched alongside the fine day, because the coarse
+  // band needs it whenever the camera is high.
+  const asked = [];
+  const day = radarDayIndex('2026-06-01');
+  const radarSource = {
+    daysFor: async (year) => {
+      asked.push(`year:${year}`);
+      return new Map([[day, new Map([[cellKey(39.6, -104.9), 45]])]]);
+    },
+    dayFor: async () => ({ count: 1, cells: [{ i: 3962, j: -10488, maxMm: 45 }] }),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  setCameraHeight(viewer, 40_000);
+  assert.ok(
+    asked.some((a) => a.startsWith('year:')),
+    `the coarse year was still fetched (${JSON.stringify(asked)})`,
+  );
+  assert.ok(swathEntities(viewer, 'radar').length >= 1, 'and the coarse band drew');
+});

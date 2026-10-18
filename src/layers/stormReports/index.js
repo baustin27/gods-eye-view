@@ -1209,25 +1209,37 @@ export function createStormReportsLayer({
     if (from === to) {
       try {
         const fine = await radarFineDay(from, signal);
-        if (fine && fine.length) {
-          _fineRadarCells = fine;
-          _radarFine = true;
-          for (const cell of fine) {
-            merged.set(`${cell.i}:${cell.j}`, cell.maxMm);
-          }
-          return merged;
-        }
+        _fineRadarCells = fine && fine.length ? fine : null;
+        _radarFine = Boolean(_fineRadarCells);
       } catch (error) {
         if (error?.name === 'AbortError') return merged;
         console.warn(
           '[Storm Reports] fine radar field unavailable, using the coarse one:',
           error?.message || error,
         );
+        _fineRadarCells = null;
+        _radarFine = false;
       }
+    } else {
+      _fineRadarCells = null;
+      _radarFine = false;
     }
-    _fineRadarCells = null;
-    _radarFine = false;
 
+    // The coarse field is loaded whether or not there is a fine one, and this
+    // used not to be true.
+    //
+    // The single-day path used to `return merged` as soon as the fine day
+    // arrived, so `_radarWindowCells` held FINE `i:j` keys - 1 km indices - and
+    // every consumer of that map read them as 0.25-degree indices. With the LOD
+    // in place that stops being hypothetical: above the threshold the radar band
+    // draws `_radarSwath`, which is built from exactly this map, so zooming out
+    // produced a wash of 0.25-degree cells placed by 1 km indices. It still had
+    // the right cell SIZE, which is why the QA that measured span passed it.
+    //
+    // Both fields are now loaded and kept apart: `merged` is always the coarse
+    // map, and the fine day lives only in `_fineRadarCells`. The cost is one
+    // year file - 0.7-1.0 MB, cached per year and shared by every day in it -
+    // and the alternative is a wrong picture at altitude.
     for (const year of yearsInWindow()) {
       const days = await radarDaysForYear(year, signal);
       for (const [dayIndex, cells] of days) {
