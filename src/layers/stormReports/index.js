@@ -1096,6 +1096,8 @@ export function createStormReportsLayer({
     const byKey = new Map();
     for (const cell of cells) {
       if (!Number.isInteger(cell?.i) || !Number.isInteger(cell?.j)) continue;
+      if (!swathCellInIsolation(cell.i * GRID_DEG_FINE, cell.j * GRID_DEG_FINE))
+        continue;
       byKey.set(`${cell.i}:${cell.j}`, cell.maxMm);
     }
     return radarSwathCells(
@@ -1106,9 +1108,48 @@ export function createStormReportsLayer({
 
   function swathCellsForWindow(cells) {
     return radarSwathCells(
-      { date: _options.fromDate, cells },
+      { date: _options.fromDate, cells: clipToIsolation(cells) },
       { date: _options.fromDate, implausibleMm: RADAR_IMPLAUSIBLE_MM },
     );
+  }
+
+  /**
+   * Whether an isolation, if one is in force, contains this cell.
+   *
+   * The REPORTED swath never needed this: it is built from `_visible`, which
+   * `applyFilter` has already narrowed to the isolated area. The RADAR swath is
+   * built from the radar cells for the window and never passed through that
+   * filter, so isolating Colorado used to filter the pins and leave the wash
+   * spanning the whole country - the layer agreeing with itself about half its
+   * marks.
+   *
+   * @param {number} lat
+   * @param {number} lon
+   * @returns {boolean}
+   */
+  function swathCellInIsolation(lat, lon) {
+    if (!_isolation?.active) return true;
+    return areaContains(_isolation.area, lat, lon);
+  }
+
+  /**
+   * Narrow a `Map<'i:j', mm>` to the isolated area.
+   *
+   * @param {Map<string, number>|null|undefined} cells
+   * @returns {Map<string, number>} the same map when nothing is isolated
+   */
+  function clipToIsolation(cells) {
+    if (!cells || !_isolation?.active) return cells;
+    const inside = new Map();
+    for (const [key, mm] of cells) {
+      const [i, j] = key.split(':').map(Number);
+      if (!Number.isFinite(i) || !Number.isFinite(j)) continue;
+      // The coarse step. A coarse cell is large enough that its centre
+      // decides it, which is the same call `areaContains` makes for a point
+      // report.
+      if (swathCellInIsolation(i * GRID_DEG, j * GRID_DEG)) inside.set(key, mm);
+    }
+    return inside;
   }
 
   /**
@@ -2696,6 +2737,10 @@ export function createStormReportsLayer({
         // Nothing in memory yet - the next update() picks this up.
         _loaded = false;
         _optionsDirty = true;
+      } else {
+        // The radar wash is not built from `_visible`, so it does not come
+        // back through `repaintFromMemory` on its own.
+        rebuildRadarSwath();
       }
       publish();
       notifyRowControls();
@@ -2720,6 +2765,8 @@ export function createStormReportsLayer({
         if (!repaintFromMemory()) {
           _loaded = false;
           _optionsDirty = true;
+        } else {
+          rebuildRadarSwath();
         }
       }
       publish();

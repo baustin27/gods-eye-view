@@ -3209,3 +3209,143 @@ test('destroy() unsubscribes the camera listener', async () => {
     'and gone after destroy',
   );
 });
+
+
+// ===========================================================================
+// Isolation. The REPORTED swath was always scoped, because it is built from
+// `_visible`. The RADAR one was not, so isolating a state filtered the pins and
+// left the wash spanning the country.
+// ===========================================================================
+
+/**
+ * A rectangular isolation area, in degrees.
+ *
+ * `bbox` is `[west, south, east, north]` — the order `normaliseBbox` reads,
+ * which is not the order the arguments read in. Getting that wrong produces an
+ * area that contains nothing, and the failure looks like "isolation never
+ * worked" rather than "the test built a box in the wrong order".
+ */
+function boxArea(south, west, north, east) {
+  return { bbox: [west, south, east, north] };
+}
+
+test('isolation clips the RADAR swath to the area, not just the pins', async () => {
+  const radarSource = {
+    daysFor: async () =>
+      new Map([
+        [
+          radarDayIndex('2026-06-01'),
+          new Map([
+            // inside the box (Denver-ish)
+            [cellKey(39.6, -104.9), 45],
+            // outside it (Chicago), same day, same map
+            [cellKey(41.9, -87.6), 60],
+          ]),
+        ],
+      ]),
+    dayFor: async () => ({ cells: [], count: 0 }),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  const before = swathEntities(viewer, 'radar').length;
+  assert.ok(before >= 1, 'both cells drew with no isolation');
+
+  layer.setIsolation(boxArea(37, -109, 41, -102));
+  const after = swathEntities(viewer, 'radar').length;
+  assert.ok(
+    after > 0 && after < before,
+    `isolating shrinks the wash (${before} -> ${after}), rather than leaving it whole`,
+  );
+});
+
+test('isolation clips the FINE swath too', async () => {
+  // The fine path is a separate adapter, so it needed its own filter - and a
+  // fix to one is not a fix to the other.
+  const day = radarDayIndex('2026-06-01');
+  const radarSource = {
+    daysFor: async () =>
+      new Map([[day, new Map([[cellKey(41.9, -87.6), 60]]), ]]),
+    dayFor: async () => ({
+      count: 2,
+      cells: [
+        { i: 3962, j: -10488, maxMm: 45 }, // inside
+        { i: 4190, j: -8760, maxMm: 60 }, // outside
+      ],
+    }),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  setCameraHeight(viewer, 3_000);
+  assert.ok(swathEntities(viewer, 'radar').length >= 1, 'fine draws unclipped');
+
+  layer.setIsolation(boxArea(37, -109, 41, -102));
+  const spans = swathEntities(viewer, 'radar').map((e) =>
+    value(e.polygon?.hierarchy)?.positions ?? [],
+  );
+  const kept = spans.filter((p) => p.length >= 4);
+  assert.ok(kept.length >= 1, 'the inside cell survived');
+  const lats = kept.flat().map(
+    (q) =>
+      Cesium.Ellipsoid.WGS84.cartesianToCartographic(q).latitude *
+      (180 / Math.PI),
+  );
+  // Exactly the box's own bounds, 37..41. A looser window around them - 36..42 -
+  // still contains the Chicago cell at 41.9 and passes while the clip does
+  // nothing, which is how this assertion spent its first version.
+  assert.ok(
+    Math.min(...lats) >= 37 - 1e-6 && Math.max(...lats) <= 41 + 1e-6,
+    `and nothing outside the 37..41 box was kept (lat ${Math.min(...lats).toFixed(2)}..${Math.max(...lats).toFixed(2)})`,
+  );
+});
+
+test('turning isolation OFF restores the whole swath', async () => {
+  // The chip is a switch that remembers its area, so the off position has to
+  // put the wash back rather than leave a Colorado-shaped hole.
+  const day = radarDayIndex('2026-06-01');
+  const radarSource = {
+    daysFor: async () =>
+      new Map([
+        [
+          day,
+          new Map([
+            [cellKey(39.6, -104.9), 45],
+            [cellKey(41.9, -87.6), 60],
+          ]),
+        ],
+      ]),
+    dayFor: async () => ({ cells: [], count: 0 }),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  const whole = swathEntities(viewer, 'radar').length;
+
+  layer.setIsolation(boxArea(37, -109, 41, -102));
+  assert.ok(swathEntities(viewer, 'radar').length < whole, 'clipped');
+  layer.setIsolationActive(false);
+  assert.equal(
+    swathEntities(viewer, 'radar').length,
+    whole,
+    'and back to the whole day when switched off',
+  );
+});
