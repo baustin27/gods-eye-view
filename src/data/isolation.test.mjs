@@ -7,6 +7,7 @@ import {
   findAdminArea,
   findAdminAreaAt,
   isDegenerateAdminRing,
+  pointInRing,
   polygonsContain,
 } from './adminBoundaries.js';
 import {
@@ -594,4 +595,92 @@ test('a non-US state keeps its own geometry and is never given US counties', asy
     );
     assert.equal(areaContains(area, lat, lon), true, `${label} is in ${name}`);
   }
+});
+
+test('the ring bounding box rejects exactly what the ray cast rejects', async () => {
+  // `pointInRing` gained a cached per-ring box. It is only allowed to be a
+  // shortcut, never a second opinion: every point it rejects must be one the
+  // ray cast would also have rejected. So this compares the two directly
+  // across a real county union, including points outside the box on every side.
+  const polygons = await countiesForState('CO');
+  assert.ok(polygons.length > 0, 'Colorado counties decoded');
+
+  const bruteRing = (ring, lat, lon) => {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      if (
+        yi > lat !== yj > lat &&
+        lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi
+      )
+        inside = !inside;
+    }
+    return inside;
+  };
+  const bruteContain = (lat, lon) => {
+    for (const [outer, ...holes] of polygons) {
+      if (!bruteRing(outer, lat, lon)) continue;
+      if (!holes.some((hole) => bruteRing(hole, lat, lon))) return true;
+    }
+    return false;
+  };
+
+  let checked = 0;
+  for (const [outer] of polygons) {
+    const lons = outer.map((p) => p[0]);
+    const lats = outer.map((p) => p[1]);
+    const west = Math.min(...lons);
+    const east = Math.max(...lons);
+    const south = Math.min(...lats);
+    const north = Math.max(...lats);
+    for (let k = 0; k < 12; k += 1) {
+      for (const [lat, lon] of [
+        [south + ((north - south) * k) / 11, west + ((east - west) * k) / 11],
+        [south - 1, west], // below the box
+        [north + 1, east], // above the box
+        [(south + north) / 2, west - 1], // left of the box
+        [(south + north) / 2, east + 1], // right of the box
+      ]) {
+        checked += 1;
+        assert.equal(
+          polygonsContain(polygons, lat, lon),
+          bruteContain(lat, lon),
+          `(${lat.toFixed(4)}, ${lon.toFixed(4)}) must agree with the ray cast`,
+        );
+      }
+    }
+  }
+  assert.ok(checked > 500, `a meaningful number of points were compared (${checked})`);
+});
+
+test('a ring with a non-finite vertex still answers by ray cast', () => {
+  // A NaN in a ring poisons every comparison against its box, so `lat < south`
+  // is false, `lat > north` is false, and the early-out would return "outside"
+  // for every point - turning a malformed ring into a ring containing nothing.
+  // The box is refused instead, and the ray cast answers as it always did.
+  const broken = [
+    [0, 0],
+    [4, Number.NaN],
+    [4, 4],
+    [0, 4],
+  ];
+  const expected = (() => {
+    let inside = false;
+    for (let i = 0, j = broken.length - 1; i < broken.length; j = i, i += 1) {
+      const [xi, yi] = broken[i];
+      const [xj, yj] = broken[j];
+      if (
+        yi > 1 !== yj > 1 &&
+        1 < ((xj - xi) * (1 - yi)) / (yj - yi) + xi
+      )
+        inside = !inside;
+    }
+    return inside;
+  })();
+  assert.equal(
+    pointInRing(broken, 1, 1),
+    expected,
+    'agrees with the ray cast rather than silently rejecting everything',
+  );
 });

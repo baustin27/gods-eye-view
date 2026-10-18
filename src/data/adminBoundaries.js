@@ -125,9 +125,64 @@ export function decodeRing(encoded, decimals) {
   return ring;
 }
 
+/**
+ * Per-ring bounding boxes, computed once.
+ *
+ * A ray cast is O(vertices). Texas resolves to 265 county parts and 15,582 ring
+ * vertices, so a single containment test can walk fifteen thousand pairs - and
+ * an isolation change asks thousands of times. The box turns every test after
+ * the first into four comparisons.
+ *
+ * WeakMap on the ring array itself, so a ring that is dropped by its unit is
+ * collected with it. There is no shared geometry kernel in this repo to hang
+ * this on, which is exactly why it lives next to the one ray cast that the area
+ * filter actually uses.
+ */
+const ringBoxes = new WeakMap();
+
+/**
+ * `[west, south, east, north]` for a ring, or null if it cannot be trusted.
+ *
+ * Null means "no fast path": a ring with a non-finite vertex yields NaN bounds,
+ * and every comparison against NaN is false, which would silently turn a
+ * malformed ring into a ring containing nothing. Falling through to the ray
+ * cast preserves whatever it did before.
+ *
+ * @param {Array<[number, number]>} ring
+ * @returns {[number, number, number, number]|null}
+ */
+function ringBoxOf(ring) {
+  const cached = ringBoxes.get(ring);
+  if (cached !== undefined) return cached;
+  let west = Infinity;
+  let south = Infinity;
+  let east = -Infinity;
+  let north = -Infinity;
+  for (const vertex of ring) {
+    const x = vertex?.[0];
+    const y = vertex?.[1];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      ringBoxes.set(ring, null);
+      return null;
+    }
+    if (x < west) west = x;
+    if (x > east) east = x;
+    if (y < south) south = y;
+    if (y > north) north = y;
+  }
+  const box = [west, south, east, north];
+  ringBoxes.set(ring, box);
+  return box;
+}
+
 /** Even-odd point-in-ring test; ring is [[lon, lat], …], open or closed. */
 export function pointInRing(ring, lat, lon) {
   if (!Array.isArray(ring) || ring.length < 3) return false;
+  const box = ringBoxOf(ring);
+  // A ring straddling the antimeridian has a box spanning most of the world and
+  // simply gets no early-out; that is slower, not wrong.
+  if (box && (lat < box[1] || lat > box[3] || lon < box[0] || lon > box[2]))
+    return false;
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
     const [xi, yi] = ring[i];
