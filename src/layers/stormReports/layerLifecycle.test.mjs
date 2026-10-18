@@ -3460,3 +3460,57 @@ test('an isolation area with no bbox does not blank the map', async () => {
     'and is still there for an area that cannot be tested',
   );
 });
+
+test('a cell is tested by its CENTRE, so a border cell does not overhang', async () => {
+  // `gridCell` puts a cell's centre at `i * step + step / 2`. Testing
+  // `i * step` is half a cell out, and at a border that is exactly enough to
+  // admit a cell whose centre is in the next state: Colorado's northern edge is
+  // 41.00, and the cell spanning 41.00-41.25 has its centre at 41.125.
+  //
+  // The box below ends at 41.00. With the corner convention that cell's centre
+  // tests as 41.00 - inside - and it draws a quarter-degree past the border.
+  const day = radarDayIndex('2026-06-01');
+  const radarSource = {
+    daysFor: async () =>
+      new Map([
+        [
+          day,
+          new Map([
+            // Ten columns apart as well as one row: adjacent cells are merged
+            // into ONE ring by the ring extraction, so a neighbour would never
+            // have been a second polygon to measure.
+            // Raw indices, because `cellKey` divides by the step and rounds,
+            // and 41.125 is not reachable that way: cell centres sit at
+            // i * 0.25 + 0.125, so i=163 is 40.875 and i=164 is 41.125.
+            ['163:-420', 45], // centre 40.875, inside
+            ['164:-430', 45], // centre 41.125 lon -107.5 - outside by LAT only
+          ]),
+        ],
+      ]),
+    dayFor: async () => ({ cells: [], count: 0 }),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  const unclipped = swathEntities(viewer, 'radar').length;
+  assert.ok(unclipped >= 2, 'both cells draw with no isolation');
+
+  // north edge exactly 41.00
+  layer.setIsolation({ bbox: [-109.05, 37, -102.04, 41] });
+  const spans = swathEntities(viewer, 'radar')
+    .map((e) => value(e.polygon?.hierarchy)?.positions ?? [])
+    .filter((p) => p.length >= 4)
+    .flat()
+    .map((q) => Cesium.Ellipsoid.WGS84.cartesianToCartographic(q).latitude * (180 / Math.PI));
+  assert.ok(spans.length >= 1, 'the inside cell survived');
+  assert.ok(
+    Math.max(...spans) <= 41 + 1e-6,
+    `nothing is drawn past the border (max lat ${Math.max(...spans).toFixed(4)})`,
+  );
+});

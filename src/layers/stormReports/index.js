@@ -1096,7 +1096,12 @@ export function createStormReportsLayer({
     const byKey = new Map();
     for (const cell of cells) {
       if (!Number.isInteger(cell?.i) || !Number.isInteger(cell?.j)) continue;
-      if (!swathCellInIsolation(cell.i * GRID_DEG_FINE, cell.j * GRID_DEG_FINE))
+      if (
+        !swathCellInIsolation(
+          cellLat(cell.i, GRID_DEG_FINE),
+          cellLon(cell.j, GRID_DEG_FINE),
+        )
+      )
         continue;
       byKey.set(`${cell.i}:${cell.j}`, cell.maxMm);
     }
@@ -1111,6 +1116,25 @@ export function createStormReportsLayer({
       { date: _options.fromDate, cells: clipToIsolation(cells) },
       { date: _options.fromDate, implausibleMm: RADAR_IMPLAUSIBLE_MM },
     );
+  }
+
+  /**
+   * A cell's centre in degrees.
+   *
+   * Half a step on from the corner, because that is where `gridCell` puts a
+   * cell's centre and the clip has to agree with the geometry it is clipping.
+   *
+   * @param {number} index the cell index on its axis
+   * @param {number} step the grid step in degrees
+   * @returns {number}
+   */
+  function cellLat(index, step) {
+    return index * step + step / 2;
+  }
+
+  /** A cell's centre longitude. See {@link cellLat}. */
+  function cellLon(index, step) {
+    return index * step + step / 2;
   }
 
   /**
@@ -1161,10 +1185,13 @@ export function createStormReportsLayer({
     for (const [key, mm] of cells) {
       const [i, j] = key.split(':').map(Number);
       if (!Number.isFinite(i) || !Number.isFinite(j)) continue;
-      // The coarse step. A coarse cell is large enough that its centre
-      // decides it, which is the same call `areaContains` makes for a point
-      // report.
-      if (swathCellInIsolation(i * GRID_DEG, j * GRID_DEG)) inside.set(key, mm);
+      // The cell CENTRE, which is half a step on from the corner. `gridCell`
+      // places a cell at `i * GRID_DEG + GRID_DEG / 2`; testing `i * GRID_DEG`
+      // instead is half a cell out, and at the border that is exactly enough to
+      // let a cell whose centre is in Wyoming draw. Colorado's northern edge is
+      // 41.00, and this is how a cell spanning 41.00-41.25 survived the clip.
+      if (swathCellInIsolation(cellLat(i, GRID_DEG), cellLon(j, GRID_DEG)))
+        inside.set(key, mm);
     }
     return inside;
   }
