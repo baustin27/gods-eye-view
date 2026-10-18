@@ -76,6 +76,9 @@ const PACKS = {
 /** Test seam: count pack loads (lazy-loading contract). */
 export const packLoads = { admin1: 0, counties: 0, countries: 0 };
 
+/** County rings per state postal code, built once. */
+const stateCountyRings = new Map();
+
 const EARTH_RADIUS_KM = 6371;
 const toRad = (d) => (d * Math.PI) / 180;
 
@@ -698,6 +701,80 @@ async function stateCandidates(parsed, { allowAmbiguous = false } = {}) {
   if (parsed.form === 'suffix')
     return list.filter((i) => i.key === parsed.full || i.entry.amb.has(i.key));
   return list;
+}
+
+/**
+ * The US counties of one state, as polygon rings.
+ *
+ * The admin1 pack carries a state's NAME and its bounding box but no geometry —
+ * `polygons` for Colorado is one ring of the four bbox corners. That ring is
+ * indistinguishable from a real polygon to every consumer, so `areaContains`
+ * tested against a RECTANGLE and reported Wyoming (40.9, -108.9) and Kansas
+ * (37.2, -102.2) as inside Colorado.
+ *
+ * The county pack is real — Denver County is 134 points — and a state is the
+ * union of its counties, so this reconstructs the shape from data the app
+ * already bundles rather than adding any.
+ *
+ * @param {string} postal a two-letter US postal code, case-insensitive
+ * @returns {Promise<Array<Array<Array<[number, number]>>>} rings of [lon, lat]
+ */
+export async function countiesForState(postal) {
+  const code = String(postal || '').toLowerCase();
+  if (!code) return [];
+  const cached = stateCountyRings.get(code);
+  if (cached) return cached;
+  const { byFull, byName } = await loadCounties();
+  const rings = [];
+  const seen = new Set();
+  for (const table of [byFull, byName]) {
+    for (const items of table.values()) {
+      for (const item of items) {
+        // `addKey` stores `{entry, tier}` wrappers, not entries - reading
+        // `item.st` off the wrapper is undefined and matches nothing, which is
+        // how this returned zero counties for two attempts.
+        const entry = item?.entry ?? item;
+        if (!entry || entry.st !== code || seen.has(entry)) continue;
+        seen.add(entry);
+        // The census pack stores DELTA-ENCODED rings in `feature.polygons`,
+        // not GeoJSON geometry - the first attempt read `feature.geometry`,
+        // which does not exist, and silently produced zero counties.
+        const encoded = entry.feature?.polygons;
+        if (!Array.isArray(encoded) || !encoded.length) continue;
+        const decimals = entry.feature.d ?? entry.decimals;
+        // SPREAD, not push. `encoded` is `[polygon]` and each polygon is
+        // `[outer, ...holes]`, so this is `polygon[]`. Pushing it whole nests
+        // one level too deep, and `polygonsContain` - which destructures
+        // `for (const [outer, ...holes] of polygons)` - then reads county 0's
+        // rings as one polygon and counties 1..63 as its HOLES. Nothing matches,
+        // not even Denver.
+        rings.push(
+          ...encoded.map((poly) =>
+            poly.map((ring) => decodeRing(ring, decimals)),
+          ),
+        );
+      }
+    }
+  }
+  stateCountyRings.set(code, rings);
+  return rings;
+}
+
+/**
+ * Whether an admin1 unit is a bounding box wearing a polygon's clothes.
+ *
+ * Four corners and nothing else: the admin1 shape for every state in this
+ * pack. The test is on the ring, not on a flag, so a future pack that ships
+ * real state geometry is left alone.
+ *
+ * @param {object|null} area
+ * @returns {boolean}
+ */
+export function isDegenerateAdminRing(area) {
+  const polygons = area?.polygons;
+  if (!Array.isArray(polygons) || polygons.length !== 1) return false;
+  const ring = polygons[0]?.[0];
+  return Array.isArray(ring) && ring.length <= 5;
 }
 
 /**

@@ -3,8 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  countiesForState,
   findAdminArea,
   findAdminAreaAt,
+  isDegenerateAdminRing,
   polygonsContain,
 } from './adminBoundaries.js';
 import {
@@ -539,4 +541,57 @@ test('kinds fold to the four isolation kinds', () => {
     [null, null],
   ])
     assert.equal(normaliseIsolationKind(value), expected, String(value));
+});
+
+test('a US state is contained by its SHAPE, not by its bounding rectangle', async () => {
+  // The bug this exists for: the admin1 pack carries a state's name and bbox
+  // and no geometry, so its `polygons` was one ring of the four bbox corners.
+  // `hasGeometry` was satisfied by a rectangle, `areaContains` tested against
+  // it, and isolating a state swallowed every state sharing its box.
+  const result = await resolveIsolation('Colorado');
+  assert.equal(result.ok, true, 'Colorado resolves');
+  const area = result.area;
+  assert.ok(
+    !isDegenerateAdminRing(area),
+    'and no longer carries a four-corner ring',
+  );
+
+  for (const [lat, lon, label] of [
+    [39.0, -105.5, 'Denver'],
+    [40.9, -108.9, 'Moffat County, inside the box'],
+    [37.5, -102.3, 'Baca County, inside the box'],
+  ])
+    assert.equal(areaContains(area, lat, lon), true, `${label} is in Colorado`);
+
+  // Every one of these is inside Colorado's BOUNDING BOX and outside Colorado.
+  for (const [lat, lon, label] of [
+    [-101.5, 40.5, 'Kansas, east of the box edge? no - inside the box'],
+    [40.5, -110.5, 'Utah, west of Colorado'],
+    [41.5, -105.0, 'Wyoming, north of Colorado'],
+    [36.5, -105.0, 'New Mexico, south of Colorado'],
+  ])
+    assert.equal(areaContains(area, lat, lon), false, `${label} is NOT Colorado`);
+});
+
+test('a non-US state keeps its own geometry and is never given US counties', async () => {
+  // The guard is "is this ring just a box", not "is this the US" - and it has to
+  // be the former, because only SOME admin1 entries lack geometry. Bavaria and
+  // Ontario ship real rings (328 and 221 points); the US states ship four
+  // corners. Keying the substitution on anything other than the ring's shape
+  // would have handed Bavaria the counties of whichever US state matched its
+  // postal code.
+  for (const [name, lat, lon, label] of [
+    ['Bavaria', 48.14, 11.58, 'Munich'],
+    ['Ontario', 43.65, -79.38, 'Toronto'],
+  ]) {
+    const result = await resolveIsolation(name);
+    assert.equal(result.ok, true, `${name} resolves`);
+    const area = result.area;
+    assert.equal(
+      isDegenerateAdminRing(area),
+      false,
+      `${name} has real geometry of its own`,
+    );
+    assert.equal(areaContains(area, lat, lon), true, `${label} is in ${name}`);
+  }
 });

@@ -1129,7 +1129,24 @@ export function createStormReportsLayer({
    */
   function swathCellInIsolation(lat, lon) {
     if (!_isolation?.active) return true;
+    // An area with no usable bbox cannot answer the question, and
+    // `areaContains` answers "no" to everything in that case - which would clip
+    // every cell and leave a blank map for an isolation that was never really
+    // set. Refusing to clip is the safe direction: the wash covers more than it
+    // should, which is recoverable, rather than disappearing.
+    if (!isolationHasGeometry(_isolation.area)) return true;
     return areaContains(_isolation.area, lat, lon);
+  }
+
+  /**
+   * Whether an isolation area carries enough shape to be tested against.
+   *
+   * @param {object|null} area
+   * @returns {boolean}
+   */
+  function isolationHasGeometry(area) {
+    const unit = area?.area ?? area;
+    return Boolean(unit && Array.isArray(unit.bbox) && unit.bbox.length === 4);
   }
 
   /**

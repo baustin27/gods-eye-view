@@ -48,7 +48,12 @@
  * @module data/isolation
  */
 
-import { findAdminArea, polygonsContain } from './adminBoundaries.js';
+import {
+  countiesForState,
+  findAdminArea,
+  isDegenerateAdminRing,
+  polygonsContain,
+} from './adminBoundaries.js';
 
 /**
  * What an isolation can be. A `place` is the approximate one: a point with a
@@ -281,6 +286,38 @@ function toPlaceArea(place, ask) {
   };
 }
 
+/**
+ * Give a US state its real outline, reconstructed from its counties.
+ *
+ * The admin1 pack carries the name and the bbox but NO geometry: Colorado's
+ * `polygons` is one ring of its four bbox corners. That ring is
+ * indistinguishable from a real polygon, so `areaContains` tested against a
+ * RECTANGLE - and isolating a state included chunks of every state sharing its
+ * bounding box, while the UI said the isolation was that state.
+ *
+ * Counties are real geometry and the app already bundles them, and a state is
+ * the union of its counties. Non-US states keep whatever the pack has, which is
+ * to say their name and box.
+ *
+ * @param {object} unit an admin area from `findAdminArea`
+ * @returns {Promise<object>} the same area, with `polygons` replaced if it can be
+ */
+async function withRealGeometry(unit) {
+  if (!isDegenerateAdminRing(unit)) return unit;
+  const code = String(unit.regionCode ?? '').trim();
+  // Two letters, and the county pack is US Census. A Canadian province or a
+  // German state resolves to "ON"/"BY" and must not be looked up here.
+  if (!/^[a-z]{2}$/i.test(code)) return unit;
+  try {
+    const rings = await countiesForState(code);
+    if (!rings.length) return unit;
+    return { ...unit, polygons: rings, ring: rings[0]?.[0] ?? unit.ring };
+  } catch {
+    // The bbox still filters; it is just the frame rather than the shape.
+    return unit;
+  }
+}
+
 function hit(text, unit) {
   const boxes = boxesOf(unit);
   return {
@@ -335,7 +372,7 @@ export async function resolveIsolation(
   try {
     tried.push('admin');
     const admin = await findAdminArea(ask, { near: camera });
-    if (admin) return hit(ask, admin);
+    if (admin) return hit(ask, await withRealGeometry(admin));
   } catch (error) {
     failure = error;
   }

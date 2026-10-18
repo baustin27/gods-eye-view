@@ -3431,3 +3431,32 @@ test('a single-day window loads the coarse field even when a fine day exists', a
   );
   assert.ok(swathEntities(viewer, 'radar').length >= 1, 'and the coarse band drew');
 });
+
+test('an isolation area with no bbox does not blank the map', async () => {
+  // `areaContains` answers false for an area it cannot read, so clipping
+  // against one rejected every cell and emptied the map for an isolation that
+  // was never really set. The safe direction is to not clip: covering too much
+  // is recoverable, vanishing is not.
+  const day = radarDayIndex('2026-06-01');
+  const radarSource = {
+    daysFor: async () => new Map([[day, new Map([[cellKey(39.6, -104.9), 45]])]]),
+    dayFor: async () => ({ cells: [], count: 0 }),
+  };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource, viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  const before = swathEntities(viewer, 'radar').length;
+  assert.ok(before >= 1, 'the wash drew');
+
+  layer.setIsolation({ kind: 'state', name: 'Nowhere' });
+  assert.ok(
+    swathEntities(viewer, 'radar').length >= 1,
+    'and is still there for an area that cannot be tested',
+  );
+});
