@@ -467,6 +467,16 @@ export function createStormReportsLayer({
   // an added claim on top of them.
   let _showReportedSwath = false;
   let _showRadarSwath = false;
+  /**
+   * Swath intent that arrived before it could be honoured.
+   *
+   * Both toggles refuse for real reasons - REPORTED needs the hail hazard, RADAR
+   * needs a wired radar source - and a durable restore can arrive before either
+   * is true. A refusal is not a contradiction of the intent, it is the intent
+   * arriving too early, so it is kept here and replayed after the next load
+   * rather than dropped. Dropping it is what made the map go empty on reload.
+   */
+  let _pendingSwath = null;
   let _ordinalYears = new Set();
   let _firstStormByDate = null;
   let _firstStormByDateFrom = null;
@@ -538,6 +548,39 @@ export function createStormReportsLayer({
     _pendingParams = null;
   }
 
+  /**
+   * Apply a recorded swath intent, deferring whatever refuses.
+   *
+   * Goes through the public setters rather than assigning the flags, so the
+   * refusal rules and the radar rebuild both still run. An assignment would
+   * honour a WIND-hazard REPORTED intent that the chip is disabled for, and
+   * would set the radar flag with no radar source to draw it.
+   *
+   * @param {{reportedSwath?: boolean, radarSwath?: boolean}|null} intent
+   */
+  function applySwathIntent(intent) {
+    if (!intent) return;
+    const deferred = {};
+    for (const key of ['reportedSwath', 'radarSwath']) {
+      const want = intent[key];
+      if (typeof want !== 'boolean') continue;
+      const have =
+        key === 'reportedSwath' ? _showReportedSwath : _showRadarSwath;
+      if (want === have) continue;
+      const moved =
+        key === 'reportedSwath'
+          ? self().setReportedSwath(want)
+          : self().setRadarSwath(want);
+      // Defer ONLY while data has not loaded. Before a load a refusal is
+      // premature - the hazard and the source are not known yet. After one it is
+      // final, and deferring it would replay forever: a RADAR intent on a build
+      // with no radar source refuses every single load, for as long as the layer
+      // lives.
+      if (!moved && !_snapshot) deferred[key] = want;
+    }
+    _pendingSwath = Object.keys(deferred).length ? deferred : null;
+  }
+
   /** Years the current date window touches. */
   function yearsInWindow() {
     if (!_snapshot?.years?.length) return [];
@@ -558,6 +601,11 @@ export function createStormReportsLayer({
     try {
       _snapshot = await source.getSnapshot({ signal: _request?.signal });
       applyPendingParams();
+      // Now that there is a hazard and a source, replay any swath intent that
+      // arrived too early to be honoured. Without this the durable restore sets
+      // a toggle before the data can support it, the toggle refuses, and the
+      // map comes back empty - the exact silent emptying this is here to stop.
+      applySwathIntent(_pendingSwath);
       // Through the source, not around it. Reaching into the module directly
       // made the data path unreachable to a stub, which is how a layer this
       // small ends up untested.
@@ -2295,10 +2343,20 @@ export function createStormReportsLayer({
      * data has loaded, and replayed on the next load.
      */
     setParams(params) {
-      _pendingParams = { ...(_pendingParams || {}), ...params };
+      // The swath toggles are split out and applied last, through their own
+      // setters. Order matters: a shared link can carry `hazard: 'hail'` and
+      // `reportedSwath: true` together, and REPORTED refuses unless the hazard
+      // is already hail. Merging the toggles into `_options` instead would let
+      // `applyPendingParams` set them with no refusal check and no radar
+      // rebuild at all.
+      const { reportedSwath, radarSwath, ...rest } = params || {};
+      _pendingParams = { ...(_pendingParams || {}), ...rest };
       if (_snapshot) {
         applyPendingParams();
         _optionsDirty = true;
+      }
+      if (reportedSwath !== undefined || radarSwath !== undefined) {
+        applySwathIntent({ reportedSwath, radarSwath });
       }
       publish();
     },
@@ -2309,6 +2367,11 @@ export function createStormReportsLayer({
         ...STORM_REPORTS_DEFAULTS,
         ..._options,
         ...(_pendingParams || {}),
+        // Live, not recorded intent: the deferred copy would report a toggle as
+        // on while it is still off, which is the same lie in the other
+        // direction.
+        reportedSwath: _showReportedSwath,
+        radarSwath: _showRadarSwath,
       };
     },
 

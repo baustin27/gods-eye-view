@@ -2939,3 +2939,127 @@ test('ringsToDegrees takes the grid step, and the fine step is 1 km', () => {
   assert.equal(Number(Math.min(...fine.outer.map((p) => p.lat)).toFixed(6)), 1.4, '140 x 0.01');
   assert.equal(GRID_DEG_FINE, 0.01, 'and the step is 1 km, not a literal');
 });
+
+
+// ===========================================================================
+// The remount. Both swath toggles initialised false, which meant any reload
+// silently emptied the map and looked like a rendering bug.
+// ===========================================================================
+
+test('both swath toggles survive a remount', async () => {
+  // A remount is a NEW layer instance handed the previous one's getParams().
+  // That is what the manager does on HMR and on a share-link restore, so the
+  // test is built the same way rather than reaching into private state.
+  const radarSource = {
+    daysFor: async () => new Map(),
+    dayFor: async () => ({ cells: [], count: 0 }),
+  };
+  const first = makeLayer([REPORT(2, { lat: 35.11 })], [], { radarSource });
+  first.layer.init(stubViewer());
+  first.layer.enable();
+  await first.layer.update();
+  first.layer.setHazard('hail');
+  first.layer.setReportedSwath(true);
+  first.layer.setRadarSwath(true);
+  const carried = first.layer.getParams();
+  assert.equal(carried.reportedSwath, true, 'and the intent is reported, not just held');
+
+  const second = makeLayer([REPORT(2, { lat: 35.11 })], [], { radarSource });
+  second.layer.init(stubViewer());
+  second.layer.enable();
+  await second.layer.update();
+  second.layer.setParams(carried);
+
+  assert.equal(second.layer.getReportedSwath(), true, 'REPORTED came back on');
+  assert.equal(second.layer.getRadarSwath(), true, 'RADAR came back on');
+});
+
+test('a swath intent that arrives before its data is honoured, not dropped', async () => {
+  // The refusal is real and correct - REPORTED needs the hail hazard - but a
+  // durable restore legitimately arrives before the hazard is known. The
+  // intent has to survive that and land once there is something to draw it on,
+  // or the map is empty on arrival, which is the bug.
+  //
+  // The hazard is forced to WIND first, because the default is already HAIL and
+  // a REPORTED intent against HAIL does not refuse - which would make this test
+  // pass without ever deferring anything, and prove nothing.
+  const radarSource = {
+    daysFor: async () => new Map(),
+    dayFor: async () => ({ cells: [], count: 0 }),
+  };
+  const layer = makeLayer([REPORT(2, { lat: 35.11 })], [], { radarSource });
+  layer.layer.init(stubViewer());
+  layer.layer.setHazard('wind');
+  // Before enable: no snapshot, so the hazard in these params is not applied
+  // yet, and REPORTED has nothing to stand on. It refuses, and must be kept.
+  layer.layer.setParams({ hazard: 'hail', reportedSwath: true });
+  assert.equal(
+    layer.layer.getReportedSwath(),
+    false,
+    'refused for now, while the hazard is still WIND',
+  );
+
+  layer.layer.enable();
+  await layer.layer.update();
+
+  assert.equal(
+    layer.layer.getReportedSwath(),
+    true,
+    'REPORTED was replayed once the hail hazard landed',
+  );
+});
+
+test('a RADAR intent on a source-less build is not deferred forever', async () => {
+  // The mirror: `setRadarSwath` refuses with no radar source, and that stays
+  // true for the life of the layer. Deferring it would replay on every load for
+  // an intent that can never be honoured - so it is refused and reported off.
+  const layer = makeLayer([REPORT(2, { lat: 35.11 })], []);
+  layer.layer.init(stubViewer());
+  layer.layer.enable();
+  await layer.layer.update();
+  layer.layer.setHazard('hail');
+  layer.layer.setParams({ radarSwath: true });
+  assert.equal(layer.layer.getRadarSwath(), false, 'off, and honestly reported off');
+  assert.equal(layer.layer.getParams().radarSwath, false, 'not a pending promise');
+});
+
+test('a REPORTED intent is still refused under WIND', async () => {
+  // Deferring must not become a bypass. The chip is disabled under WIND and the
+  // intent path has to agree with it, or a share link could conjure a wedge
+  // the UI refuses to offer.
+  const layer = makeLayer([REPORT(2, { lat: 35.11, windKt: 80 })], []);
+  layer.layer.init(stubViewer());
+  layer.layer.enable();
+  await layer.layer.update();
+  layer.layer.setHazard('wind');
+  layer.layer.setParams({ reportedSwath: true });
+  assert.equal(layer.layer.getReportedSwath(), false, 'refused, and kept refused');
+});
+
+test('a RADAR intent with no radar source stays off', async () => {
+  // Same rule for the sibling: no source means no wedge, from either direction.
+  const layer = makeLayer([REPORT(2, { lat: 35.11 })], []);
+  layer.layer.init(stubViewer());
+  layer.layer.enable();
+  await layer.layer.update();
+  layer.layer.setHazard('hail');
+  layer.layer.setParams({ radarSwath: true });
+  assert.equal(layer.layer.getRadarSwath(), false, 'refused, and kept refused');
+});
+
+test('getParams reports the toggles as they are, not as they were asked for', async () => {
+  // The mirror of the deferral: if a toggle is still deferred, reporting the
+  // intent would be the same lie the other way - a share link that promises a
+  // wash nobody can see.
+  const layer = makeLayer([REPORT(2, { lat: 35.11 })], []);
+  layer.layer.init(stubViewer());
+  layer.layer.enable();
+  await layer.layer.update();
+  layer.layer.setHazard('wind');
+  layer.layer.setParams({ reportedSwath: true });
+  assert.equal(
+    layer.layer.getParams().reportedSwath,
+    false,
+    'a refused toggle is reported off',
+  );
+});
