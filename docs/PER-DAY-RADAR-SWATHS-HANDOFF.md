@@ -436,24 +436,30 @@ blocks anything.
    is 0.72; at the top band the terrain under the wash is dim. The category is
    saturated too, so this is a taste call rather than a defect — but it is a
    single constant and it is the obvious next dial.
-5. **Decide whether the fine 1 km field wants its own treatment.** This is the
-   one open *product* question, and it is new. At regional altitude — and at
-   1.7 km over the densest part of a real hail day — a fine day renders as a
-   broad, nearly uniform wash rather than a crisp band mosaic: Colorado
-   2026-06-01 put 2,153 polygons across the frame and covered 99.94% of it.
+5. ~~**Decide whether the fine 1 km field wants its own treatment.**~~
+   **DONE — altitude LOD.** At regional altitude — and at 1.7 km over the
+   densest part of a real hail day — a fine day rendered as a broad, nearly
+   uniform wash rather than a crisp band mosaic: Colorado 2026-06-01 put 2,153
+   polygons across the frame and covered 99.94% of it.
 
-   That is correct rendering, not a regression, and the numbers say so: the
+   That was correct rendering, not a regression, and the numbers said so: the
    smallest drawn polygon spans 0.0100° (one cell), and decoded straight from the
    shard the largest single ring is 1,045 cells — 6.6% of the day. With a 19 mm
-   floor, the region that reached 0.75 in on a big day is simply large and
-   contiguous, and at 1 km the ramp has no room to band it. It is also a
-   different *look* from the coarse field the user approved.
+   floor the region that reached 0.75 in on a big day is simply large and
+   contiguous, and at map scale a 1 km cell is sub-pixel so same-band polygons
+   stack.
 
-   So the question is not "is it broken" — it is "does the fine field want
-   heavier outlines, fewer bands, or a zoom-dependent ramp, given that its whole
-   purpose is roof-level detail". **Do not redesign it unprompted.** Raise it with
-   the numbers above attached, and at both scales
-   (`QA_SWATH_CAMERA_M=3000` gives the roof-level one).
+   Resolved by altitude rather than by restyling: **1 km below 12 km, 0.25°
+   above it.** That restores the approved band mosaic at regional scale and
+   keeps 1 km for the roof-level case it serves. The alpha ceiling eases 0.72 →
+   0.52 between 12 km and 60 km. One constant, `SWATH_FINE_MAX_ALTITUDE_M`, so it
+   stays the dial it is.
+
+   **Do not copy that constant into the QA script.** `QA_SWATH_EXPECT_TIER`
+   names the tier a run is staging for; the boundary itself lives in one place.
+   A duplicate of a threshold in a QA script is a duplicate that drifts, and it
+   would drift silently — the run would keep passing, just against the wrong
+   boundary.
 
 ## 11. What this session got wrong, for the record
 

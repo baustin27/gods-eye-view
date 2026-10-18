@@ -558,10 +558,31 @@ Two things worth keeping, because both were found the hard way:
   visual. A pixel metric alone would never have caught it, and neither would a
   unit test of `ringsToDegrees` — that tests the function, not the caller.
 
-Open, and deliberately not resolved without a decision: at regional and even
-near-roof altitudes a single fine day reads as a broad flat wash rather than a
-crisp band mosaic, because with a 19 mm floor the ≥0.75 in region on a big hail
-day is genuinely large and contiguous. That is correct rendering, not a
-regression — the geometry is verified at 0.01° and the largest single ring is
-6.6% of that day's cells — but it is a different *look* from the coarse field,
-and whether the fine field wants its own treatment is a product call.
+### The look question, and how it was answered
+
+At regional and even near-roof altitudes a single fine day read as a broad flat
+wash rather than a crisp band mosaic. Measured, at 1.7 km over the densest part
+of Colorado 2026-06-01: 2,153 polygons covering 99.94% of the frame. The
+geometry was never the problem — the smallest drawn polygon spans exactly
+0.0100°, and the largest single ring is 6.6% of that day's cells. With a 19 mm
+floor the ≥0.75 in region on a big day genuinely is large and contiguous, and at
+map scale a 1 km cell is sub-pixel, so same-band polygons stack.
+
+Decided: **1 km close up, 0.25 degrees from altitude**, above
+`SWATH_FINE_MAX_ALTITUDE_M` (12 km). That is what the 0.25° field is for, and it
+restores the approved band mosaic at regional scale while 1 km is kept for the
+roof-level case it actually serves. The alpha ceiling eases 0.72 → 0.52 between
+12 km and 60 km so the wash stays dominant without flattening the basemap.
+
+- [x] Fine drawn below the threshold, coarse above — asserted on the drawn
+      geometry, not on a flag
+- [x] A zoom crossing the boundary redraws the wash (`moveEnd`, tier-guarded)
+- [x] `destroy()` unsubscribes the camera listener
+- [x] Both tiers verified in the shipping tiles regime, 2026-06-01: 3 km → 0.0100°,
+      40 km → 0.2500°, one fine shard fetched at each
+- [x] QA is altitude-aware (`QA_SWATH_EXPECT_TIER`) rather than hard-coded, so a
+      regional run no longer fails for drawing the coarse field correctly
+
+The fine shard is still **fetched** above the threshold — a day is ~34 KB and
+cached twelve deep, and paying that once makes a zoom-down instant instead of a
+fetch. The choice is about what to draw, not what to load.

@@ -119,6 +119,14 @@ Per-day counts, the grid, the encoding, the floor and the build totals are all i
 `storm-radar-fine-sources.json`; the totals are checked against the shards
 themselves, not only against the manifest.
 
+**Which one gets drawn is an altitude decision, not a data one.** Below
+12 km (`SWATH_FINE_MAX_ALTITUDE_M` in `src/layers/stormReports/index.js`) a
+single-day window draws these 1 km cells; above it, the 0.25° per-year field,
+because at map scale a 1 km cell is sub-pixel and same-band polygons stack into
+one flat wash — measured at 99.94% frame coverage over the densest part of
+2026-06-01. Both shards are still fetched: a fine day is ~34 KB and cached
+twelve deep, so paying that once makes a zoom-down instant.
+
 ### Report-level files
 
 Produced by `node scripts/build-storm-reports.mjs` (alias: `npm run build:storm-reports`).

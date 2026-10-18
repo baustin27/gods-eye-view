@@ -243,6 +243,14 @@ question and per-day fetching would mean a fetch per selected day. Days outside
 the 1,019-day retention window, and any failure to load, fall back to the coarse
 field rather than to an empty map.
 
+Which field is **drawn** is then an altitude decision: the 1 km cells below
+12 km of camera altitude, the 0.25° field above it. At map scale a 1 km cell is
+sub-pixel and same-band polygons stack — measured at 99.94% frame coverage over
+the densest part of 2026-06-01 — so the coarse field is what regional reading
+actually wants, while 1 km is kept for roof level. The fine shard is fetched at
+either altitude (~34 KB a day, cached twelve deep), so zooming in is instant
+rather than a fetch.
+
 The retention floor was chosen by measurement, not taste. Decoding all 1,019
 shards and counting rings per day gives a median of 242, a mean of 423 and a
 maximum of 2,592; a 10 mm floor instead yields 245 MB and a mean of 3,065 rings.
