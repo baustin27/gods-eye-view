@@ -89,13 +89,36 @@ function stubViewer() {
     },
     camera: {
       __flownTo: null,
+      // Metres. 0 is street level, which is what every test that predates the
+      // LOD wants - it keeps them on the fine path without each having to say so.
+      __height: 0,
+      __moveEnd: [],
       flyTo(options) {
         this.__flownTo = options;
         return options;
       },
+      get positionCartographic() {
+        return { height: this.__height };
+      },
+      moveEnd: {
+        addEventListener(fn) {
+          this.__listeners.push(fn);
+        },
+        removeEventListener(fn) {
+          const i = this.__listeners.indexOf(fn);
+          if (i >= 0) this.__listeners.splice(i, 1);
+        },
+        __listeners: [],
+      },
     },
     __sources: sources,
   };
+}
+
+/** Move the camera to an altitude and fire `moveEnd`, as Cesium would. */
+function setCameraHeight(viewer, metres) {
+  viewer.camera.__height = metres;
+  for (const fn of viewer.camera.moveEnd.__listeners) fn();
 }
 
 /** Entities the layer currently holds on its own data source. */
@@ -3061,5 +3084,128 @@ test('getParams reports the toggles as they are, not as they were asked for', as
     layer.layer.getParams().reportedSwath,
     false,
     'a refused toggle is reported off',
+  );
+});
+
+
+// ===========================================================================
+// Altitude LOD. Measured, not assumed: at 1.7km over the densest part of
+// 2026-06-01 the fine field covered 99.94% of the frame, because at that scale
+// a 1km cell is sub-pixel and same-band polygons stack into one flat wash.
+// ===========================================================================
+
+/** A single-day fine source plus a matching coarse one, for the same day. */
+function lodRadarSource() {
+  const day = radarDayIndex('2026-06-01');
+  return {
+    daysFor: async () => new Map([[day, new Map([[cellKey(35.11, -97.4), 45]])]]),
+    dayFor: async () => ({ count: 1, cells: [{ i: 3962, j: -10488, maxMm: 45 }] }),
+  };
+}
+
+/** The drawn width, in degrees, of the smallest radar polygon. */
+function finestRadarSpanDeg(viewer) {
+  const spans = swathEntities(viewer, 'radar')
+    .map((e) => value(e.polygon?.hierarchy)?.positions ?? [])
+    .filter((p) => p.length >= 4)
+    .map((p) => {
+      const lats = p.map(
+        (q) => Cesium.Ellipsoid.WGS84.cartesianToCartographic(q).latitude,
+      );
+      return (Math.max(...lats) - Math.min(...lats)) * (180 / Math.PI);
+    });
+  return spans.length ? Math.min(...spans) : null;
+}
+
+test('the fine field is drawn close up and dropped above the LOD altitude', async () => {
+  // Below the threshold a single day draws 1km; above it, the 0.25-degree field.
+  // Both are correct answers - which is why the assertion is on the GEOMETRY
+  // rather than on a flag: the whole point of the tier is which cells it draws.
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource: lodRadarSource(), viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+
+  setCameraHeight(viewer, 3_000);
+  const fine = finestRadarSpanDeg(viewer);
+  assert.ok(
+    Math.abs(fine - 0.01) < 1e-6,
+    `close up it is 1km (0.01), got ${fine}`,
+  );
+
+  setCameraHeight(viewer, 40_000);
+  const coarse = finestRadarSpanDeg(viewer);
+  assert.ok(
+    Math.abs(coarse - 0.25) < 1e-6,
+    `from altitude it is the 0.25-degree field (0.25), got ${coarse}`,
+  );
+});
+
+test('a zoom that crosses the LOD boundary redraws the wash', async () => {
+  // Without the moveEnd listener the tier would be chosen once, at toggle time,
+  // and the wash would stay 1km after a zoom-out until some unrelated repaint.
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource: lodRadarSource(), viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+  setCameraHeight(viewer, 3_000);
+  assert.ok(Math.abs(finestRadarSpanDeg(viewer) - 0.01) < 1e-6, 'starts fine');
+
+  setCameraHeight(viewer, 25_000);
+  assert.ok(
+    Math.abs(finestRadarSpanDeg(viewer) - 0.25) < 1e-6,
+    'and became coarse on the zoom-out alone',
+  );
+});
+
+test('the alpha ceiling eases off with altitude, monotonically', async () => {
+  // The user-visible half of the LOD: at altitude the wash must not flatten the
+  // basemap. Measured off the entities the layer actually created.
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource: lodRadarSource(), viewer });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setHazard('hail');
+  layer.setDate('2026-06-01');
+  await settled(layer);
+  layer.setRadarSwath(true);
+
+  const topBandAlpha = () => {
+    const polys = swathEntities(viewer, 'radar');
+    return Math.max(
+      ...polys.map((e) => value(e.polygon?.material)?.color?.alpha ?? 0),
+    );
+  };
+  setCameraHeight(viewer, 3_000);
+  const near = topBandAlpha();
+  setCameraHeight(viewer, 60_000);
+  const far = topBandAlpha();
+  assert.ok(far < near, `lighter at altitude (${far} < ${near})`);
+  assert.ok(far > 0, 'and never invisible — it is a wash, not a fade-out');
+});
+
+test('destroy() unsubscribes the camera listener', async () => {
+  // A listener left on a destroyed layer's camera keeps calling renderSwaths on
+  // a viewer the layer no longer owns.
+  const viewer = stubViewer();
+  const { layer } = makeLayer([], [], { radarSource: lodRadarSource(), viewer });
+  layer.init(viewer);
+  assert.equal(viewer.camera.moveEnd.__listeners.length, 1, 'subscribed');
+  layer.destroy();
+  assert.equal(
+    viewer.camera.moveEnd.__listeners.length,
+    0,
+    'and gone after destroy',
   );
 });

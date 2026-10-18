@@ -173,6 +173,32 @@ const SWATH_GRANULARITY = Cesium.Math.toRadians(5);
 const SWATH_ALPHA_MIN = 0.3;
 const SWATH_ALPHA_MAX = 0.72;
 
+/**
+ * The same ceiling, at full regional altitude. The wash has to stay dominant
+ * when the camera is high enough that a cell is well under a pixel, so the top
+ * of the ramp eases off rather than staying pinned. Interpolated, not stepped,
+ * so a slow zoom does not snap.
+ */
+const SWATH_ALPHA_MAX_FAR = 0.52;
+
+/**
+ * Camera altitude, in metres, at which the fine 1km field stops being drawn.
+ *
+ * Above this the radar swath drops to the 0.25-degree field. That is what the
+ * 0.25-degree field is FOR, and the measurement says why: at 1.7km over the
+ * densest part of Colorado 2026-06-01 the fine field covered 99.94% of the
+ * frame with 2,153 polygons merging into one flat wash, because at that scale
+ * the cell edges are sub-pixel and same-band polygons stack. The fine field
+ * earns its keep at roof level, where a cell is about the size of a block.
+ *
+ * One constant, and deliberately so: a display choice, not a data one. Set it
+ * very high and the fine field is used everywhere, flat wash and all.
+ */
+const SWATH_FINE_MAX_ALTITUDE_M = 12_000;
+
+/** Altitude at which the alpha ceiling is fully eased off, metres. */
+const SWATH_ALPHA_FAR_ALTITUDE_M = 60_000;
+
 /** Opacity of a band's hard edge, against the fill it outlines. */
 const SWATH_EDGE_ALPHA = 0.95;
 
@@ -477,6 +503,14 @@ export function createStormReportsLayer({
    * rather than dropped. Dropping it is what made the map go empty on reload.
    */
   let _pendingSwath = null;
+  /**
+   * Which LOD tier the last draw used, so a zoom can be told from a no-op.
+   *
+   * The fine/coarse choice is a function of camera altitude, so without this the
+   * layer would not redraw at all when only the altitude changed - the wash
+   * would stay 1km after a zoom-out until something unrelated forced a repaint.
+   */
+  let _lodTier = null;
   let _ordinalYears = new Set();
   let _firstStormByDate = null;
   let _firstStormByDateFrom = null;
@@ -1489,7 +1523,61 @@ export function createStormReportsLayer({
    */
   function swathAlphaFor(rank) {
     const clamped = Math.min(Math.max(Number(rank) || 0, 0), 1);
-    return SWATH_ALPHA_MIN + (SWATH_ALPHA_MAX - SWATH_ALPHA_MIN) * clamped;
+    const ceiling = swathAlphaCeiling();
+    return SWATH_ALPHA_MIN + (ceiling - SWATH_ALPHA_MIN) * clamped;
+  }
+
+  /**
+   * The current camera altitude, in metres.
+   *
+   * `positionCartographic` reports latitude and longitude in RADIANS; `height`
+   * is already metres, and is the only field read here.
+   */
+  function cameraAltitudeM() {
+    return _viewer?.camera?.positionCartographic?.height ?? 0;
+  }
+
+  /**
+   * The alpha ceiling at the camera's current altitude.
+   *
+   * Eased off toward {@link SWATH_ALPHA_MAX_FAR} as the camera climbs, so the
+   * wash does not flatten the basemap at altitude. Linear between the two
+   * anchors, which is crude but monotonic and has no knee to argue about.
+   */
+  function swathAlphaCeiling() {
+    const altitude = cameraAltitudeM();
+    if (!altitude || altitude <= SWATH_FINE_MAX_ALTITUDE_M)
+      return SWATH_ALPHA_MAX;
+    const span = SWATH_ALPHA_FAR_ALTITUDE_M - SWATH_FINE_MAX_ALTITUDE_M;
+    const t =
+      span > 0 ? Math.min((altitude - SWATH_FINE_MAX_ALTITUDE_M) / span, 1) : 1;
+    return SWATH_ALPHA_MAX + (SWATH_ALPHA_MAX_FAR - SWATH_ALPHA_MAX) * t;
+  }
+
+  /** Whether the camera is close enough for the fine 1km field to be worth drawing. */
+  function useFineRadarField() {
+    return (
+      Boolean(_radarFine) && cameraAltitudeM() <= SWATH_FINE_MAX_ALTITUDE_M
+    );
+  }
+
+  /**
+   * Redraw only when the altitude has crossed the LOD boundary.
+   *
+   * `moveEnd`, not `changed`: a drag emits `changed` continuously and each of
+   * those would rebuild thousands of polygons for a tier that has not actually
+   * changed. A move that ends in the same tier does nothing.
+   */
+  function onCameraSettled() {
+    const tier = useFineRadarField() ? 'fine' : 'coarse';
+    if (tier === _lodTier) return;
+    _lodTier = tier;
+    // `render()`, never `renderSwaths()`. The swath ids are derived from the
+    // band and the ring index, so redrawing without first emptying the
+    // collection re-adds ids that are already there and Cesium throws
+    // DeveloperError on the first zoom that crosses the boundary - which is a
+    // crash on a completely ordinary gesture.
+    if (_showRadarSwath) render();
   }
 
   /**
@@ -1578,6 +1666,7 @@ export function createStormReportsLayer({
    */
   function renderSwaths() {
     if (!_dataSource) return;
+    _lodTier = useFineRadarField() ? 'fine' : 'coarse';
     if (_showReportedSwath && _options.hazard === 'hail') {
       const hailBands = HAIL_BANDS;
       drawSwathBand(
@@ -1602,13 +1691,13 @@ export function createStormReportsLayer({
       // worst-first, and inverting that here would silently reverse the alpha
       // ramp — the fringe would paint solid and the core would go ghostly.
       const ascending = [...RADAR_RAMP_MM].reverse();
-      // The cells and the grid step, which differ by source: the fine 1 km
-      // field when the window is a single day, the published 0.25-degree field
-      // for a multi-day combine or a day outside the retention window.
-      const radarCells = _radarFine
-        ? fineSwathCells(_fineRadarCells)
-        : _radarSwath;
-      const radarDeg = _radarFine ? GRID_DEG_FINE : GRID_DEG;
+      // The cells and the grid step, which differ by BOTH source and altitude:
+      // the fine 1 km field for a single day seen from close up, the published
+      // 0.25-degree field for a multi-day combine, a day outside the retention
+      // window, or a camera high enough that 1 km cells are sub-pixel.
+      const fine = useFineRadarField();
+      const radarCells = fine ? fineSwathCells(_fineRadarCells) : _radarSwath;
+      const radarDeg = fine ? GRID_DEG_FINE : GRID_DEG;
       drawSwathBand(
         'radar',
         radarCells,
@@ -2264,6 +2353,7 @@ export function createStormReportsLayer({
       _dataSource.show = false;
       viewer.dataSources.add(_dataSource);
       overlayHost.setVisible(STORM_REPORTS_ID, false);
+      _viewer.camera?.moveEnd?.addEventListener(onCameraSettled);
       publish();
     },
 
@@ -3183,6 +3273,7 @@ export function createStormReportsLayer({
       _rowControlsListener = null;
       overlayHost.clearSource(STORM_REPORTS_ID);
       if (_dataSource && _viewer) _viewer.dataSources.remove(_dataSource);
+      _viewer?.camera?.moveEnd?.removeEventListener(onCameraSettled);
       _dataSource = null;
       if (_instance === api) _instance = null;
       _viewer = null;

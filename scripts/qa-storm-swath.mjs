@@ -73,6 +73,14 @@ const targetLon = Number(process.env.QA_SWATH_LON || -100.3);
  * to the first can only ever ask the first.
  */
 const CAMERA_HEIGHT_M = Number(process.env.QA_SWATH_CAMERA_M || 40_000);
+
+/**
+ * Which LOD tier this run is staging for: `fine`, `coarse`, or `any`.
+ *
+ * `any` is the default because the tier is a function of the camera, and a QA
+ * script that assumed one altitude could only ever guard the other end of it.
+ */
+const expectTier = String(process.env.QA_SWATH_EXPECT_TIER || 'any').toLowerCase();
 /**
  * The lift probe's height. 200 km clears any terrain this app can show and is
  * far enough below the horizon that the rectangle still faces the camera.
@@ -1042,14 +1050,44 @@ try {
   // DRAWN. The renderer multiplies ring indices by the grid step, so a fine
   // payload drawn with the coarse step is 25x too large and still looks like a
   // plausible storm. This reads the drawn geometry instead of the fetch.
+  //
+  // Altitude-aware, because the layer now draws 1km close up and 0.25 degrees
+  // from altitude - so at a given camera height only ONE of these is correct, and
+  // an unconditional "must be 1km" would fail the regional run for doing exactly
+  // the right thing. QA_SWATH_EXPECT_TIER says which tier this run is staging
+  // for; the tier boundary itself is deliberately NOT duplicated here, because a
+  // copy of a threshold in a QA script is a copy that drifts.
+  const finest = swaths.finestRadarSpanDeg;
+  const observedTier =
+    finest === null
+      ? 'none'
+      : finest <= 0.011
+        ? 'fine'
+        : Math.abs(finest - 0.25) < 1e-3
+          ? 'coarse'
+          : `unexpected(${finest.toFixed(4)})`;
+  report.lodTier = observedTier;
   if (payloadRequests.fine.length) {
-    const finest = swaths.finestRadarSpanDeg;
-    check(
-      'the fine field is DRAWN at 1km, not drawn at the coarse 25x step',
-      finest !== null && finest <= 0.011,
-      `smallest radar polygon spans ${finest === null ? 'n/a' : finest.toFixed(4)}deg ` +
-        `(0.01 = one cell, 0.25 = the coarse step)`,
-    );
+    if (expectTier === 'fine') {
+      check(
+        'the fine field is DRAWN at 1km, not drawn at the coarse 25x step',
+        observedTier === 'fine',
+        `smallest radar polygon spans ${finest === null ? 'n/a' : finest.toFixed(4)}deg ` +
+          `(0.01 = one cell, 0.25 = the coarse step)`,
+      );
+    } else if (expectTier === 'coarse') {
+      check(
+        'a high camera draws the 0.25-degree field, not 1km',
+        observedTier === 'coarse',
+        `smallest radar polygon spans ${finest === null ? 'n/a' : finest.toFixed(4)}deg ` +
+          `(0.01 = one cell, 0.25 = the coarse step)`,
+      );
+    } else {
+      note(
+        `LOD tier at ${Math.round(CAMERA_HEIGHT_M)}m: ${observedTier} ` +
+          `(smallest radar polygon ${finest === null ? 'n/a' : finest.toFixed(4)}deg)`,
+      );
+    }
   }
   check(
     'swath entities are present and discoverable',
