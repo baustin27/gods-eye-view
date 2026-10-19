@@ -1056,10 +1056,15 @@ export function scoreCounties(counties, options = {}) {
         stat(county, 'nriWindRiskRating', 'wRisk', null),
       nriHailEal: stat(county, 'nriHailEal', 'hEal', null),
       nriWindEal: stat(county, 'nriWindEal', 'wEal', null),
-      reportedLoss: county.pl ?? null,
+      // Through `stat`, like every other field here. These three read the raw
+      // GeoJSON keys (`pl`, `y0`, `y1`) directly, and the counties this function
+      // is actually fed are `toCountyRecord` outputs, which RENAME all three -
+      // so `reportedLoss`, `firstYear` and `lastYear` were silently null on the
+      // live path and only ever worked in a test that passed raw features.
+      reportedLoss: stat(county, 'reportedLoss', 'pl', null),
       population: stat(county, 'population', 'pop', null),
-      firstYear: county.y0 ?? null,
-      lastYear: county.y1 ?? null,
+      firstYear: stat(county, 'firstYear', 'y0', null),
+      lastYear: stat(county, 'lastYear', 'y1', null),
       partial: observed.counts.partial,
     };
   });

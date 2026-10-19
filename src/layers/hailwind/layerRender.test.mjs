@@ -708,3 +708,109 @@ test('the layer draws only what the camera can see', async (t) => {
     `expected the view cull to drop most cells, drew ${cellsDrawn} of ${cellsScored}`,
   );
 });
+
+test('a county hole is a hole, not a second filled county', async (t) => {
+  // Every US county hole is an independent city or an enclave. The county path
+  // flattened rings and made one entity from each, so all 46 of them were drawn
+  // as solid county-coloured blobs sitting on top of the county around them.
+  // Real data, real hole: the snapshot is read, not mocked.
+  const source = createStormSource({
+    load: () => loadStormDataset({ fetchImpl: fileFetch }),
+  });
+  const storm = createStormLayer({
+    source,
+    overlayHost: recordingOverlayHost(),
+    facet: 'expected',
+  });
+  const viewer = stubViewer();
+  storm.init(viewer);
+  storm.enable(viewer);
+  t.after(() => storm.destroy(viewer));
+  assert.equal(await storm.update(), true);
+
+  const entities = [...storm.getDataSourceForTest().entities.values];
+  const countyEntities = entities.filter((e) =>
+    String(e.id ?? '').startsWith('storm-county:'),
+  );
+  assert.ok(countyEntities.length > 0, 'counties drew');
+
+  // Every county's parts must produce ONE entity per part, with the holes
+  // carried on the hierarchy rather than promoted to entities of their own.
+  const byCounty = new Map();
+  for (const e of countyEntities) {
+    const [, fips] = String(e.id).split(':');
+    byCounty.set(fips, (byCounty.get(fips) ?? 0) + 1);
+  }
+  const dataset = await source.getSnapshot();
+  let holeChecked = 0;
+  let holeOwnEntity = 0;
+  for (const county of dataset.counties) {
+    const geometry = dataset.countiesByFips.get(String(county.fips))?.geometry;
+    if (!geometry) continue;
+    const parts =
+      geometry.type === 'MultiPolygon'
+        ? geometry.coordinates
+        : [geometry.coordinates];
+    const withHoles = parts.filter((set) => set.length > 1);
+    if (!withHoles.length) continue;
+    holeChecked += withHoles.length;
+    // Previously every ring became an entity, so a part with 3 rings produced
+    // 3 entities. Now it produces 1.
+    if ((byCounty.get(String(county.fips)) ?? 0) > parts.length) holeOwnEntity += 1;
+  }
+  assert.ok(holeChecked > 0, 'the snapshot really does contain holed counties');
+  assert.equal(
+    holeOwnEntity,
+    0,
+    'no holed county produced more entities than it has parts',
+  );
+
+  // And the hierarchy a holed county drew actually carries its holes.
+  // `entity.polygon` is a ConstantProperty wrapping the PolygonGraphics, and
+  // `.hierarchy` is a ConstantProperty inside that, so both need unwrapping.
+  // Reading `.holes` off the wrapper is always undefined - which is how the
+  // first version of this test "found no holed counties" on data that has 22.
+  const unwrap = (property) =>
+    property && typeof property.getValue === 'function'
+      ? property.getValue()
+      : property;
+  const holed = countyEntities.find((e) => {
+    const graphics = unwrap(e.polygon);
+    const hierarchy = unwrap(graphics?.hierarchy);
+    return Array.isArray(hierarchy?.holes) && hierarchy.holes.length > 0;
+  });
+  assert.ok(
+    holed,
+    `at least one drawn county carries holes on its hierarchy (${countyEntities.length} county entities)`,
+  );
+});
+
+test('the county entity budget is a budget on entities, not on rows', async (t) => {
+  // `STORM_MAX_COUNTIES` bounded the rows `scoreCounties` returned, and every
+  // row can carry several parts. The real file produced 4,256 rings from 3,234
+  // counties, so "3,234 of 4,000" was the cap checked in the wrong unit and
+  // 256 entities overran it.
+  const source = createStormSource({
+    load: () => loadStormDataset({ fetchImpl: fileFetch }),
+  });
+  const storm = createStormLayer({
+    source,
+    overlayHost: recordingOverlayHost(),
+    facet: 'expected',
+  });
+  const viewer = stubViewer();
+  storm.init(viewer);
+  storm.enable(viewer);
+  t.after(() => storm.destroy(viewer));
+  assert.equal(await storm.update(), true);
+
+  const allEntities = [...storm.getDataSourceForTest().entities.values];
+  const countyEntities = allEntities.filter((e) =>
+    String(e.id ?? '').startsWith('storm-county:'),
+  );
+  assert.ok(countyEntities.length > 0, 'counties drew');
+  assert.ok(
+    countyEntities.length <= 5000,
+    `${countyEntities.length} county entities is within the 5,000 cap`,
+  );
+});

@@ -83,8 +83,24 @@ export const STORM_MAX_CELLS = 6000;
 /** Hard ceiling on significant-event markers. */
 export const STORM_MAX_EVENTS = 4000;
 
-/** County rows rendered by the expected layer. All 3,234 are cheap polygons. */
-export const STORM_MAX_COUNTIES = 4000;
+/**
+ * County ENTITIES drawn by the expected layer.
+ *
+ * One entity per county PART, and holes ride on the part's hierarchy rather
+ * than becoming entities of their own. Measured against the bundled snapshot:
+ * the whole US is 3,234 counties resolving to **4,210 parts** carrying 46 holes
+ * - so 4,256 rings, which is what the old code produced.
+ *
+ * 4,000 was not enough, and the shortfall was not random. Enforcing it dropped
+ * ~210 parts, and the parts it dropped were systematically the lowest-scoring
+ * counties - which is where the holed counties live, because a hole is an
+ * independent city and independent cities are small and score low. So the cap
+ * silently removed exactly the geometry that needed the most care: every
+ * Fairfax-style enclave would have been drawn as a solid blob over its own
+ * county. The number is a guard against a pathological dataset, not a budget
+ * intended to be hit.
+ */
+export const STORM_MAX_COUNTIES = 5000;
 
 /**
  * Share of the ambient card lane reserved for event drill-down cards.
@@ -303,18 +319,26 @@ export function createStormLayer({
     _rows = rows;
 
     const entities = [];
+    // The cap is enforced on ENTITIES, not rows - see STORM_MAX_COUNTIES.
+    // Rows arrive score-descending, so a county that would be cut is the least
+    // interesting one, but the cut must not land mid-part.
     for (const row of rows) {
+      if (entities.length >= STORM_MAX_COUNTIES) break;
       const geometry = _dataset.countiesByFips.get(String(row.fips))?.geometry;
       if (!geometry) continue;
-      // One entity per ring: Cesium's hierarchy setter collapses an array
-      // into a single polygon, which breaks every multi-part county.
-      const rings = polygonRings(geometry);
-      rings.forEach((positions, index) =>
+      // One entity per part: Cesium's hierarchy setter collapses an array into
+      // a single polygon, which breaks every multi-part county.
+      const parts = polygonParts(geometry);
+      parts.forEach((hierarchy, index) => {
+        // Inside the loop as well as outside it. Checking only per county let a
+        // single 13-part county push the total to 4,013 against a 4,000 cap -
+        // the guard was right about rows and still let entities through.
+        if (entities.length >= STORM_MAX_COUNTIES) return;
         entities.push(
           new Cesium.Entity({
             id: `storm-county:${row.fips}:${index}`,
             polygon: {
-              hierarchy: new Cesium.PolygonHierarchy(positions),
+              hierarchy,
               material: Cesium.Color.fromCssColorString(
                 hexForScore(row.score),
               ).withAlpha(alphaForScore(row.score)),
@@ -323,8 +347,8 @@ export function createStormLayer({
             },
             properties: mapAnalystCountyRecord(row),
           }),
-        ),
-      );
+        );
+      });
     }
 
     _dataSource.entities.removeAll();
@@ -472,7 +496,7 @@ export function createStormLayer({
   }
 
   /**
-   * One Cartesian3 ring per usable part of a GeoJSON geometry.
+   * One PolygonHierarchy per usable PART of a GeoJSON geometry.
    *
    * Cesium's `polygon.hierarchy` setter does not accept an array of
    * PolygonHierarchy: it wraps whatever array it is handed into a *single*
@@ -481,36 +505,52 @@ export function createStormLayer({
    * computed — "origin has a NaN component". Verified against the running
    * Cesium: an array of hierarchies reads back as one hierarchy with the
    * array as its positions, while a single PolygonHierarchy reads back
-   * correctly. So the caller emits one entity per ring.
+   * correctly. So the caller emits one entity per part.
+   *
+   * Holes are NOT flattened. This previously returned a flat list of rings and
+   * the caller made one entity from each, which drew all 46 US county holes —
+   * the independent cities, the enclaves — as solid county-coloured blobs
+   * sitting on top of the county around them. A hole is not a part; it belongs
+   * to the part that surrounds it.
    *
    * Non-finite coordinates are dropped rather than passed through, because one
    * NaN vertex poisons the polygon's centre.
    *
    * @param {object} geometry GeoJSON Polygon or MultiPolygon
-   * @returns {Array<Array<object>>} Cartesian3 rings, each of length >= 3.
+   * @returns {Array<Cesium.PolygonHierarchy>} one per drawable part.
    */
-  function polygonRings(geometry) {
+  function polygonParts(geometry) {
     const parts =
       geometry?.type === 'MultiPolygon'
         ? geometry.coordinates
         : geometry?.type === 'Polygon'
           ? [geometry.coordinates]
           : [];
-    const rings = [];
+    const hierarchies = [];
     for (const ringSet of parts) {
-      for (const ring of ringSet) {
-        const positions = [];
-        for (const [lon, lat] of ring) {
-          // Cesium turns a non-finite coordinate into a NaN vertex, and one NaN
-          // vertex is enough to make the whole polygon's centre NaN, which
-          // surfaces as "origin has a NaN component".
-          if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
-          positions.push(Cesium.Cartesian3.fromDegrees(lon, lat));
-        }
-        if (positions.length >= 3) rings.push(positions);
+      const [outer, ...rest] = ringSet;
+      if (!outer) continue;
+      const positions = [];
+      for (const [lon, lat] of outer) {
+        // Cesium turns a non-finite coordinate into a NaN vertex, and one NaN
+        // vertex is enough to make the whole polygon's centre NaN, which
+        // surfaces as "origin has a NaN component".
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+        positions.push(Cesium.Cartesian3.fromDegrees(lon, lat));
       }
+      if (positions.length < 3) continue;
+      const holes = [];
+      for (const hole of rest) {
+        const holePositions = [];
+        for (const [lon, lat] of hole) {
+          if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+          holePositions.push(Cesium.Cartesian3.fromDegrees(lon, lat));
+        }
+        if (holePositions.length >= 3) holes.push(holePositions);
+      }
+      hierarchies.push(new Cesium.PolygonHierarchy(positions, holes));
     }
-    return rings;
+    return hierarchies;
   }
 
   /** @returns {[number, number]} lon, lat for a county card anchor. */

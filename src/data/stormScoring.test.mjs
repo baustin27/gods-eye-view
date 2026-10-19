@@ -787,3 +787,37 @@ test('a cell whose per-year list failed to decode still scores from decades', ()
     'falls back rather than rendering an empty cell',
   );
 });
+
+test('reportedLoss and the year span survive BOTH county spellings', () => {
+  // Three fields read the raw GeoJSON keys (`pl`, `y0`, `y1`) directly while
+  // every other field in this function goes through `stat`, which accepts both
+  // spellings. The counties actually fed to `scoreCounties` are
+  // `toCountyRecord` outputs, which RENAME all three - so `reportedLoss`,
+  // `firstYear` and `lastYear` came back null on the live path and only ever
+  // worked in a test whose fixture happened to use the raw spelling.
+  //
+  // Both spellings are asserted, because the compact one is what the raw
+  // GeoJSON carries and it must keep working.
+  const long = county({
+    fips: '048453',
+    reportedLoss: 12_345_678,
+    firstYear: 1955,
+    lastYear: 2025,
+  });
+  const compact = county({
+    fips: '048453',
+    pl: 12_345_678,
+    y0: 1955,
+    y1: 2025,
+  });
+
+  for (const [label, record] of [
+    ['toCountyRecord shape', long],
+    ['raw GeoJSON shape', compact],
+  ]) {
+    const [row] = scoreCounties([record], { fromYear: 1900, toYear: 2030 });
+    assert.equal(row.reportedLoss, 12_345_678, `${label}: reportedLoss`);
+    assert.equal(row.firstYear, 1955, `${label}: firstYear`);
+    assert.equal(row.lastYear, 2025, `${label}: lastYear`);
+  }
+});
