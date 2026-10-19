@@ -169,6 +169,15 @@ export function createStormLayer({
   let _request = null;
   let _dataset = null;
   let _rows = [];
+  /**
+   * Scored COUNTY rows, kept apart from `_rows`.
+   *
+   * `_rows` is cells on the observed facet and counties on the expected one -
+   * the two facets paint different things - so the county list cannot be built
+   * from it. A first version did exactly that and produced a list of grid cells
+   * with no state and no county name in it.
+   */
+  let _countyRows = [];
   let _enabled = false;
   let _loading = false;
   let _lastError = null;
@@ -327,6 +336,7 @@ export function createStormLayer({
     // Ranking all 3,234 counties and keeping the first N would keep whichever
     // scored highest in the whole country, not highest in Colorado.
     const scopedRows = rows.filter((row) => countyInIsolatedArea(row));
+    _countyRows = scopedRows;
 
     // Ranked, not thresholded. `rebuildExpected` was the one surface still
     // banding on absolute score thresholds - 0.72 / 0.42 / 0.18 - which the model
@@ -463,6 +473,47 @@ export function createStormLayer({
       };
     }
     return { value: row.score, rank: rankOf(row, row.score) };
+  }
+
+  /** How many counties the panel lists before it becomes a scroll. */
+  const STORM_COUNTY_LIST_LIMIT = 12;
+
+  /**
+   * The scored counties as a panel list, worst first.
+   *
+   * This is the county picker the `getRankedCounties` docstring has been
+   * promising: the API existed, four sibling APIs existed, and NONE of them had a
+   * production caller. A ranked surface nobody can interrogate is a picture of
+   * a number, not a tool.
+   *
+   * `lead` is the state (short, scannable, and the column `rowList` reserves for
+   * a fixed-width marker); `text` carries the county and the score as a share of
+   * the maximum, because an absolute score is not comparable across windows.
+   *
+   * @param {Array<object>} rows scored rows, already scoped
+   * @param {object} dataset the loaded snapshot
+   * @returns {{ariaLabel: string, items: Array<object>}}
+   */
+  function countyList(rows, dataset) {
+    const top = (rows || []).slice(0, STORM_COUNTY_LIST_LIMIT);
+    const max = top.reduce((m, r) => Math.max(m, Number(r.score) || 0), 0);
+    return {
+      ariaLabel: 'Counties by hail and wind damage likelihood',
+      items: top.map((row, index) => {
+        const county = dataset?.countiesByFips?.get(String(row.fips));
+        const share = max > 0 ? (Number(row.score) || 0) / max : 0;
+        return {
+          id: `county-list:${row.fips}`,
+          ordinal: index + 1,
+          lead: county?.state ?? '',
+          text:
+            `${county?.name ?? row.fips} · ${Math.round(share * 100)}%` +
+            (row.maxHailIn ? ` · max ${row.maxHailIn}"` : ''),
+          active: false,
+          params: { fips: row.fips, focus: true },
+        };
+      }),
+    };
   }
 
   /**
@@ -677,6 +728,16 @@ export function createStormLayer({
       },
     );
     _rows = rows;
+    // The observed facet paints cells, but the panel still lists counties, so
+    // they are scored here too - scoped to the same area, so the list and the
+    // map cannot disagree.
+    _countyRows = scoreCounties(_dataset.counties, {
+      fromYear: _window.fromYear,
+      toYear: _window.toYear,
+      limit: STORM_MAX_COUNTIES,
+      includeHail: _includeHail,
+      includeWind: _includeWind,
+    }).filter((row) => countyInIsolatedArea(row));
 
     // Rank before painting, so the bands stay meaningful whatever the
     // snapshot's absolute numbers do. Culling to the view happens here too:
@@ -1324,6 +1385,13 @@ export function createStormLayer({
               ),
           },
         ],
+        // The counties this surface is actually scoring, worst first.
+        //
+        // From `_rows`, not from a fresh `getRankedCounties()` call: `_rows` is
+        // already narrowed to the isolated area, so the list and the map always
+        // agree. Ranking separately would list national leaders while the map
+        // showed Colorado.
+        list: countyList(_countyRows, _dataset),
         legend: [
           {
             label: 'Damage likelihood',

@@ -955,3 +955,47 @@ test('the county surface bands by rank, so it cannot saturate red again', async 
     'Colorado reads comparatively - several bands in use',
   );
 });
+
+test('the panel lists the counties this surface is scoring, and follows the area', async (t) => {
+  // The county picker the `getRankedCounties` docstring has been promising. The
+  // API and four siblings existed with ZERO production callers, so a ranked
+  // surface had no way to be interrogated.
+  //
+  // The load-bearing part is the second half: the list is built from `_rows`,
+  // which is already scoped, so isolating a state lists THAT state's counties.
+  // Building it from a fresh `getRankedCounties()` would list national leaders
+  // while the map showed Colorado - two panels disagreeing on screen.
+  const source = createStormSource({
+    load: () => loadStormDataset({ fetchImpl: fileFetch }),
+  });
+  const storm = createStormLayer({ source, overlayHost: recordingOverlayHost() });
+  const viewer = stubViewer({ viewSpanDeg: 90, lat: 39, lon: -100 });
+  storm.init(viewer);
+  storm.enable(viewer);
+  t.after(() => storm.destroy(viewer));
+  assert.equal(await storm.update(), true);
+
+  const list = () => storm.getRowControls?.().list;
+  const national = list();
+  assert.ok(national, 'the row controls carry a list');
+  assert.ok(national.items.length > 1, `it has counties (${national.items.length})`);
+  for (const item of national.items) {
+    assert.ok(item.id.startsWith('county-list:'), 'each row is identified by FIPS');
+    assert.ok(item.lead, 'each row leads with a state');
+    // A share of the max, not an absolute score: an absolute score is not
+    // comparable across year windows, and the optional max-hail suffix means the
+    // row does not END with a percent sign.
+    assert.match(item.text, /· \d+%/, `each row states a share of the max: ${item.text}`);
+  }
+
+  const nationalIds = national.items.map((i) => i.id);
+  storm.setIsolation({ bbox: [-109.05, 37, -102.04, 41] });
+  const scoped = list();
+  assert.ok(scoped.items.length > 0, 'and it still lists counties inside Colorado');
+  const overlap = scoped.items.filter((i) => nationalIds.includes(i.id)).length;
+  assert.equal(
+    overlap,
+    0,
+    `the list followed the area rather than repeating the national leaders (${overlap} of ${scoped.items.length} repeated)`,
+  );
+});
