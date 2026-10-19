@@ -115,13 +115,17 @@ export function createApplicationCatalog({
     const stormReports = createApplicationStormReports({
       source: sources['storm-reports'],
     });
-    // The storm layer subscribes rather than the isolation layer reaching for
-    // it, so the dependency points one way and neither layer knows the other's
-    // id. A storm layer that has been destroyed unsubscribes on its own.
-    if (typeof isolation?.onAreaChange === 'function')
-      isolation.onAreaChange((area) => {
-        stormReports.setIsolation(area);
-      });
+    // Layers SUBSCRIBE to the area rather than the isolation layer reaching for
+    // them, so the dependency points one way and no layer knows the isolation
+    // layer's id. Duck-typed on `setIsolation`: every layer that can honour an
+    // area exposes it, and the layers that cannot - the weather imagery
+    // providers and the wind particle canvas, which is a screen-space
+    // rasterisation with no geographic extent at all - simply do not, rather
+    // than being handed an area they would silently ignore.
+    //
+    // This is deliberately capability-by-shape rather than a declared registry.
+    // A registry is a list that can disagree with reality; here the list is the
+    // layers that actually implement it.
     const catalog = createLayerCatalog(
       [
         createBhoteKoshiEventLayer(),
@@ -205,6 +209,33 @@ export function createApplicationCatalog({
       ],
       metadata,
     );
+
+    // Subscribed after the catalog exists, because "every layer that can honour
+    // an area" is only answerable once they have all been constructed.
+    //
+    // The unsubscribe functions are kept, which the previous single-subscriber
+    // version did not: `onAreaChange` returns a disposer, it was called as a
+    // bare statement, and the comment claimed teardown existed. It did not. One
+    // leaked listener per layer is cheap; a listener firing into a destroyed
+    // layer is not.
+    const isolationSubscribers = [];
+    if (typeof isolation?.onAreaChange === 'function') {
+      const honours = catalog.layers.filter(
+        (layer) => typeof layer?.setIsolation === 'function',
+      );
+      for (const layer of honours) {
+        const unsubscribe = isolation.onAreaChange((area) => {
+          layer.setIsolation(area);
+        });
+        if (typeof unsubscribe === 'function')
+          isolationSubscribers.push(unsubscribe);
+      }
+    }
+    const releaseIsolation = () => {
+      for (const unsubscribe of isolationSubscribers.splice(0)) unsubscribe();
+    };
+    signal.addEventListener('abort', releaseIsolation, { once: true });
+
     return Object.freeze({
       ...catalog,
       getSourceAvailability: sourceComposition.createAvailabilityLookup(

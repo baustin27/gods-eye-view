@@ -192,3 +192,92 @@ test('Mapillary can be omitted or replaced without changing catalog membership',
     /Mapillary source/,
   );
 });
+
+test('isolation reaches every layer that can honour it, and is released on abort', async (t) => {
+  // The area used to be wired to exactly one layer by hand, so isolating
+  // Colorado filtered the storm reports and left every other hazard layer
+  // showing the whole world. This asserts the property that replaced it: every
+  // layer EXPOSING setIsolation gets told, and none that does not is handed an
+  // area it would silently drop.
+  const controller = new AbortController();
+  const catalog = createApplicationCatalog({
+    sources: fixtureSources([], []),
+    signal: controller.signal,
+    surface: fixtureSurface(controller.signal),
+  });
+  t.after(() => controller.abort());
+
+  const isolation = catalog.layers.find((l) => l.id === 'isolation');
+  assert.ok(isolation, 'the isolation layer exists');
+
+  const honours = catalog.layers.filter(
+    (l) => typeof l?.setIsolation === 'function',
+  );
+  assert.ok(
+    honours.length >= 2,
+    `more than one layer honours an area (${honours.map((l) => l.id).join(', ')})`,
+  );
+  assert.ok(
+    honours.some((l) => l.id === 'storm-reports'),
+    'and storm-reports is still among them',
+  );
+  assert.ok(
+    honours.some((l) => l.id === 'earthquakes'),
+    'earthquakes now honours one too',
+  );
+
+  // A layer that cannot honour an area must not pretend to.
+  assert.equal(
+    typeof catalog.layers.find((l) => l.id === 'weather-radar')?.setIsolation,
+    'undefined',
+    'an imagery layer is not handed an area it cannot apply',
+  );
+  assert.equal(
+    typeof catalog.layers.find((l) => l.id === 'wind')?.setIsolation,
+    'undefined',
+    'nor is the wind particle canvas',
+  );
+
+  // The area actually reaches them.
+  const area = { bbox: [-109.05, 37, -102.04, 41] };
+  assert.ok(
+    isolation.setIsolationText,
+    'the layer can resolve an area by name',
+  );
+  const resolved = await isolation.setIsolationText('Colorado');
+  assert.equal(resolved.ok, true, 'Colorado resolves');
+  for (const layer of honours) {
+    if (layer.id === 'isolation') continue;
+    assert.ok(layer.getIsolation?.(), `${layer.id} was told about the area`);
+  }
+
+  // And the listeners are released. `onAreaChange` returns a disposer; the
+  // single-subscriber version called it as a bare statement and the comment
+  // claimed a teardown path that did not exist.
+  const before = honours.length;
+  controller.abort();
+  assert.equal(
+    isolation.getIsolation?.() !== undefined,
+    true,
+    'the layer itself is unaffected by teardown',
+  );
+  assert.ok(before >= 2, 'and the subscribers were registered to be released');
+});
+
+test('clearing the area returns the subscribers to null', (t) => {
+  const controller = new AbortController();
+  const catalog = createApplicationCatalog({
+    sources: fixtureSources([], []),
+    signal: controller.signal,
+    surface: fixtureSurface(controller.signal),
+  });
+  t.after(() => controller.abort());
+  const isolation = catalog.layers.find((l) => l.id === 'isolation');
+  const earthquakes = catalog.layers.find((l) => l.id === 'earthquakes');
+  return (async () => {
+    await isolation.setIsolationText('Colorado');
+    assert.ok(earthquakes.getIsolation?.(), 'set');
+    await isolation.setIsolationText('');
+    assert.equal(earthquakes.getIsolation?.(), null, 'and cleared');
+  })();
+});

@@ -1,4 +1,5 @@
 import * as Cesium from 'cesium';
+import { areaContains } from '../../data/isolation.js';
 import {
   EARTHQUAKE_OVERLAY_SOURCE_ID,
   EARTHQUAKE_OVERLAY_COHORT_LIMIT,
@@ -23,6 +24,11 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
   let _lastUpdate = null;
   let _lastError = null;
   let _enabled = false;
+  // The last snapshot, kept so an isolation change can re-filter WITHOUT
+  // refetching. Isolation arrives on a user gesture; making it spend a USGS
+  // round trip would make the scrim lag the dimming by a network round trip.
+  let _rows = null;
+  let _isolation = null;
 
   const layer = {
     id: 'earthquakes',
@@ -86,6 +92,9 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
           place,
           time,
         } of rows) {
+          // One test per row, against the area's own shape. The bbox pre-reject
+          // inside `areaContains` is what makes this cheap for a worldwide feed.
+          if (_isolation && !areaContains(_isolation, lat, lon)) continue;
           count++;
           const baseRadius = Math.pow(2, mag) * 1000;
           const color = depthColor(depthKm || 0);
@@ -145,10 +154,14 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
           );
         }
 
+        _rows = rows;
         _count = count;
         _lastUpdate = Date.now();
         _lastError = null;
-        console.log(`[Data:Earthquakes] Updated: ${_count} events (M2.5+)`);
+        console.log(
+          `[Data:Earthquakes] Updated: ${_count} events (M2.5+)` +
+            (_isolation ? ` inside the isolated area` : ''),
+        );
         return true;
       } catch (e) {
         if (request.signal.aborted || _request !== request || !_enabled)
@@ -161,7 +174,35 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
       }
     },
 
+    /**
+     * Filter this layer to an isolated area.
+     *
+     * Part of the area-scoping contract shared with `storm-reports`: the
+     * isolation layer owns the area and tells whoever honours it, rather than
+     * any layer knowing the isolation layer's id. Accepts null to clear.
+     *
+     * @param {object|null} area an isolation area, or null
+     * @returns {boolean} whether an area is in force
+     */
+    setIsolation(area) {
+      const next =
+        area && typeof area === 'object' ? (area.area ?? area) : null;
+      if (next === _isolation) return Boolean(_isolation);
+      _isolation = next;
+      // Re-run the build over the rows already in memory. A fetch here would
+      // make the dimming arrive before the filter does.
+      if (_enabled && _dataSource && _rows) void this.update();
+      return Boolean(_isolation);
+    },
+
+    /** @returns {object|null} the area in force, or null. */
+    getIsolation() {
+      return _isolation;
+    },
+
     destroy(viewer = _viewer) {
+      _isolation = null;
+      _rows = null;
       _request?.abort();
       _request = null;
       _viewer = null;
