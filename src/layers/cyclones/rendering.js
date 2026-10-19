@@ -1,3 +1,4 @@
+import { areaContains } from '../../data/isolation.js';
 import {
   CYCLONE_ACCENT,
   CYCLONE_MARKER_PX,
@@ -24,6 +25,9 @@ export function createCycloneRendering({ viewer, cesium: C, overlayHost }) {
     generation = 0,
     selected = null,
     destroyed = false;
+  // The area in force, if any. Read inside `setSnapshot` so a change re-runs the
+  // same build rather than needing a second filter path.
+  let isolationArea = null;
   let centers = new Map(),
     spheres = new Map();
   let entityStorms = new WeakMap();
@@ -119,6 +123,19 @@ export function createCycloneRendering({ viewer, cesium: C, overlayHost }) {
         position({ longitude: pair[0], latitude: pair[1] });
       try {
         for (const storm of snapshot.storms) {
+          // One test per storm, here rather than per entity: a cyclone is a
+          // centre, a track, a cone and a row of forecast points, and testing the
+          // centre is what "is this storm in the area" actually means. Testing
+          // each of its entities would give four answers for one question.
+          if (
+            isolationArea &&
+            !areaContains(
+              isolationArea,
+              storm.position.latitude,
+              storm.position.longitude,
+            )
+          )
+            continue;
           const horizon = { points: [], shapes: [], sphere: null };
           const addEntity = (options) => {
             const entity = next.entities.add(options);
@@ -296,11 +313,33 @@ export function createCycloneRendering({ viewer, cesium: C, overlayHost }) {
       counts = { storms: 0, tracks: 0, cones: 0, forecastPoints: 0 };
       render();
     },
+    /**
+     * Filter to an isolated area, or clear it with null.
+     *
+     * Held here rather than applied at the call site because `setSnapshot` is
+     * the only place that iterates storms, so this is the only place a filter
+     * has to live.
+     *
+     * @param {object|null} area an isolation area, or null
+     * @returns {boolean} whether an area is in force
+     */
+    setIsolation(area) {
+      isolationArea =
+        area && typeof area === 'object' ? (area.area ?? area) : null;
+      return Boolean(isolationArea);
+    },
+
     destroy() {
       if (destroyed) return;
+      isolationArea = null;
       this.clear();
       destroyed = true;
     },
+    /** @returns {object|null} the area in force, or null. */
+    getIsolation() {
+      return isolationArea;
+    },
+
     getDiagnostics() {
       return {
         ...counts,

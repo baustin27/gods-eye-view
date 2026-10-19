@@ -221,9 +221,19 @@ test('isolation reaches every layer that can honour it, and is released on abort
     honours.some((l) => l.id === 'storm-reports'),
     'and storm-reports is still among them',
   );
-  assert.ok(
-    honours.some((l) => l.id === 'earthquakes'),
-    'earthquakes now honours one too',
+  // The set is asserted by name rather than by size, so ADDING a layer that
+  // cannot honour an area fails here instead of quietly inflating the count,
+  // and adding one that can fails too rather than going unnoticed.
+  assert.deepEqual(
+    honours.map((l) => l.id).sort(),
+    [
+      'earthquakes',
+      'isolation',
+      'local-firms',
+      'storm-reports',
+      'weather-cyclones',
+    ],
+    'exactly the layers that can filter to an area subscribe to one',
   );
 
   // A layer that cannot honour an area must not pretend to.

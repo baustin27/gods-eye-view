@@ -667,3 +667,41 @@ test('labels publish committed anchors to the shared overlay and follow selectio
   h.rendering.destroy();
   assert.equal(h.overlay.calls.at(-1), afterClear[1]);
 });
+
+test('an isolated area keeps only the storms whose CENTRE is inside it', async () => {
+  // Tested per storm rather than per entity: a cyclone is a centre, a track, a
+  // cone and a row of forecast points, so testing each entity would give four
+  // answers to one question - and a storm straddling the border would keep its
+  // cone while losing its centre.
+  const { rendering } = harness();
+  const inArea = {
+    ...storm(),
+    id: 'in',
+    position: { longitude: -105, latitude: 39 },
+  };
+  const outArea = {
+    ...storm(),
+    id: 'out',
+    position: { longitude: -80, latitude: 30 },
+  };
+  const snapshot = { storms: [inArea, outArea] };
+
+  assert.equal(await rendering.setSnapshot(snapshot), true, 'both render');
+  assert.equal(rendering.getDiagnostics().storms, 2, 'two storms');
+
+  assert.equal(
+    rendering.setIsolation({ bbox: [-109.05, 37, -102.04, 41] }),
+    true,
+    'an area is in force',
+  );
+  await rendering.setSnapshot(snapshot);
+  assert.equal(
+    rendering.getDiagnostics().storms,
+    1,
+    'only the storm centred inside the area survives',
+  );
+
+  assert.equal(rendering.setIsolation(null), false, 'cleared');
+  await rendering.setSnapshot(snapshot);
+  assert.equal(rendering.getDiagnostics().storms, 2, 'and both come back');
+});

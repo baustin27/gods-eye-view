@@ -36,8 +36,13 @@ export function createRendering({
     );
     const lod = LOD_LEVELS[lodIndex];
     const viewRect = components.viewport.computeViewRect();
+    // An isolation wins over the viewport. Both are "only show me this", and the
+    // one the person typed outranks the one they scrolled to. `viewChangedEnough`
+    // only watches the camera, so without this an area change would be swallowed
+    // by the early-out below and the fires would not re-filter at all.
     if (
       !force &&
+      layerState._isolationChanged &&
       lodIndex === layerState._currentLodIndex &&
       !components.viewport.viewChangedEnough(viewRect)
     )
@@ -47,9 +52,16 @@ export function createRendering({
     layerState._lastViewRect = viewRect
       ? Cesium.Rectangle.clone(viewRect)
       : null;
-    const bounds = viewRect
-      ? components.model.paddedDegreeBounds(viewRect)
-      : null;
+    // The isolation box and the view bounds are the same shape
+    // `{west, south, east, north, wraps}` - `isolationBoxes` yields
+    // `[west, south, east, north]` and the padded view rect yields the object -
+    // so this needs no new geometry code and no new point-in-bounds test.
+    const bounds = layerState._isolationBounds
+      ? layerState._isolationBounds
+      : viewRect
+        ? components.model.paddedDegreeBounds(viewRect)
+        : null;
+    layerState._isolationChanged = false;
 
     if (lod.mode === 'detections') {
       renderDetections(lod, bounds);

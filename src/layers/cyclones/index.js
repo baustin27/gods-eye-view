@@ -46,6 +46,11 @@ export function createCyclonesLayer({
     throw new TypeError('Cyclones require a snapshot source');
   let viewer = null,
     rendering = null,
+    // Held HERE, not only in the renderer. The renderer is built on `init`, and a
+    // durable restore can arrive before that - storing the area solely downstream
+    // loses it, and the layer then behaves as though nothing was isolated. The
+    // renderer is a cache of this, not the owner of it.
+    isolationArea = null,
     snapshot = null,
     request = null,
     listener = null,
@@ -176,6 +181,8 @@ export function createCyclonesLayer({
     init(nextViewer) {
       viewer = nextViewer;
       rendering = createRendering({ viewer, cesium, overlayHost });
+      // Hand the renderer the area it may have missed, if a restore ran first.
+      rendering?.setIsolation?.(isolationArea);
     },
     attachShellServices(services) {
       runNavigation =
@@ -270,6 +277,46 @@ export function createCyclonesLayer({
         }
       }
     },
+    /**
+     * Filter advisories to an isolated area.
+     *
+     * Part of the area-scoping contract shared with `storm-reports`. The filter
+     * lives in the rendering component, which is the only place that iterates
+     * storms; this re-runs the build over the snapshot already held, so changing
+     * the area costs no refetch of the advisories.
+     *
+     * @param {object|null} area an isolation area, or null
+     * @returns {boolean} whether an area is in force
+     */
+    setIsolation(area) {
+      const next =
+        area && typeof area === 'object' ? (area.area ?? area) : null;
+      const changed = next !== isolationArea;
+      isolationArea = next;
+      // Pushed down for the filter, and the build re-runs only when something
+      // actually changed - `setSnapshot` rebuilds every entity from scratch.
+      rendering?.setIsolation?.(isolationArea);
+      if (changed && snapshot && !snapshot.unavailable && rendering) {
+        void rendering.setSnapshot(snapshot);
+      }
+      notify();
+      return Boolean(isolationArea);
+    },
+
+    /**
+     * The area in force, or null.
+     *
+     * Null before `init`, because `rendering` is only built then. A durable
+     * restore can call this on a layer that has never been initialised, and
+     * reading through a null renderer would throw out of a getter - which is
+     * exactly the kind of throw that takes down an unrelated caller.
+     *
+     * @returns {object|null}
+     */
+    getIsolation() {
+      return isolationArea;
+    },
+
     setParams(params = {}) {
       if (!enabled || destroyed) return;
       if (params.clear === true || params.stormId === null) {

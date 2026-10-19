@@ -55,6 +55,18 @@ export function createFirmsState({ services, config }) {
 
   layerState._lastViewRect = null;
 
+  /**
+   * The isolated area's box, in the same shape `paddedDegreeBounds` produces, or
+   * null when nothing is isolated.
+   *
+   * Held as one box rather than the area object because the render path already
+   * filters against a box-shaped value and this needs no new geometry code.
+   */
+  layerState._isolationBounds = null;
+
+  /** Set by `setIsolation`, consumed by the next render. */
+  layerState._isolationChanged = false;
+
   layerState._preRenderRemover = null;
 
   layerState._moveEndSettleRemover = null;

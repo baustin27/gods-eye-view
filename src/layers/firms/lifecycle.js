@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { FIRMS_OVERLAY_SOURCE_ID } from '../../data/firmsLabels.js';
+import { isolationBoxes } from '../isolation/model.js';
 
 export function createLifecycle({
   layerState,
@@ -73,7 +74,51 @@ export function createLifecycle({
       components.viewport.removeLodWatcher();
     },
 
+    /**
+     * Filter fires to an isolated area.
+     *
+     * Part of the area-scoping contract shared with `storm-reports`. FIRMS is a
+     * good fit: it already filtered against a box-shaped `{west, south, east,
+     * north, wraps}` for the viewport, and `isolationBoxes` produces
+     * `[west, south, east, north]`, so this is the same test with a different
+     * box rather than new geometry code.
+     *
+     * The box is used INSTEAD of the view bounds, not intersected with them. Both
+     * mean "only show me this" and the area someone typed outranks the viewport
+     * they scrolled.
+     *
+     * @param {object|null} area an isolation area, or null
+     * @returns {boolean} whether an area is in force
+     */
+    setIsolation(area) {
+      const boxes = area ? isolationBoxes(area) : [];
+      const [first] = boxes;
+      const next = first
+        ? {
+            west: first[0],
+            south: first[1],
+            east: first[2],
+            north: first[3],
+            wraps: false,
+          }
+        : null;
+      if (JSON.stringify(next) === JSON.stringify(layerState._isolationBounds))
+        return Boolean(next);
+      layerState._isolationBounds = next;
+      // The camera has not moved, so the render path's early-out would otherwise
+      // swallow the change and the fires would not re-filter.
+      layerState._isolationChanged = true;
+      components.rendering.renderCurrentLod?.(true);
+      return Boolean(next);
+    },
+
+    /** @returns {object|null} the area box in force, or null. */
+    getIsolation() {
+      return layerState._isolationBounds;
+    },
+
     destroy(viewer = layerState._viewer) {
+      layerState._isolationBounds = null;
       layerState.request?.abort();
       layerState.request = null;
       layerState._loading = false;
