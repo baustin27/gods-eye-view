@@ -3514,3 +3514,166 @@ test('a cell is tested by its CENTRE, so a border cell does not overhang', async
     `nothing is drawn past the border (max lat ${Math.max(...spans).toFixed(4)})`,
   );
 });
+
+/* ======================================================================
+ * PROSPECT: the radar-minus-reports lead list.
+ *
+ * The chips above decide what gets drawn. These check the wiring: that the
+ * chip exists and is gated the same way, that it draws its OWN entities
+ * rather than borrowing the radar swath's, that it survives a rebuild via
+ * getParams, and that the legend carries a count rather than a mood.
+ * ====================================================================== */
+
+const prospectChip = (layer) =>
+  layer
+    .getRowControls()
+    .chips.find((chip) => chip.id === 'storm-reports-swath-prospect');
+
+/** A layer over one day of radar, with `cells` as `lat,lon -> mm`. */
+async function prospectLayer(cells, reports, extra = {}) {
+  const day = radarDayIndex('2026-08-10');
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
+  const viewer = stubViewer();
+  const { layer } = makeLayer(reports, [], { radarSource, viewer, ...extra });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+  return { layer, viewer };
+}
+
+test('the PROSPECT chip is offered, gated on hail, and off by default', async () => {
+  const { layer, viewer } = await prospectLayer(
+    new Map([[cellKey(35.11, -97.4), 45]]),
+    [REPORT(2, { lat: 35.11 })],
+  );
+  const chip = prospectChip(layer);
+  assert.ok(chip, 'the chip is on the row');
+  assert.equal(chip.label, 'PROSPECT');
+  assert.equal(chip.disabled, false, 'there is radar to compare against');
+  assert.equal(layer.getProspectSwath(), false, 'off until asked for');
+  assert.equal(swathEntities(viewer, 'prospect').length, 0);
+});
+
+test('PROSPECT draws the radar cells no report covers', async () => {
+  // One cell with a report sitting in it, one four degrees away with none.
+  const cells = new Map([
+    [cellKey(35.11, -97.4), 45],
+    [cellKey(38.61, -101.2), 95],
+  ]);
+  const { layer, viewer } = await prospectLayer(cells, [
+    REPORT(2, { lat: 35.11 }),
+  ]);
+  assert.equal(layer.setProspectSwath(true), true);
+  const drawn = swathEntities(viewer, 'prospect');
+  assert.equal(
+    drawn.length,
+    1,
+    'only the unreported cell is a lead',
+  );
+  assert.equal(
+    swathEntities(viewer, 'radar').length,
+    0,
+    'and it does not paint the radar swath',
+  );
+});
+
+test('PROSPECT and RADAR are independent views of the same day', async () => {
+  const cells = new Map([
+    [cellKey(35.11, -97.4), 45],
+    [cellKey(38.61, -101.2), 95],
+  ]);
+  const { layer, viewer } = await prospectLayer(cells, [
+    REPORT(2, { lat: 35.11 }),
+  ]);
+  layer.setRadarSwath(true);
+  assert.equal(swathEntities(viewer, 'radar').length, 2, 'radar: both cells');
+  layer.setProspectSwath(true);
+  assert.equal(
+    swathEntities(viewer, 'prospect').length,
+    1,
+    'prospect: the unreported one',
+  );
+  assert.equal(
+    swathEntities(viewer, 'radar').length,
+    2,
+    'turning prospect on does not disturb radar',
+  );
+  layer.setProspectSwath(false);
+  assert.equal(
+    swathEntities(viewer, 'prospect').length,
+    0,
+    'and turning it off clears only its own',
+  );
+  assert.equal(swathEntities(viewer, 'radar').length, 2, 'radar survives');
+});
+
+test('PROSPECT reports whether it moved, and refuses when it cannot be true', async () => {
+  const { layer } = await prospectLayer(
+    new Map([[cellKey(35.11, -97.4), 45]]),
+    [REPORT(2, { lat: 35.11 })],
+  );
+  assert.equal(layer.setProspectSwath(false), false, 'already off');
+  assert.equal(layer.setProspectSwath(true), true, 'moved');
+  assert.equal(layer.setProspectSwath(true), false, 'already on');
+  layer.setHazard('wind');
+  layer.setProspectSwath(false);
+  assert.equal(
+    layer.setProspectSwath(true),
+    false,
+    'no wind radar means no hail to compare',
+  );
+});
+
+test('PROSPECT survives a rebuild through getParams', async () => {
+  const cells = new Map([[cellKey(35.11, -97.4), 45]]);
+  const { layer, viewer } = await prospectLayer(cells, [
+    REPORT(2, { lat: 38.61, lon: -101.2 }),
+  ]);
+  layer.setProspectSwath(true);
+  assert.equal(layer.getParams().prospectSwath, true, 'reported as live');
+
+  const { layer: next, viewer: nextViewer } = await prospectLayer(cells, [
+    REPORT(2, { lat: 38.61, lon: -101.2 }),
+  ]);
+  next.setParams({ ...STORM_REPORTS_DEFAULTS, ...layer.getParams() });
+  await settled(next);
+  assert.equal(next.getProspectSwath(), true, 'restored on the new layer');
+  assert.ok(
+    swathEntities(nextViewer, 'prospect').length > 0,
+    'and it actually drew the lead',
+  );
+  assert.ok(viewer, 'the original viewer is still the one under test');
+});
+
+test('the legend quotes an area and a report count, not a feeling', async () => {
+  const cells = new Map([
+    [cellKey(35.11, -97.4), 45],
+    [cellKey(38.61, -101.2), 95],
+  ]);
+  const { layer } = await prospectLayer(cells, [REPORT(2, { lat: 35.11 })]);
+  layer.setProspectSwath(true);
+  const legend = layer
+    .getRowControls()
+    .legend.filter((entry) => String(entry.label).startsWith('Prospecting'));
+  assert.ok(legend.length >= 2, 'a readout and a ramp');
+  const readout = legend[0].blurb;
+  assert.match(readout, /sq km/, `readout quotes an area: ${readout}`);
+  assert.match(readout, /1 report/, `readout quotes the reports: ${readout}`);
+  assert.match(readout, /9 km/, 'and the radius it searched');
+  assert.match(readout, /worst unsuppressed reading/, 'and the worst cell');
+});
+
+test('with nothing unreported the legend says so instead of showing zero', async () => {
+  // Every cell covered. The failure this kills is a legend reading "0 sq km",
+  // which reads like a broken widget rather than a real answer.
+  const cells = new Map([[cellKey(35.11, -97.4), 45]]);
+  const { layer } = await prospectLayer(cells, [REPORT(2, { lat: 35.11 })]);
+  layer.setProspectSwath(true);
+  const readout = layer
+    .getRowControls()
+    .legend.find((entry) => entry.label === 'Prospecting, this view').blurb;
+  assert.match(readout, /No radar cell/, `says nothing is unreported: ${readout}`);
+  assert.doesNotMatch(readout, /0 sq km/, 'rather than quoting a bare zero');
+});

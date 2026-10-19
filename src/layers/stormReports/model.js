@@ -25,6 +25,58 @@ import {
  */
 export const GRID_DEG_FINE = 0.01;
 
+/**
+ * The inch thresholds the prospecting view starts from.
+ *
+ * One inch is 25.4 mm exactly. NOT 25: `RADAR_RAMP_MM` bands at 25 because it
+ * is a round number for a colour ramp, and borrowing that 25 here would start
+ * the prospecting a millimetre under the product's stated floor and quietly
+ * count a quarter-inch stone as "nobody reported a big one".
+ */
+export const PROSPECT_MM_FLOOR = 25.4;
+
+/** The report size that counts as someone standing in the cell. */
+export const PROSPECT_IN_FLOOR = 1;
+
+/**
+ * How far from a report a radar cell still counts as unclaimed.
+ *
+ * Nine kilometres is a township, which is the distance a hailstone is treated as
+ * having travelled in the storm that dropped it - so "nobody reported within a
+ * township of here" is a claim about the hail, not an accident of where the
+ * reporter happened to be standing. Exposed as a parameter rather than a literal
+ * so it can be tuned against the same data that tests it.
+ */
+export const PROSPECT_RADIUS_KM = 9;
+
+/**
+ * The prospecting ramp: cold, on purpose.
+ *
+ * `RADAR_RAMP_MM` runs green to red because a radar cell is a claim about how
+ * bad the hail was. This view is a claim about a *gap*, and painting it in the
+ * same hot colours would read as "worse hail" rather than "nobody said
+ * anything" - which is the opposite of what the user is being told. Cold, and
+ * the worst band is fuchsia because the most valuable lead IS the extreme cell
+ * nobody reported.
+ */
+export const PROSPECT_BANDS = Object.freeze([
+  Object.freeze({
+    min: 88.9,
+    color: '#f0abfc',
+    label: '3.5"+ probed, nobody reported',
+  }),
+  Object.freeze({
+    min: 38.1,
+    color: '#22d3ee',
+    label: '1.5-3.5" probed, nobody reported',
+  }),
+  Object.freeze({
+    min: PROSPECT_MM_FLOOR,
+    color: '#7dd3fc',
+    label: '1-1.5" probed, nobody reported',
+  }),
+]);
+
 /** Hail diameter bands, in inches. The first band a size falls into wins. */
 export const HAIL_BANDS = Object.freeze([
   Object.freeze({
@@ -1073,6 +1125,143 @@ export function reportedSwathCells(reports, { hailFloor = 0 } = {}) {
   return [...cells.values()]
     .map((cell) => ({ ...cell, band: hailBand(cell.peak) }))
     .sort((a, b) => b.peak - a.peak || (a.key < b.key ? -1 : 1));
+}
+
+/**
+ * The band a radar reading paints in the prospecting view, or null under an inch.
+ * @param {number} peakMm
+ * @returns {object|null}
+ */
+export function prospectBand(peakMm) {
+  if (!Number.isFinite(peakMm) || peakMm < PROSPECT_MM_FLOOR) return null;
+  for (const band of PROSPECT_BANDS) if (peakMm >= band.min) return band;
+  return PROSPECT_BANDS[PROSPECT_BANDS.length - 1];
+}
+
+/**
+ * Great-circle distance in kilometres. See {@link prospectSwathCells}.
+ * @returns {number}
+ */
+function distanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toRad;
+  const dLon = (lon2 - lon1) * toRad;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * Radar cells that cleared the hail threshold, where nobody reported hail.
+ *
+ * This is the whole prospecting view and it needs no demographic data: the
+ * radar says hail fell, the reports say where people were, and the difference is
+ * a lead. Every input already ships with this layer - the radar field and the
+ * human reports - so this is a comparison between two things already measured,
+ * not a model of a third thing nobody counted.
+ *
+ * Two floors, deliberately different, and conflating them is the bug this
+ * function exists to avoid:
+ * - `thresholdMm` on the RADAR side, because the radar measures a millimetre
+ *   column and 25.4 mm IS one inch;
+ * - `thresholdIn` on the REPORT side, because a report is a diameter someone
+ *   held in their hand and 1.0" is a diameter anyone would have bothered to
+ *   report. Asking a radar cell to beat 1 inch as a millimetre column would
+ *   throw away every cell between 25.4 and 38.1 mm - which is most of them.
+ *
+ * A cell is claimed by ANY qualifying report within `radiusKm` of its CENTRE,
+ * and the test is against the radar reading, never against the report's own
+ * cell. Substituting one for the other would make a report exactly one cell
+ * wide - 25 miles across - so a township of storm with one hailstone logged in
+ * its corner would still paint as "unsuppressed" everywhere else.
+ *
+ * @param {Array<object>} radarCells swath cells from `radarSwathCells`
+ * @param {Array<object>} reports decoded reports; only hail at or above
+ *   `thresholdIn` with a position can claim a cell
+ * @param {object} [options]
+ * @param {number} [options.thresholdMm] radar floor, in millimetres
+ * @param {number} [options.thresholdIn] report floor, in inches
+ * @param {number} [options.radiusKm] claiming radius around a cell's centre
+ * @param {number} [options.stepDeg] the grid the cells are indexed on
+ * @returns {Array<object>} the unclaimed cells, worst first, banded
+ */
+export function prospectSwathCells(radarCells, reports, options = {}) {
+  const {
+    thresholdMm = PROSPECT_MM_FLOOR,
+    thresholdIn = PROSPECT_IN_FLOOR,
+    radiusKm = PROSPECT_RADIUS_KM,
+    stepDeg = GRID_DEG,
+  } = options;
+  if (!Array.isArray(radarCells) || !radarCells.length) return [];
+  const claims = [];
+  for (const report of reports || []) {
+    if (!report || report.hazard !== 'hail') continue;
+    if (!Number.isFinite(report.size) || report.size < thresholdIn) continue;
+    if (!Number.isFinite(report.lat) || !Number.isFinite(report.lon)) continue;
+    claims.push([report.lat, report.lon]);
+  }
+  const unclaimed = [];
+  for (const cell of radarCells) {
+    // An implausible reading is greyed everywhere else on the strength of
+    // "somebody measured that". Nobody measured it, so it is not evidence that
+    // hail fell, and painting it as a lead would be the whole failure this view
+    // is most vulnerable to.
+    if (!cell || cell.implausible) continue;
+    const peakMm = Number(cell.peakMm);
+    if (!Number.isFinite(peakMm) || peakMm < thresholdMm) continue;
+    const lat = cell.i * stepDeg + stepDeg / 2;
+    const lon = cell.j * stepDeg + stepDeg / 2;
+    // Reject on the bounding box before paying for the haversine. Over a
+    // multi-day window this loop is cells x claims - 5,000 x 5,000 - and
+    // almost every pair is thousands of kilometres apart, so the cheap reject
+    // is what keeps the chip from costing a second on every publish. The box
+    // is derived from the radius itself, so it can only ever be wrong by the
+    // curvature a great circle adds, which makes it conservative: it admits a
+    // few extra pairs, it never discards a real one.
+    const latSpan = radiusKm / 111.32;
+    const lonSpan =
+      radiusKm / (111.32 * Math.max(Math.cos((lat * Math.PI) / 180), 0.01));
+    let claimed = false;
+    for (const [claimLat, claimLon] of claims) {
+      if (Math.abs(claimLat - lat) > latSpan) continue;
+      if (Math.abs(claimLon - lon) > lonSpan) continue;
+      if (distanceKm(lat, lon, claimLat, claimLon) <= radiusKm) {
+        claimed = true;
+        break;
+      }
+    }
+    if (claimed) continue;
+    unclaimed.push({ ...cell, lat, lon, band: prospectBand(peakMm) });
+  }
+  return unclaimed.sort(
+    (a, b) => b.peakMm - a.peakMm || (a.key < b.key ? -1 : 1),
+  );
+}
+
+/**
+ * The approximate area, in square kilometres, of a set of grid cells.
+ *
+ * Latitude is not cosmetic here: a one-degree cell at 25 degrees north is
+ * about 1,030 km square and at 45 it is about 790, so a flat sum overstates a
+ * national view by around a quarter and understates the tropics by the same.
+ * Labelled approximate everywhere it surfaces, because the cell is a tile, not
+ * a survey.
+ * @param {Array<object>} cells
+ * @param {number} stepDeg
+ * @returns {number}
+ */
+export function gridAreaKm2(cells, stepDeg) {
+  const kmPerDeg = 111.32;
+  let total = 0;
+  for (const cell of cells || []) {
+    const lat = cell.lat;
+    if (!Number.isFinite(lat)) continue;
+    total +=
+      stepDeg * kmPerDeg * stepDeg * kmPerDeg * Math.cos((lat * Math.PI) / 180);
+  }
+  return total;
 }
 
 /**

@@ -33,6 +33,11 @@ import {
   parseStormDate,
   radarSwathCells,
   radiusMetres,
+  PROSPECT_BANDS,
+  PROSPECT_MM_FLOOR,
+  PROSPECT_RADIUS_KM,
+  gridAreaKm2,
+  prospectSwathCells,
   reportedSwathCells,
   ringsToDegrees,
   stormHeadline,
@@ -493,6 +498,11 @@ export function createStormReportsLayer({
   // an added claim on top of them.
   let _showReportedSwath = false;
   let _showRadarSwath = false;
+  let _showProspectSwath = false;
+  // The unclaimed cells for the current view, kept so the legend can put the
+  // actual area and report count on screen. Recomputed by `renderSwaths`,
+  // which is the one place that knows which radar tier is live.
+  let _prospectCells = [];
   /**
    * Swath intent that arrived before it could be honoured.
    *
@@ -590,21 +600,28 @@ export function createStormReportsLayer({
    * honour a WIND-hazard REPORTED intent that the chip is disabled for, and
    * would set the radar flag with no radar source to draw it.
    *
-   * @param {{reportedSwath?: boolean, radarSwath?: boolean}|null} intent
+   * @param {{reportedSwath?: boolean, radarSwath?: boolean,
+   *   prospectSwath?: boolean}|null} intent
    */
   function applySwathIntent(intent) {
     if (!intent) return;
     const deferred = {};
-    for (const key of ['reportedSwath', 'radarSwath']) {
+    for (const key of ['reportedSwath', 'radarSwath', 'prospectSwath']) {
       const want = intent[key];
       if (typeof want !== 'boolean') continue;
       const have =
-        key === 'reportedSwath' ? _showReportedSwath : _showRadarSwath;
+        key === 'reportedSwath'
+          ? _showReportedSwath
+          : key === 'radarSwath'
+            ? _showRadarSwath
+            : _showProspectSwath;
       if (want === have) continue;
       const moved =
         key === 'reportedSwath'
           ? self().setReportedSwath(want)
-          : self().setRadarSwath(want);
+          : key === 'radarSwath'
+            ? self().setRadarSwath(want)
+            : self().setProspectSwath(want);
       // Defer ONLY while data has not loaded. Before a load a refusal is
       // premature - the hazard and the source are not known yet. After one it is
       // final, and deferring it would replay forever: a RADAR intent on a build
@@ -1050,7 +1067,15 @@ export function createStormReportsLayer({
       // for a day nobody is looking at is worse than nothing at all.
       if (token !== _comparisonToken) return;
       _radarWindowCells = cells;
-      _radarSwath = _showRadarSwath ? swathCellsForWindow(cells) : [];
+      // Banded whenever EITHER swath is on, not only for RADAR. Gating this on
+      // the radar chip made PROSPECT depend on a different toggle being
+      // enabled first: turn PROSPECT on alone and it found an empty banded
+      // list, so it painted nothing and reported no leads at all - while
+      // REPORTED and RADAR in the same build worked. Gating on "is anybody
+      // going to read this" rather than "is RADAR on" is also why the read
+      // stays free when neither chip is in use.
+      _radarSwath =
+        _showRadarSwath || _showProspectSwath ? swathCellsForWindow(cells) : [];
       computeComparison();
     } catch (error) {
       if (error?.name === 'AbortError') return;
@@ -1492,6 +1517,50 @@ export function createStormReportsLayer({
    * @param {number} [limit]
    * @returns {Array<{county: string, state: string, count: number}>}
    */
+  /**
+   * The prospecting view in numbers, because a colour with no count behind it
+   * is a mood.
+   *
+   * Says the area AND the report count, because the two together are the only
+   * way to read it honestly. A large area with a high report count is a storm
+   * in a populated place; the same area with no reports is either empty
+   * country or a reporting failure, and the view cannot tell those apart -
+   * which is exactly why it is a lead and not a claim.
+   * @returns {string}
+   */
+  function prospectReadout() {
+    if (!_prospectCells.length) {
+      return (
+        'No radar cell at ' +
+        PROSPECT_MM_FLOOR +
+        ' mm or above is more than ' +
+        PROSPECT_RADIUS_KM +
+        ' km from a report of 1" or more'
+      );
+    }
+    const stepDeg = useFineRadarField() ? GRID_DEG_FINE : GRID_DEG;
+    const area = gridAreaKm2(_prospectCells, stepDeg);
+    const claims = _visible.filter(
+      (r) => r.hazard === 'hail' && r.size >= 1,
+    ).length;
+    const worst = _prospectCells[0]?.peakMm ?? 0;
+    return (
+      Math.round(area).toLocaleString() +
+      ' sq km of radar at ' +
+      PROSPECT_MM_FLOOR +
+      ' mm or above (' +
+      (PROSPECT_MM_FLOOR / 25.4).toFixed(1) +
+      '") has no report of 1" or more within ' +
+      PROSPECT_RADIUS_KM +
+      ' km; ' +
+      claims.toLocaleString() +
+      (claims === 1 ? ' report ' : ' reports ') +
+      'in view; worst unsuppressed reading ' +
+      (worst / 25.4).toFixed(1) +
+      '"'
+    );
+  }
+
   function impactedPlaces(reports, limit = IMPACTED_PLACES_LIMIT) {
     const byPlace = new Map();
     for (const report of reports || []) {
@@ -1781,6 +1850,24 @@ export function createStormReportsLayer({
           };
         },
         GRID_DEG,
+      );
+    }
+    _prospectCells = [];
+    if (_showProspectSwath) {
+      const fine = useFineRadarField();
+      const radarCells = fine ? fineSwathCells(_fineRadarCells) : _radarSwath;
+      const radarDeg = fine ? GRID_DEG_FINE : GRID_DEG;
+      _prospectCells = prospectSwathCells(radarCells, _visible, {
+        stepDeg: radarDeg,
+      });
+      drawSwathBand(
+        'prospect',
+        _prospectCells,
+        (cell) => {
+          if (!cell.band) return null;
+          return { key: cell.band.min, color: cell.band.color, rank: 0.85 };
+        },
+        radarDeg,
       );
     }
     if (_showRadarSwath) {
@@ -2421,8 +2508,10 @@ export function createStormReportsLayer({
    * shape the layer already holds.
    */
   function rebuildRadarSwath() {
+    // Banded for either reader, so PROSPECT does not depend on RADAR having
+    // been switched on first.
     _radarSwath =
-      _showRadarSwath && _radarWindowCells
+      (_showRadarSwath || _showProspectSwath) && _radarWindowCells
         ? swathCellsForWindow(_radarWindowCells)
         : [];
     render();
@@ -2536,14 +2625,24 @@ export function createStormReportsLayer({
       // is already hail. Merging the toggles into `_options` instead would let
       // `applyPendingParams` set them with no refusal check and no radar
       // rebuild at all.
-      const { reportedSwath, radarSwath, ...rest } = params || {};
+      const { reportedSwath, radarSwath, prospectSwath, ...rest } =
+        params || {};
       _pendingParams = { ...(_pendingParams || {}), ...rest };
       if (_snapshot) {
         applyPendingParams();
         _optionsDirty = true;
       }
-      if (reportedSwath !== undefined || radarSwath !== undefined) {
-        applySwathIntent({ reportedSwath, radarSwath });
+      if (
+        reportedSwath !== undefined ||
+        radarSwath !== undefined ||
+        prospectSwath !== undefined
+      ) {
+        // All three, or none of them: listing a subset here is how PROSPECT
+        // ended up restorable through getParams and then silently not restored
+        // through setParams, so a shared link lost exactly the view the user
+        // had chosen. The call site has to name every key `applySwathIntent`
+        // knows about.
+        applySwathIntent({ reportedSwath, radarSwath, prospectSwath });
       }
       publish();
     },
@@ -2559,6 +2658,7 @@ export function createStormReportsLayer({
         // direction.
         reportedSwath: _showReportedSwath,
         radarSwath: _showRadarSwath,
+        prospectSwath: _showProspectSwath,
       };
     },
 
@@ -3047,6 +3147,25 @@ export function createStormReportsLayer({
           onClick: () => self().setReportedSwath(!_showReportedSwath),
         },
         {
+          id: 'storm-reports-swath-prospect',
+          label: 'PROSPECT',
+          // Says the two floors it is actually comparing. A chip called
+          // PROSPECT next to one called RADAR invites reading both as the same
+          // measurement taken twice; they are radar millimetres on one side and
+          // reported inches on the other, and the gap between them is the point.
+          title:
+            'Radar cells at ' +
+            PROSPECT_MM_FLOOR +
+            ' mm (' +
+            (PROSPECT_MM_FLOOR / 25.4).toFixed(1) +
+            '") with no report of 1" or more within ' +
+            PROSPECT_RADIUS_KM +
+            ' km',
+          disabled: !ready || _options.hazard !== 'hail',
+          active: _showProspectSwath,
+          onClick: () => self().setProspectSwath(!_showProspectSwath),
+        },
+        {
           id: 'storm-reports-swath-radar',
           label: 'RADAR',
           // Disabled, not hidden, with no radar wired: a chip that silently
@@ -3140,6 +3259,24 @@ export function createStormReportsLayer({
                     'A quarter-degree cell coloured by the largest reported ' +
                     'stone - about 25 miles across, so a county of reports is one cell',
                 },
+              ]
+            : []),
+          ...(_showProspectSwath && _options.hazard === 'hail'
+            ? [
+                {
+                  label: 'Prospecting, this view',
+                  color: PROSPECT_BANDS[PROSPECT_BANDS.length - 1].color,
+                  blurb: prospectReadout(),
+                },
+                ...PROSPECT_BANDS.map((step) => ({
+                  label: `Prospecting ${step.label}`,
+                  color: step.color,
+                  blurb:
+                    'Radar says hail, no report says hail. Neither side proves ' +
+                    'anything alone: a cell can go unreported because nobody ' +
+                    'was in it, and a report can land in a cell the radar ' +
+                    'missed. It is a place to look, not a place to bill.',
+                })),
               ]
             : []),
           ...(_showRadarSwath
@@ -3312,6 +3449,11 @@ export function createStormReportsLayer({
       return _showRadarSwath;
     },
 
+    /** Whether the prospecting swath is showing. See `setProspectSwath`. */
+    getProspectSwath() {
+      return _showProspectSwath;
+    },
+
     /**
      * Show or hide the radar-hail swath.
      *
@@ -3327,7 +3469,39 @@ export function createStormReportsLayer({
       if (next === _showRadarSwath) return false;
       if (next && !radarSource) return false;
       _showRadarSwath = next;
-      rebuildRadarSwath();
+      // Turning RADAR off must not take PROSPECT's banding down with it, and
+      // turning it on may be the first thing that asked for the banding at
+      // all - so the band is rebuilt whenever either reader's state changed.
+      if (_showRadarSwath || _showProspectSwath) rebuildRadarSwath();
+      else _radarSwath = [];
+      return true;
+    },
+
+    /**
+     * Draw the radar cells nobody reported hail in. See
+     * {@link module:layers/stormReports/model.prospectSwathCells}.
+     *
+     * Returns whether it moved, so a caller can tell "already on" from "turned
+     * on" - and false when there is no radar source to compare against, because
+     * an unsuppressed area computed with no radar is every report's absence.
+     * @param {boolean} on
+     * @returns {boolean}
+     */
+    setProspectSwath(on) {
+      const next = Boolean(on);
+      if (next === _showProspectSwath) return false;
+      if (next && _options.hazard !== 'hail') return false;
+      _showProspectSwath = next;
+      // The same banding dependency as `setRadarSwath`, from the other side:
+      // first time PROSPECT is switched on there is nothing banded to subtract
+      // reports from.
+      if (_showProspectSwath || _showRadarSwath) rebuildRadarSwath();
+      else _radarSwath = [];
+      // Render before publish: the legend quotes `_prospectCells`, and only the
+      // render computes them. Publishing first would put a readout on screen
+      // describing the view as it was before the toggle.
+      render();
+      publish();
       return true;
     },
 
