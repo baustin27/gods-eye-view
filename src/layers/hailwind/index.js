@@ -328,6 +328,17 @@ export function createStormLayer({
     // scored highest in the whole country, not highest in Colorado.
     const scopedRows = rows.filter((row) => countyInIsolatedArea(row));
 
+    // Ranked, not thresholded. `rebuildExpected` was the one surface still
+    // banding on absolute score thresholds - 0.72 / 0.42 / 0.18 - which the model
+    // module's own comment calls a calibration that silently rots, and which the
+    // cell surface abandoned for exactly that reason. A damage surface is read
+    // comparatively ("how does this county rank against its neighbours"), and
+    // ranking over the SCOPED set means isolating Colorado bands Colorado
+    // against itself rather than against the whole country.
+    const countyRanks = rankScores(
+      scopedRows.map((row) => ({ ...row, key: row.fips })),
+    );
+
     const entities = [];
     // The cap is enforced on ENTITIES, not rows - see STORM_MAX_COUNTIES.
     // Rows arrive score-descending, so a county that would be cut is the least
@@ -350,8 +361,8 @@ export function createStormLayer({
             polygon: {
               hierarchy,
               material: Cesium.Color.fromCssColorString(
-                hexForScore(row.score),
-              ).withAlpha(alphaForScore(row.score)),
+                hexForRank(countyRanks.get(String(row.fips))),
+              ).withAlpha(alphaForRank(countyRanks.get(String(row.fips)))),
               outline: false,
               heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
             },

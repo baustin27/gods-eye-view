@@ -873,3 +873,85 @@ test('isolating a state scopes the damage surface to that state', async (t) => {
   assert.equal(storm.setIsolation(null), false);
   assert.equal(cells().length, unscoped, 'clearing the area brings them all back');
 });
+
+test('the county surface bands by rank, so it cannot saturate red again', async (t) => {
+  // `rebuildExpected` was the last surface banding on ABSOLUTE score thresholds
+  // (0.72 / 0.42 / 0.18) - a calibration the model module's own comment says
+  // rots silently, and which the cell surface already abandoned for that reason.
+  //
+  // Measured against the real snapshot: on the absolute calibration 36.6% of all
+  // US counties land in the top band and 93.8% land in the top two - the map is a
+  // red/orange wall. Scoped to Colorado it is 40.6% / 82.8%. Rank banding puts
+  // ~11% in the top band, which is what STORM_BAND_SHARES asks for.
+  const source = createStormSource({
+    load: () => loadStormDataset({ fetchImpl: fileFetch }),
+  });
+  const storm = createStormLayer({
+    source,
+    overlayHost: recordingOverlayHost(),
+    facet: 'expected',
+  });
+  const viewer = stubViewer({ viewSpanDeg: 90, lat: 39, lon: -100 });
+  storm.init(viewer);
+  storm.enable(viewer);
+  t.after(() => storm.destroy(viewer));
+  assert.equal(await storm.update(), true);
+
+  // Read the RGB, not the whole string. `toCssColorString()` gives
+  // 'RGBA(255,64,64,0.55)' and `toCssHexString()` gives '#FF40408C' - both carry
+  // the alpha. Two earlier versions of this test compared those whole strings
+  // against '#FF4040', which never matches, so the band share was always zero and
+  // the assertion passed against BOTH bandings. A green test that cannot go red.
+  //
+  // The first 7 characters are the colour; the last two are alpha, and the alpha
+  // differs per band anyway (0.55 / 0.45 / 0.35 / 0.22) so it cannot be part of
+  // the match.
+  const countyColour = (entity) => {
+    const graphics = entity.polygon?.getValue?.() ?? entity.polygon;
+    const material = graphics?.material?.getValue?.() ?? graphics?.material;
+    const colour = material?.color ?? material;
+    const hex = (colour?.toCssHexString?.() ?? '').toUpperCase();
+    return hex.slice(0, 7);
+  };
+  const drawn = () =>
+    [...storm.getDataSourceForTest().entities.values]
+      .filter((e) => String(e.id ?? '').startsWith('storm-county:'))
+      .map((e) => ({ fips: String(e.id).split(':')[1], colour: countyColour(e) }))
+      .filter((e) => e.colour);
+
+  // The RED band specifically, not "the largest band". Counties with identical
+  // scores share a rank by design - a plateau must not be split across bands -
+  // and on the national set there are enough zero-scored counties to make blue a
+  // third of the map. That is correct. What must not happen is the TOP band
+  // covering the map, which is the failure the absolute calibration produced.
+  const RED = '#FF4040';
+  const shareOfRed = (list) =>
+    list.filter((row) => row.colour === RED).length / list.length;
+
+  const all = drawn();
+  assert.ok(all.length > 20, `counties drew (${all.length})`);
+  const nationalRed = shareOfRed(all);
+  // Measured on this snapshot: rank banding puts 7.9% of counties in the top
+  // band; the absolute calibration puts 29.3% there and 53.6% in the second,
+  // which is the red/orange wall this change exists to remove.
+  assert.ok(
+    nationalRed <= 0.2,
+    `the top band covers at most a fifth of the country (${(nationalRed * 100).toFixed(1)}%)`,
+  );
+
+  // Ranking happens over the counties ACTUALLY DRAWN, so scoping a state bands
+  // that state against itself rather than against a national distribution most
+  // of it will never reach.
+  storm.setIsolation({ bbox: [-109.05, 37, -102.04, 41] });
+  const scoped = drawn();
+  assert.ok(scoped.length > 5, `counties drew inside Colorado (${scoped.length})`);
+  const scopedRed = shareOfRed(scoped);
+  assert.ok(
+    scopedRed <= 0.2,
+    `and at most a fifth of Colorado (${(scopedRed * 100).toFixed(1)}%)`,
+  );
+  assert.ok(
+    new Set(scoped.map((r) => r.colour)).size >= 3,
+    'Colorado reads comparatively - several bands in use',
+  );
+});
