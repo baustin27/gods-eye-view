@@ -36,6 +36,8 @@ import {
   PROSPECT_BANDS,
   PROSPECT_MM_FLOOR,
   PROSPECT_RADIUS_KM,
+  CONTOUR_CAVEAT,
+  contourRings,
   gridAreaKm2,
   prospectSwathCells,
   reportedSwathCells,
@@ -248,6 +250,16 @@ const RADAR_RAMP_MM = Object.freeze([
   Object.freeze({ min: 38.1, color: '#e06020', label: '1.5-3.5"' }),
   Object.freeze({ min: RADAR_FLOOR_MM, color: '#e0a020', label: '1-1.5"' }),
 ]);
+
+/**
+ * The level each radar band is drawn at.
+ *
+ * Always the PRODUCT floor, never the band's own minimum: a 3.5" band is drawn
+ * as the shape that reached an inch, with the hotter cells inside it carrying
+ * the severity in their colour. Contouring at 88.9 mm would draw only the
+ * softball core and leave the storm it belongs to invisible.
+ */
+const RADAR_CONTOUR_MM = RADAR_FLOOR_MM;
 
 /** How an implausible radar reading is drawn: present, but not ranked. */
 const RADAR_IMPLAUSIBLE_COLOR = '#8a8a8a';
@@ -1779,17 +1791,35 @@ export function createStormReportsLayer({
    * @param {Array<object>} cells cells carrying `i`, `j` and a band.
    * @param {(cell: object) => {key: string, color: string, rank: number}|null} bandFor
    */
-  function drawSwathBand(kind, cells, bandFor, deg) {
+  function drawSwathBand(kind, cells, bandFor, deg, { contour = false } = {}) {
     const byBand = new Map();
     for (const cell of cells) {
       const band = bandFor(cell);
       if (!band) continue;
       if (!byBand.has(band.key)) byBand.set(band.key, { band, cells: [] });
-      byBand.get(band.key).cells.push({ i: cell.i, j: cell.j });
+      // The value rides along because the contour needs it: a staircase asks
+      // only whether a cell is present, an iso-contour asks what the field
+      // reads there. Dropping it here would make the two indistinguishable.
+      byBand
+        .get(band.key)
+        .cells.push({ i: cell.i, j: cell.j, v: cell.peakMm ?? cell.peak ?? 0 });
     }
     let drawn = 0;
     for (const [bandKey, group] of byBand) {
-      const ringSets = ringsToDegrees(gridCellRings(group.cells), deg);
+      // Whether to contour is a property of the swath, not something to infer
+      // from the data. An earlier version asked "does every cell carry a finite
+      // value" and REPORTED cells answer yes - a report size is a value - so the
+      // reported wash quietly became a contour too and lost its per-cell bands.
+      //
+      // REPORTED should not be contoured anyway: those cells are banded BY
+      // their size, so every cell in a band is by construction at or above that
+      // band's floor, and contouring them all at one level collapses the bands
+      // into each other. RADAR and PROSPECT carry a millimetre reading across a
+      // continuous range, which is what the contour is for.
+      const ringSets =
+        contour && group.cells.every((cell) => Number.isFinite(cell.v))
+          ? contourRings(group.cells, group.band.floorMm ?? RADAR_FLOOR_MM, deg)
+          : ringsToDegrees(gridCellRings(group.cells), deg);
       group.cells.length = 0;
       // The cap is applied across the whole draw, not per band, so what is
       // bounded is the entity count that actually reaches the scene.
@@ -1886,9 +1916,15 @@ export function createStormReportsLayer({
         _prospectCells,
         (cell) => {
           if (!cell.band) return null;
-          return { key: cell.band.min, color: cell.band.color, rank: 0.85 };
+          return {
+            key: cell.band.min,
+            color: cell.band.color,
+            rank: 0.85,
+            floorMm: RADAR_CONTOUR_MM,
+          };
         },
         radarDeg,
+        { contour: true },
       );
     }
     if (_showRadarSwath) {
@@ -1932,9 +1968,11 @@ export function createStormReportsLayer({
             key: chosen.label,
             color: chosen.color,
             rank: index / Math.max(ascending.length - 1, 1),
+            floorMm: RADAR_CONTOUR_MM,
           };
         },
         radarDeg,
+        { contour: true },
       );
     }
   }
@@ -3324,6 +3362,11 @@ export function createStormReportsLayer({
             : []),
           ...(_showRadarSwath
             ? [
+                {
+                  label: 'Radar edge',
+                  color: RADAR_RAMP_MM[RADAR_RAMP_MM.length - 1].color,
+                  blurb: CONTOUR_CAVEAT,
+                },
                 {
                   label: 'Radar artefact',
                   color: RADAR_IMPLAUSIBLE_COLOR,

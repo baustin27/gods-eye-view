@@ -1341,3 +1341,382 @@ export function radarSwathCells(
   }
   return out.sort((a, b) => b.peakMm - a.peakMm || (a.key < b.key ? -1 : 1));
 }
+
+/* -------------------------------------------------------------------------
+ * Iso-contouring the radar field.
+ *
+ * WHY THIS EXISTS. `gridCellRings` asks a yes/no question per cell - is it in
+ * the set - and traces the boundary of that set, so the edge steps from corner
+ * to corner and a 25-mile storm comes out as a staircase. Every commercial map
+ * in this space draws concentric smooth rings instead, because the smooth line
+ * is what the eye reads as a storm.
+ *
+ * So this asks a different question: where does the field CROSS a value. The
+ * answer is a real line between cells, found by linear interpolation, which is
+ * also more honest than the staircase - the staircase is a statement about the
+ * sampling grid, and a storm that fell between two cells has an edge that
+ * genuinely is between them.
+ *
+ * THE HONEST LIMIT, which belongs next to the drawing and not only here: the
+ * value per cell is `maxMm`, the MAXIMUM over that cell's 1 km cores, not a
+ * mean. Interpolating a maximum gives a smooth envelope around the worst hail,
+ * not the extent of the worst hail. It traces a storm's SHAPE faithfully and
+ * its EDGE optimistically. The legend says so; see `CONTOUR_CAVEAT`.
+ * ---------------------------------------------------------------------- */
+
+/** The caveat a contour-derived swath must carry wherever it is explained. */
+export const CONTOUR_CAVEAT =
+  'Edge interpolated between radar cells, not measured. The stored value per ' +
+  'cell is the largest hail in that cell, so the line traces the shape of the ' +
+  'storm and may sit outside the true edge of the worst hail.';
+
+/**
+ * How far a contour vertex is rounded when segments are chained.
+ *
+ * Two adjacent squares compute their shared crossing point from opposite
+ * directions - one walks a->b, the other c->d - so the two floats differ in the
+ * last bits. Chaining on exact equality would drop the ring on every shared
+ * edge. 1e-9 of a cell is a nanometre and rounds away nothing that matters.
+ */
+const CHAIN_EPSILON = 1e-9;
+
+/** The key two vertices share, for chaining segments into rings. */
+function chainKey(y, x) {
+  return `${Math.round(y / CHAIN_EPSILON)}:${Math.round(x / CHAIN_EPSILON)}`;
+}
+
+/**
+ * The four squares a sample belongs to, as offsets to that square's LOWER-LEFT
+ * corner, in (i, j).
+ *
+ * A sample at (si, sj) is the lower-left of one square, the lower-right of
+ * another, the upper-right of a third and the upper-left of the fourth, so two
+ * of these offsets are negative. Taking only the positive pair - which is the
+ * obvious thing to type - enumerates the squares where the sample is a lower or
+ * left corner and silently drops the other half, and a boundary drawn from half
+ * its squares is an open polyline, not a closed shape.
+ */
+const SQUARE_OFFSETS = Object.freeze([
+  [0, 0],
+  [0, -1],
+  [-1, -1],
+  [-1, 0],
+]);
+
+/**
+ * The rings at a given value in a gridded field, in degrees.
+ *
+ * @param {Array<{i: number, j: number, v?: number, peakMm?: number}>} cells
+ *   cells carrying their index and the value to contour
+ * @param {number} isoValue the level to draw, in the same units as `v`
+ * @param {number} [deg] the grid step in degrees
+ * @returns {Array<{outer: Array<{lat: number, lon: number}>,
+ *   holes: Array<Array<{lat: number, lon: number}>>}>}
+ */
+export function contourRings(cells, isoValue, deg = GRID_DEG) {
+  if (!Array.isArray(cells) || !cells.length) return [];
+  if (!Number.isFinite(isoValue)) return [];
+
+  // One value per sample, keeping the larger where two cells collide. A
+  // missing sample reads as 0, which is correct rather than merely convenient:
+  // the field IS below the iso value out there, and treating absence as "at the
+  // threshold" would make every empty region exactly borderline.
+  const value = new Map();
+  for (const cell of cells) {
+    const i = Number(cell?.i);
+    const j = Number(cell?.j);
+    if (!Number.isInteger(i) || !Number.isInteger(j)) continue;
+    const v = Number(cell.v ?? cell.peakMm);
+    if (!Number.isFinite(v)) continue;
+    const key = `${i}:${j}`;
+    const held = value.get(key);
+    if (held === undefined || v > held) value.set(key, v);
+  }
+  if (!value.size) return [];
+  const at = (i, j) => value.get(`${i}:${j}`) ?? 0;
+
+  /** Segments in grid space, each oriented so the inside is on the LEFT. */
+  const segments = [];
+
+  /**
+   * Emit one segment, keeping the higher side on the left.
+   *
+   * Deriving the winding from the geometry instead of hand-writing a sixteen
+   * row case table is the whole point: the table version is where marching
+   * squares implementations get their inverted rings, and a hole that arrives
+   * wound the right way round renders as a filled disc.
+   */
+  const emit = (from, to, inside) => {
+    if (!from || !to || !inside) return;
+    const midY = (from[0] + to[0]) / 2;
+    const midX = (from[1] + to[1]) / 2;
+    const dirY = to[0] - from[0];
+    const dirX = to[1] - from[1];
+    // Cross product in (x, y) order, because that is the order the sign
+    // convention is defined in: positive means `to` lies to the LEFT of the
+    // direction of travel. Written as (dirX * toY - dirY * toX) - the other way
+    // round is the negation of this, which inverts every ring while still
+    // producing closed loops, so the shape looks fine until a hole arrives.
+    const cross = dirX * (inside[0] - midY) - dirY * (inside[1] - midX);
+    segments.push(cross < 0 ? { from: to, to: from } : { from, to });
+  };
+
+  // Every square that TOUCHES a sample, deduplicated.
+  //
+  // Walking the samples and visiting each one's four squares instead looks
+  // equivalent and is not: a square in the middle of a storm has four samples
+  // on it, so it gets visited four times and each of its boundary segments is
+  // emitted four times. Chaining then produces four overlapping rings at the
+  // same place, and the shape renders as a mess of coincident outlines - which
+  // looked exactly like "the contour found nothing" when it was really "the
+  // contour found everything, four times".
+  const squares = new Set();
+  for (const key of value.keys()) {
+    const [si, sj] = key.split(':').map(Number);
+    for (const [di, dj] of SQUARE_OFFSETS) squares.add(`${si + di}:${sj + dj}`);
+  }
+  for (const square of squares) {
+    const [i0, j0] = square.split(':').map(Number);
+    {
+      // Corners in (y, x): a bottom-left, b bottom-right, c top-right, d top-left.
+      const aV = at(i0, j0);
+      const bV = at(i0, j0 + 1);
+      const cV = at(i0 + 1, j0 + 1);
+      const dV = at(i0 + 1, j0);
+      if (aV < isoValue && bV < isoValue && cV < isoValue && dV < isoValue)
+        continue;
+
+      // Where a value crosses the level along an edge, linearly interpolated.
+      const along = (v0, v1) => {
+        const span = v1 - v0;
+        if (span === 0) return isoValue >= v1 ? 0.5 : 0;
+        const t = (isoValue - v0) / span;
+        return t < 0 ? 0 : t > 1 ? 1 : t;
+      };
+      const ab = [i0, j0 + along(aV, bV)];
+      const bc = [i0 + along(bV, cV), j0 + 1];
+      const cd = [i0 + 1, j0 + 1 - along(cV, dV)];
+      const da = [i0 + 1 - along(dV, aV), j0];
+
+      const insideA = aV >= isoValue;
+      const insideB = bV >= isoValue;
+      const insideC = cV >= isoValue;
+      const insideD = dV >= isoValue;
+      // The mean of a known-inside sample and the known outside one, used only
+      // as a stable "which side is this" anchor for the winding.
+      // A REAL interior sample, not one of the crossing points. A crossing
+      // point lies ON the boundary, so using one as the reference for "which
+      // side is inside" gives a cross product of zero and the winding silently
+      // defaults to whatever order the two crossings happened to be pushed in -
+      // which is consistent within a square and inconsistent between them, so
+      // the segments do not chain.
+      const anchor = insideA
+        ? [i0, j0]
+        : insideB
+          ? [i0, j0 + 1]
+          : insideC
+            ? [i0 + 1, j0 + 1]
+            : [i0 + 1, j0];
+      const crossings = [];
+      if (insideA !== insideB) crossings.push([ab, insideA]);
+      if (insideB !== insideC) crossings.push([bc, insideB]);
+      if (insideC !== insideD) crossings.push([cd, insideC]);
+      if (insideD !== insideA) crossings.push([da, insideD]);
+
+      if (crossings.length === 2) {
+        emit(crossings[0][0], crossings[1][0], anchor);
+        continue;
+      }
+      if (crossings.length !== 4) continue;
+
+      // SADDLE: two inside corners diagonal from each other. Which pair the
+      // contour joins is decided by the field at the square's centre, which is
+      // the asymptotic decider. Getting this wrong closes a hole or opens one
+      // that is not there, so it is not a corner case - a ring-shaped storm
+      // passes straight through here.
+      const centreInside = (aV + bV + cV + dV) / 4 >= isoValue;
+      const opposite = insideA !== insideB && insideB !== insideC;
+      // `opposite` true means the inside corners are a diagonal pair.
+      const wrapInside = opposite ? !centreInside : centreInside;
+      const anchorB = insideB ? [i0, j0 + 1] : anchor;
+      const anchorC = insideC ? [i0 + 1, j0 + 1] : anchor;
+      const anchorD = insideD ? [i0 + 1, j0] : anchor;
+      // When the inside regions are joined, each inside corner gets its own
+      // short segment around it; when they are cut apart, the contour wraps the
+      // two OUTSIDE corners instead.
+      if (wrapInside) {
+        // Each inside corner gets a short segment hugging it.
+        if (insideA) emit(ab, da, anchor);
+        if (insideC) emit(bc, cd, anchorC);
+        if (insideB) emit(ab, bc, anchorB);
+        if (insideD) emit(cd, da, anchorD);
+      } else {
+        // The two inside corners are split apart, so the contour wraps each
+        // OUTSIDE corner instead.
+        emit(ab, bc, insideB ? [i0, j0 + 1] : anchorB);
+        emit(cd, da, insideD ? [i0 + 1, j0] : anchorD);
+      }
+    }
+  }
+  if (!segments.length) return [];
+
+  const rings = chainSegments(segments);
+  if (!rings.length) return [];
+
+  // Signed area decides outer from hole: the winding rule puts both on the same
+  // side, so outers come out positive and holes negative.
+  const outers = [];
+  const holes = [];
+  for (const ring of rings) {
+    (ring.area >= 0 ? outers : holes).push(ring);
+  }
+  holes.sort((a, b) => Math.abs(b.area) - Math.abs(a.area));
+
+  return outers.map((outer) => ({
+    outer: outer.pts.map(([y, x]) => ({
+      lat: y * deg + deg / 2,
+      lon: x * deg + deg / 2,
+    })),
+    holes: holes
+      // One VERTEX of the hole, not the whole vertex list. Passing the array
+      // destructures its first two elements - two points - and reads them as a
+      // coordinate pair, so the containment test is arithmetic on arrays: it
+      // silently returned false and every hole was dropped, which renders an
+      // annulus as a filled disc.
+      .filter(
+        (hole) => hole.pts.length && pointInRingGrid(hole.pts[0], outer.pts),
+      )
+      .map((hole) =>
+        hole.pts.map(([y, x]) => ({
+          lat: y * deg + deg / 2,
+          lon: x * deg + deg / 2,
+        })),
+      ),
+  }));
+}
+
+/** Follow segments end to end until they close or run out. */
+function chainSegments(segments) {
+  const byStart = new Map();
+  const used = new Set();
+  for (let index = 0; index < segments.length; index += 1) {
+    const key = chainKey(segments[index].from[0], segments[index].from[1]);
+    if (!byStart.has(key)) byStart.set(key, []);
+    byStart.get(key).push(index);
+  }
+  const rings = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    if (used.has(index)) continue;
+    const pts = [];
+    let current = index;
+    const startKey = chainKey(
+      segments[current].from[0],
+      segments[current].from[1],
+    );
+    while (current !== undefined && !used.has(current)) {
+      used.add(current);
+      const segment = segments[current];
+      pts.push(segment.from, segment.to);
+      const nextKey = chainKey(segment.to[0], segment.to[1]);
+      if (nextKey === startKey) break;
+      const candidates = byStart.get(nextKey) || [];
+      current = candidates.find((candidate) => !used.has(candidate));
+    }
+    if (pts.length < 3) continue;
+    const deduped = pts.filter(
+      (point, at) =>
+        at === 0 ||
+        chainKey(point[0], point[1]) !==
+          chainKey(pts[at - 1][0], pts[at - 1][1]),
+    );
+    if (deduped.length < 3) continue;
+    // Drop vertices that lie on the straight line between their neighbours.
+    //
+    // A contour crosses every grid EDGE, so a run of six cells along the bottom
+    // of a storm yields six vertices where four would describe the same line.
+    // Measured on a real day that is the difference between 3,584 vertices and
+    // 9,949 for the same shapes: the staircase looked cheaper only because it
+    // collapsed straight runs, and none of that work is done for free by Cesium.
+    const simplified = dropCollinear(deduped);
+    if (simplified.length < 3) continue;
+    const area = signedArea(simplified);
+    // ZERO AREA IS NOT A BUG. A cell reading exactly the level - 25.4 mm, one
+    // inch - has its crossing at the sample itself, so the set "at or above an
+    // inch" around it has no area, and a ring with no area is not a shape. The
+    // staircase drew a whole 1 km cell for it, which OVERSTATES the region: a
+    // cell that is exactly on the line contributes nothing to the region above
+    // it. 54 of 9,613 cells on 2024-04-26 read exactly 25.4, so this is 1.45%
+    // of a day disappearing, and it is disappearing for the right reason.
+    if (area === 0) continue;
+    rings.push({ pts: simplified, area });
+  }
+  return rings;
+}
+
+/**
+ * Drop vertices that sit on the straight line between their neighbours.
+ *
+ * Keeps the first and last vertices so the ring still reads as closed, and
+ * never returns fewer than a triangle, because Cesium rejects a polygon with
+ * fewer than three positions and a two-point "ring" is a line segment.
+ * @param {Array<[number, number]>} pts a closed ring, last point repeating the
+ *   first
+ * @returns {Array<[number, number]>}
+ */
+function dropCollinear(pts) {
+  const last = pts.length - 1;
+  const closed = pts[0][0] === pts[last][0] && pts[0][1] === pts[last][1];
+  const body = closed ? pts.slice(0, last) : pts;
+  if (body.length < 3) return pts;
+  const kept = [];
+  for (let at = 0; at < body.length; at += 1) {
+    const previous = body[(at - 1 + body.length) % body.length];
+    const point = body[at];
+    const next = body[(at + 1) % body.length];
+    const cross =
+      (point[0] - previous[0]) * (next[1] - point[1]) -
+      (point[1] - previous[1]) * (next[0] - point[0]);
+    // Scaled to the ring's own size so "nearly straight" means nearly straight
+    // at 1 km and at 25 miles alike, rather than a tolerance tuned for one grid.
+    const scale =
+      Math.abs(point[0] - previous[0]) + Math.abs(point[1] - previous[1]) + 1;
+    if (Math.abs(cross) > 1e-9 * scale) kept.push(point);
+  }
+  if (kept.length < 3) return pts;
+  return closed ? [...kept, kept[0]] : kept;
+}
+
+/** Twice the signed area, in grid units. Positive is counter-clockwise. */
+function signedArea(pts) {
+  let total = 0;
+  for (let at = 0; at < pts.length; at += 1) {
+    const [y0, x0] = pts[at];
+    const [y1, x1] = pts[(at + 1) % pts.length];
+    total += x0 * y1 - x1 * y0;
+  }
+  return total / 2;
+}
+
+/**
+ * Whether a point is inside a ring, on the grid's own coordinates.
+ *
+ * @param {[number, number]} point one [y, x] vertex, NOT a list of them
+ * @param {Array<[number, number]>} ring
+ */
+function pointInRingGrid(point, ring) {
+  const [py, px] = point;
+  let inside = false;
+  for (
+    let at = 0, previous = ring.length - 1;
+    at < ring.length;
+    previous = at++
+  ) {
+    const [y0, x0] = ring[previous];
+    const [y1, x1] = ring[at];
+    if (y0 > py !== y1 > py) {
+      const cross = ((x1 - x0) * (py - y0)) / (y1 - y0) + x0;
+      if (px < cross) inside = !inside;
+    }
+  }
+  return inside;
+}

@@ -2917,19 +2917,33 @@ test('a single-day window draws the wash from the FINE field, at 1 km', async ()
     (p) => Cesium.Ellipsoid.WGS84.cartesianToCartographic(p).longitude * DEG,
   );
   assert.ok(lats.length >= 4, `a closed polygon, got ${positions.length} vertices`);
+  // CENTRED, and no coarser than one fine cell.
+  //
+  // These used to pin the staircase's exact edges - south edge 39.62, span
+  // 0.01 - which is no longer true of anything, because the radar wash is
+  // contoured now and the contour crosses between samples. It sits a fraction
+  // of a cell OUTSIDE the outermost cell, because that cell has a value and its
+  // neighbour has none.
+  //
+  // The assertions keep the job this file actually needs them to do: catch the
+  // renderer drawing 25x-too-large geometry. A centre check and a span ceiling
+  // do that; an exact edge would not survive the next tuning of the contour.
+  const centreLat = (Math.min(...lats) + Math.max(...lats)) / 2;
+  const centreLon = (Math.min(...lons) + Math.max(...lons)) / 2;
   assert.ok(
-    Math.abs(Math.min(...lats) - 39.62) < 1e-6,
-    `it is drawn where the cells are (39.62N), not ${Math.min(...lats).toFixed(4)}`,
+    Math.abs(centreLat - 39.625) < 1e-6,
+    `centred on the cell (39.625N), not ${centreLat.toFixed(4)}`,
   );
   assert.ok(
-    Math.abs(Math.min(...lons) + 104.88) < 1e-6,
-    `and at the fine longitude (-104.88), not ${Math.min(...lons).toFixed(4)}`,
+    // Two cells side by side in longitude (j -10488 and -10487), so the shape
+    // is centred between them, not on either.
+    Math.abs(centreLon + 104.87) < 1e-6,
+    `and on the fine longitude (-104.87), not ${centreLon.toFixed(4)}`,
   );
+  const latSpan = Math.max(...lats) - Math.min(...lats);
   assert.ok(
-    Math.abs(Math.max(...lats) - Math.min(...lats) - 0.01) < 1e-6,
-    `spanning 0.01 degrees in latitude, not ${
-      Math.max(...lats) - Math.min(...lats)
-    }`,
+    latSpan > 0 && latSpan < 0.02,
+    `narrower than a coarse cell: ${latSpan} degrees, expected under 0.02`,
   );
 });
 
@@ -3181,18 +3195,24 @@ test('the fine field is drawn close up and dropped above the LOD altitude', asyn
   await settled(layer);
   layer.setRadarSwath(true);
 
+  // The wash is contoured now, so a lone cell does not measure exactly one
+  // grid step - the contour crosses between samples and sits a fraction of a
+  // cell inside the cell's own edge. What these assertions are FOR is telling
+  // the two tiers apart, and the two are a factor of 25 apart, so the bands
+  // below are wide enough to absorb the interpolation and still cannot be
+  // confused with each other.
   setCameraHeight(viewer, 3_000);
   const fine = finestRadarSpanDeg(viewer);
   assert.ok(
-    Math.abs(fine - 0.01) < 1e-6,
-    `close up it is 1km (0.01), got ${fine}`,
+    fine > 0 && fine < 0.02,
+    `close up it is the 1km field, got a span of ${fine} degrees`,
   );
 
   setCameraHeight(viewer, 40_000);
   const coarse = finestRadarSpanDeg(viewer);
   assert.ok(
-    Math.abs(coarse - 0.25) < 1e-6,
-    `from altitude it is the 0.25-degree field (0.25), got ${coarse}`,
+    coarse > 0.1,
+    `from altitude it is the 0.25-degree field, got a span of ${coarse} degrees`,
   );
 });
 
@@ -3208,13 +3228,17 @@ test('a zoom that crosses the LOD boundary redraws the wash', async () => {
   layer.setDate('2026-06-01');
   await settled(layer);
   layer.setRadarSwath(true);
+  // Same reasoning as above: tier identification, not exact step size.
   setCameraHeight(viewer, 3_000);
-  assert.ok(Math.abs(finestRadarSpanDeg(viewer) - 0.01) < 1e-6, 'starts fine');
+  assert.ok(
+    finestRadarSpanDeg(viewer) < 0.02,
+    `starts fine, got ${finestRadarSpanDeg(viewer)}`,
+  );
 
   setCameraHeight(viewer, 25_000);
   assert.ok(
-    Math.abs(finestRadarSpanDeg(viewer) - 0.25) < 1e-6,
-    'and became coarse on the zoom-out alone',
+    finestRadarSpanDeg(viewer) > 0.1,
+    `and became coarse on the zoom-out alone, got ${finestRadarSpanDeg(viewer)}`,
   );
 });
 
