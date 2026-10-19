@@ -32,3 +32,5 @@
 src/data/local_data/storm/*.gz linguist-generated=true
 src/data/local_data/storm/*.geojsonl linguist-generated=true
 src/data/local_data/storm/storm-*-sources*.json linguist-generated=true
+src/data/local_data/housing_units/*.gz linguist-generated=true
+src/data/local_data/housing_units/*.json linguist-generated=true
