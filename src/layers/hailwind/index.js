@@ -22,10 +22,12 @@
 import * as Cesium from 'cesium';
 import { STORM_FINE_GRID_DEG } from '../../data/stormDatasets.js';
 import { areaContains } from '../../data/isolation.js';
+import { normalizeAdminName } from '../../data/adminBoundaries.js';
 import {
   scoreCells,
   scoreCounties,
   searchCounties,
+  polygonBounds,
   polygonCenter,
 } from '../../data/stormScoring.js';
 import {
@@ -37,6 +39,7 @@ import {
   publishStormOptions,
   subscribeStormOptions,
 } from './sharedOptions.js';
+import { encodeOwnerOptions } from '../../data/layerState.js';
 import {
   STORM_OVERLAY_COHORT_LIMIT,
   STORM_OVERLAY_COLLISION_CAPACITY,
@@ -165,6 +168,16 @@ export function createStormLayer({
   const isExpected = facet === STORM_FACET_EXPECTED;
 
   let _viewer = null;
+  /**
+   * The county the panel list last asked to look at.
+   *
+   * The list has always emitted `params: {fips, focus: true}`, and those
+   * parameters were DROPPED on the floor: `applyParams` had no branch for
+   * them, so they landed in the pending bag and were never acted on. A click on
+   * a county in the list did nothing at all, which is the worst kind of
+   * affordance - it looks like it works.
+   */
+  let _focusedFips = null;
   let _dataSource = null;
   let _request = null;
   let _dataset = null;
@@ -228,6 +241,103 @@ export function createStormLayer({
    * @param {object} params
    * @returns {boolean} False when a supplied value is unusable.
    */
+  /**
+   * Move the camera to a county.
+   *
+   * The county's own geometry, not a point: a county like El Paso is 150
+   * miles across, and flying to its centre at a fixed altitude frames either
+   * the middle of a field or the whole state depending on the altitude, and
+   * neither is "look at this county".
+   */
+  function focusCounty(fips) {
+    const county = _dataset?.countiesByFips?.get(String(fips));
+    if (!county || !_viewer) return false;
+    const bounds = polygonBounds(county.geometry);
+    if (!bounds) return false;
+    const [minLon, minLat, maxLon, maxLat] = bounds;
+    const rectangle = Cesium.Rectangle.fromDegrees(
+      minLon,
+      minLat,
+      maxLon,
+      maxLat,
+    );
+    _viewer.camera.flyTo({
+      destination: rectangle,
+      duration: 1.2,
+      easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT,
+    });
+    return true;
+  }
+
+  /**
+   * The Hail Desk's option owner and token, from the shared state module.
+   *
+   * The desk is a SECOND FRONT END over the same data, and it writes the same
+   * option format, so the globe can hand it a link without inventing a second
+   * vocabulary. The option specs live in one place; the encoder is the shared
+   * one; the token comes from the permanent reservation ledger.
+   */
+  const HAIL_DESK_OWNER = 'hail-desk';
+  const HAIL_DESK_TOKEN = '8';
+
+  /**
+   * A link to the Hail Desk carrying the globe's current view.
+   *
+   * The year window, the isolated state and the focused county all travel, so
+   * "open the desk" means "open the desk on what I am looking at" rather than
+   * "open the desk again".
+   */
+  function hailDeskUrl() {
+    const configured = import.meta.env?.VITE_HAIL_DESK_URL;
+    const base = String(configured || 'http://localhost:5201/');
+    const options = {
+      fromYear: _window.fromYear,
+      toYear: _window.toYear,
+      state: stateCodeFor(_isolationArea),
+      minHailTenths: 10,
+      sort: 'score',
+      dir: 'desc',
+      q: _focusedFips
+        ? (_dataset?.countiesByFips?.get(String(_focusedFips))?.name ?? '')
+        : '',
+    };
+    const tokens = encodeOwnerOptions(
+      HAIL_DESK_OWNER,
+      HAIL_DESK_TOKEN,
+      options,
+    );
+    const params = new URLSearchParams();
+    params.set('v', '2');
+    params.set('l', HAIL_DESK_TOKEN);
+    if (tokens.length) params.set('lo', tokens.join('_'));
+    return `${base.replace(/\/?$/, '/')}#${params.toString()}`;
+  }
+
+  /**
+   * The two-letter code for the state an isolated area is in.
+   *
+   * The desk filters by USPS code because that is what the county data
+   * carries, and an isolation area carries a NAME - "Colorado", "Travis
+   * County". Matching it against the dataset is the honest way to get from one
+   * to the other: a hard-coded name-to-code table would be a second list of
+   * states to keep right, and it would be wrong the moment the app was used
+   * somewhere else.
+   */
+  function stateCodeFor(area) {
+    if (!area) return '';
+    const wanted = normalizeAdminName(area.name);
+    if (!wanted) return '';
+    for (const county of _dataset?.counties ?? []) {
+      if (
+        normalizeAdminName(county.stateName) === wanted ||
+        normalizeAdminName(county.name) === wanted
+      ) {
+        return county.state ?? '';
+      }
+    }
+    return '';
+  }
+
   function applyParams(params = {}, { publish = true } = {}) {
     if (Object.hasOwn(params, 'surface')) {
       // The expected layer has no cell grid, so a surface is meaningless there
@@ -255,7 +365,34 @@ export function createStormLayer({
       _includeWind = Boolean(params.includeWind);
     if (Object.hasOwn(params, 'surface') && !isExpected)
       _surface = params.surface;
-    _pendingParams = { ...(_pendingParams || {}), ...params };
+
+    // A county the panel asked to look at. `fips` alone selects it; `focus`
+    // also moves the camera. Neither is a durable OPTION - they are navigation
+    // intents - so they are deliberately kept OUT of `_pendingParams`, which is
+    // published to the sibling layer as the shared option bag. A `fips` in that
+    // bag would tell the other facet to select a county it has no business
+    // selecting.
+    const wantsFocus = Object.hasOwn(params, 'fips');
+    if (wantsFocus) {
+      const fips = String(params.fips ?? '');
+      const known = _dataset?.countiesByFips?.get(fips);
+      if (known) {
+        _focusedFips = fips;
+        if (params.focus === true) focusCounty(fips);
+      } else if (params.focus === true) {
+        // A county that is not in the dataset cannot be flown to, and saying
+        // so is better than silently ignoring the request.
+        console.warn('[Storm] unknown county focus:', fips);
+      }
+    }
+
+    // `fips` and `focus` are NAVIGATION intents, not options. They are kept out
+    // of the pending bag on purpose: the bag is published to the sibling facet
+    // as the shared option set, and a `fips` in it would tell the other facet
+    // to select a county it has no business selecting - and would end up in the
+    // durable state, where a navigation is not a setting.
+    const { fips: _focusFips, focus: _focusFlag, ...optionParams } = params;
+    _pendingParams = { ...(_pendingParams || {}), ...optionParams };
 
     // Only touch the scene when a value the scene actually uses has moved.
     // setYearWindow rebuilds on its own, so the year is handled separately.
@@ -494,7 +631,7 @@ export function createStormLayer({
    * @param {object} dataset the loaded snapshot
    * @returns {{ariaLabel: string, items: Array<object>}}
    */
-  function countyList(rows, dataset) {
+  function countyList(rows, dataset, focusedFips = null) {
     const top = (rows || []).slice(0, STORM_COUNTY_LIST_LIMIT);
     const max = top.reduce((m, r) => Math.max(m, Number(r.score) || 0), 0);
     return {
@@ -510,6 +647,10 @@ export function createStormLayer({
             `${county?.name ?? row.fips} · ${Math.round(share * 100)}%` +
             (row.maxHailIn ? ` · max ${row.maxHailIn}"` : ''),
           active: false,
+          // The county the camera is on. `current` is what the row list marks
+          // and scrolls to, so choosing a county now leaves the list saying
+          // which one it chose.
+          current: row.fips === focusedFips,
           params: { fips: row.fips, focus: true },
         };
       }),
@@ -1255,7 +1396,12 @@ export function createStormLayer({
     getRowControls() {
       const ready = Boolean(_dataset) && _enabled;
       const stats = layer.getStats();
-      const window = layer.getYearWindow();
+      // NOT named `window`. It shadows the global inside this whole function,
+      // and the Hail Desk chip below calls `window.open` - so the chip was
+      // calling `open` on the YEAR WINDOW, and the browser's open was never
+      // reached. A local variable quietly capturing a global name is a trap
+      // that only shows up in the one place that needs the global.
+      const yearWindow = layer.getYearWindow();
       const caveat = STORM_METHOD_CAVEATS[0];
       // The expected layer has no events, no radar, and no cell grid to switch
       // between, so it gets the hazard and decade controls only.
@@ -1281,7 +1427,7 @@ export function createStormLayer({
               active: _includeWind,
               params: { includeWind: !_includeWind },
             },
-            ...decadeChips(ready, window, _dataset),
+            ...decadeChips(ready, yearWindow, _dataset),
             {
               id: 'storm-full',
               label: 'FULL',
@@ -1299,7 +1445,7 @@ export function createStormLayer({
               label: 'Expected annual loss',
               color: '#ff4040',
               count: stats.countiesScored ?? 0,
-              blurb: `FEMA National Risk Index expected annual loss per county, ${window.fromYear}–${window.toYear} window. Modelled per-dollar rates, not a forecast for any specific house. ${caveat}`,
+              blurb: `FEMA National Risk Index expected annual loss per county, ${yearWindow.fromYear}–${yearWindow.toYear} window. Modelled per-dollar rates, not a forecast for any specific house. ${caveat}`,
             },
           ],
         };
@@ -1370,6 +1516,20 @@ export function createStormLayer({
           // a decade boundary is exact, so these are real windows.
           ...decadeChips(ready, _window, _dataset),
           {
+            id: 'storm-hail-desk',
+            label: 'HAIL DESK',
+            title:
+              'Open the Hail Desk on this view - the same year window, the ' +
+              'same state, and the county you picked. The desk is a table ' +
+              'rather than a map: sortable, exportable, and it counts the ' +
+              'houses.',
+            disabled: !ready,
+            onClick: () => {
+              const url = hailDeskUrl();
+              window.open(url, '_blank', 'noopener');
+            },
+          },
+          {
             id: 'storm-full',
             label: 'FULL',
             title: 'Show the whole record',
@@ -1391,13 +1551,13 @@ export function createStormLayer({
         // already narrowed to the isolated area, so the list and the map always
         // agree. Ranking separately would list national leaders while the map
         // showed Colorado.
-        list: countyList(_countyRows, _dataset),
+        list: countyList(_countyRows, _dataset, _focusedFips),
         legend: [
           {
             label: 'Damage likelihood',
             color: '#ff4040',
             count: stats.cellsScored,
-            blurb: `Red to blue: blended likelihood that a residential structure in each ${STORM_FINE_GRID_DEG}° cell is hit by damaging hail or wind, over ${window.fromYear}–${window.toYear}. ${caveat}`,
+            blurb: `Red to blue: blended likelihood that a residential structure in each ${STORM_FINE_GRID_DEG}° cell is hit by damaging hail or wind, over ${yearWindow.fromYear}–${yearWindow.toYear}. ${caveat}`,
           },
         ],
       };

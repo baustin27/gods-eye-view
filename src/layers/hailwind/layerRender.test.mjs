@@ -46,6 +46,12 @@ function stubViewer({ viewSpanDeg = 0.08, lat = 39.74, lon = -104.99 } = {}) {
     // silently disables that path and any test of it passes or fails for the
     // wrong reason.
     camera: {
+      // Every camera move the layer asks for, so a test can prove one HAPPENED
+      // rather than only that nothing threw.
+      flyToCalls: [],
+      flyTo(options) {
+        this.flyToCalls.push(options);
+      },
       computeViewRectangle: () => ({
         south: (lat - half) * D,
         west: (lon - half) * D,
@@ -998,4 +1004,117 @@ test('the panel lists the counties this surface is scoring, and follows the area
     0,
     `the list followed the area rather than repeating the national leaders (${overlap} of ${scoped.items.length} repeated)`,
   );
+});
+
+test('choosing a county in the list moves the camera to it', async (t) => {
+  // The list has always emitted `params: {fips, focus: true}` and those
+  // parameters were dropped on the floor - `applyParams` had no branch for
+  // them. The row looked clickable and did nothing, which is worse than a
+  // missing affordance: a user clicks a county, nothing happens, and the
+  // reasonable conclusion is that the county is not interesting.
+  const source = createStormSource({
+    load: () => loadStormDataset({ fetchImpl: fileFetch }),
+  });
+  const storm = createStormLayer({ source, overlayHost: recordingOverlayHost() });
+  const viewer = stubViewer({ viewSpanDeg: 90, lat: 39, lon: -100 });
+  storm.init(viewer);
+  storm.enable(viewer);
+  t.after(() => storm.destroy(viewer));
+  assert.equal(await storm.update(), true);
+
+  const items = storm.getRowControls?.().list?.items ?? [];
+  assert.ok(items.length, 'the list has counties to choose from');
+  const chosen = items[0];
+  const fips = chosen.id.replace('county-list:', '');
+
+  const before = viewer.camera.flyToCalls?.length ?? 0;
+  // The row is dispatched by the PANEL, which routes a chip with `params`
+  // through setLayerParams. The layer's own setParams is the same door.
+  const moved = storm.setParams({ fips, focus: true });
+  assert.equal(moved, true, 'the parameters are accepted');
+
+  const after = viewer.camera.flyToCalls?.length ?? 0;
+  assert.ok(
+    after > before,
+    `the camera moved (${before} -> ${after} flyTo calls)`,
+  );
+  const call = viewer.camera.flyToCalls.at(-1);
+  assert.ok(call.destination, 'it flew to something');
+
+  // And the list says which county it chose, so the answer is not only on the
+  // map - a user who scrolled the list wants the list to agree.
+  const after2 = storm.getRowControls?.().list?.items ?? [];
+  const current = after2.filter((item) => item.current);
+  assert.equal(current.length, 1, 'exactly one row is current');
+  assert.equal(current[0].id, chosen.id, 'and it is the one that was chosen');
+});
+
+test('the HAIL DESK chip hands over the year window and the state', async (t) => {
+  // The globe and the desk are two front ends over one dataset, so the desk's
+  // link has to carry the globe's VIEW, not just open the desk and start again.
+  const source = createStormSource({
+    load: () => loadStormDataset({ fetchImpl: fileFetch }),
+  });
+  const storm = createStormLayer({ source, overlayHost: recordingOverlayHost() });
+  const viewer = stubViewer({ viewSpanDeg: 90, lat: 39, lon: -100 });
+  storm.init(viewer);
+  storm.enable(viewer);
+  t.after(() => storm.destroy(viewer));
+  assert.equal(await storm.update(), true);
+
+  storm.setIsolation({ bbox: [-109.05, 37, -102.04, 41] });
+  // A window that is NOT the default, because the codec OMITS an option whose
+  // value means the same thing as an absent token - and the from-year's
+  // absent value is 1955, the start of the record. Asking for the record's
+  // whole span would therefore prove nothing about the handover.
+  storm.setYearWindow(2000, 2024);
+  const chips = storm.getRowControls?.().chips ?? [];
+  const desk = chips.find((chip) => chip.id === 'storm-hail-desk');
+  assert.ok(desk, 'the chip is on the row');
+
+  const opened = [];
+  const original = globalThis.window;
+  globalThis.window = {
+    open: (url) => {
+      opened.push(url);
+      return null;
+    },
+  };
+  try {
+    desk.onClick();
+  } finally {
+    globalThis.window = original;
+  }
+  assert.equal(opened.length, 1, 'it opened a link');
+  const url = String(opened[0]);
+  assert.match(url, /#v=2&l=8&lo=/, `the desk names itself: ${url}`);
+  // The option tokens are the shared ones, so a link that means one thing in
+  // the desk means the same thing here.
+  assert.match(url, /8\.f\.2000/, 'it carries the from year');
+  assert.match(url, /8\.t\.2024/, 'and the to year');
+});
+
+test('choosing a county is a navigation, not an option', async (t) => {
+  // The pending bag is published to the sibling facet as the SHARED option
+  // set, and it is what ends up in the durable state. A `fips` in there would
+  // tell the other facet to select a county it has no business selecting, and
+  // would persist a navigation as if it were a setting.
+  const source = createStormSource({
+    load: () => loadStormDataset({ fetchImpl: fileFetch }),
+  });
+  const storm = createStormLayer({ source, overlayHost: recordingOverlayHost() });
+  const viewer = stubViewer({ viewSpanDeg: 90, lat: 39, lon: -100 });
+  storm.init(viewer);
+  storm.enable(viewer);
+  t.after(() => storm.destroy(viewer));
+  assert.equal(await storm.update(), true);
+
+  const items = storm.getRowControls?.().list?.items ?? [];
+  storm.setParams(items[0].params);
+
+  const params = storm.getParams();
+  assert.equal(params.fips, undefined, 'no county in the durable options');
+  assert.equal(params.focus, undefined, 'and no navigation flag');
+  // The options that ARE there are untouched.
+  assert.equal(typeof params.fromYear, 'number');
 });
