@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as Cesium from 'cesium';
 import { createStormLayer } from './index.js';
 import { createStormSource } from './source.js';
 import { loadStormDataset } from '../../data/stormDatasets.js';
@@ -813,4 +814,62 @@ test('the county entity budget is a budget on entities, not on rows', async (t) 
     countyEntities.length <= 5000,
     `${countyEntities.length} county entities is within the 5,000 cap`,
   );
+});
+
+test('isolating a state scopes the damage surface to that state', async (t) => {
+  // The surface paints 0.25 degree cells from 1955 onward. Isolating Colorado
+  // used to filter the storm reports and leave this drawing the whole country,
+  // which reads as the feature being broken rather than half-built.
+  const source = createStormSource({
+    load: () => loadStormDataset({ fetchImpl: fileFetch }),
+  });
+  const storm = createStormLayer({ source, overlayHost: recordingOverlayHost() });
+  // A WIDE view. The stub defaults to a 0.08 degree window over Denver,
+  // already inside Colorado - so scoping changed nothing and the first version
+  // of this test asserted 16 of 16 and read as a broken filter.
+  const viewer = stubViewer({ viewSpanDeg: 90, lat: 39, lon: -100 });
+  storm.init(viewer);
+  storm.enable(viewer);
+  t.after(() => storm.destroy(viewer));
+  assert.equal(await storm.update(), true);
+
+  const cells = () =>
+    [...storm.getDataSourceForTest().entities.values].filter((e) =>
+      String(e.id ?? '').startsWith('storm-cell:'),
+    );
+  const unscoped = cells().length;
+  assert.ok(unscoped > 50, `a wide view draws a lot of cells (${unscoped})`);
+
+  assert.equal(storm.setIsolation({ bbox: [-109.05, 37, -102.04, 41] }), true);
+  const scoped = cells().length;
+  assert.ok(
+    scoped > 0 && scoped < unscoped,
+    `Colorado shows ${scoped} of ${unscoped} cells - fewer, but not none`,
+  );
+
+  // Every drawn cell must be inside Colorado's box. Read from the entity's own
+  // position rather than from the row it came from, so this measures what
+  // reached the scene.
+  const DEG = 180 / Math.PI;
+  const unwrap = (property) =>
+    property && typeof property.getValue === 'function'
+      ? property.getValue()
+      : property;
+  for (const cell of cells()) {
+    // `entity.position` is a ConstantProperty until asked.
+    const c = Cesium.Cartographic.fromCartesian(unwrap(cell.position));
+    const lat = c.latitude * DEG;
+    const lon = c.longitude * DEG;
+    assert.ok(
+      lat >= 37 - 0.25 && lat <= 41 + 0.25,
+      `no cell drawn north of Colorado (${lat.toFixed(2)})`,
+    );
+    assert.ok(
+      lon >= -109.05 - 0.25 && lon <= -102.04 + 0.25,
+      `no cell drawn outside Colorado's longitudes (${lon.toFixed(2)})`,
+    );
+  }
+
+  assert.equal(storm.setIsolation(null), false);
+  assert.equal(cells().length, unscoped, 'clearing the area brings them all back');
 });

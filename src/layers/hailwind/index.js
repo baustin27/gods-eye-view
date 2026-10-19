@@ -21,6 +21,7 @@
 
 import * as Cesium from 'cesium';
 import { STORM_FINE_GRID_DEG } from '../../data/stormDatasets.js';
+import { areaContains } from '../../data/isolation.js';
 import {
   scoreCells,
   scoreCounties,
@@ -177,6 +178,9 @@ export function createStormLayer({
   let _includeHail = true;
   let _includeWind = true;
   let _showEvents = !isExpected;
+  // The isolated area, or null. Held here rather than in a subscriber so it
+  // survives a durable restore that lands before the layer is enabled.
+  let _isolationArea = null;
   let _surface = STORM_SURFACE_DAMAGE;
   let _selectedCellKey = null;
   let _selectedEventId = null;
@@ -318,11 +322,17 @@ export function createStormLayer({
     });
     _rows = rows;
 
+    // Scoped BEFORE the entity cap, so the ranking that decides which counties
+    // survive is computed over the area rather than nationally and then cropped.
+    // Ranking all 3,234 counties and keeping the first N would keep whichever
+    // scored highest in the whole country, not highest in Colorado.
+    const scopedRows = rows.filter((row) => countyInIsolatedArea(row));
+
     const entities = [];
     // The cap is enforced on ENTITIES, not rows - see STORM_MAX_COUNTIES.
     // Rows arrive score-descending, so a county that would be cut is the least
     // interesting one, but the cut must not land mid-part.
-    for (const row of rows) {
+    for (const row of scopedRows) {
       if (entities.length >= STORM_MAX_COUNTIES) break;
       const geometry = _dataset.countiesByFips.get(String(row.fips))?.geometry;
       if (!geometry) continue;
@@ -355,7 +365,7 @@ export function createStormLayer({
     for (const entity of entities) _dataSource.entities.add(entity);
 
     const overlayEntries = selectCellOverlayCohort(
-      rows
+      scopedRows
         .filter((row) => _dataset.countiesByFips.get(String(row.fips)))
         .map((row) => {
           const position = Cesium.Cartesian3.fromDegrees(
@@ -466,6 +476,60 @@ export function createStormLayer({
    * @param {{lat:number, lon:number}} row
    * @returns {boolean}
    */
+  /**
+   * Is this row inside the isolated area, when one is in force?
+   *
+   * A cell is tested at its own centre. The 0.25 degree cells are ~25 km, so
+   * that is the same call the storm-report swath makes - and the honest one: a
+   * quarter-degree grid simply cannot say more precisely than that where its
+   * edge falls.
+   *
+   * @param {{lat:number, lon:number}} row
+   * @returns {boolean}
+   */
+  /**
+   * A short string identifying the isolated area, for the rebuild key.
+   *
+   * The bbox alone is not enough - two different areas can share a frame in
+   * degenerate cases, and the rebuild must not be skipped because the shape
+   * changed while the box did not. Compared, never displayed.
+   *
+   * @returns {string}
+   */
+  function isolationKey() {
+    if (!_isolationArea) return '-';
+    const bbox = _isolationArea.bbox;
+    const parts = Array.isArray(bbox)
+      ? bbox.map((v) => Number(v).toFixed(3))
+      : [];
+    const ringCount = Array.isArray(_isolationArea.polygons)
+      ? _isolationArea.polygons.length
+      : 0;
+    return `${parts.join(',')}|${ringCount}`;
+  }
+
+  function inIsolatedArea(row) {
+    if (!_isolationArea) return true;
+    return areaContains(_isolationArea, row.lat, row.lon);
+  }
+
+  /**
+   * Is this county inside the isolated area, when one is in force?
+   *
+   * Tested at the county's own centre rather than by clipping its outline:
+   * there is no polygon-polygon intersection anywhere in this app, and an
+   * area-weighted share would need one. A whole county is the right unit here
+   * anyway - the surface paints counties, not parcels.
+   *
+   * @param {object} row
+   * @returns {boolean}
+   */
+  function countyInIsolatedArea(row) {
+    if (!_isolationArea) return true;
+    const [lon, lat] = countyCentre(row, _dataset);
+    return areaContains(_isolationArea, lat, lon);
+  }
+
   function isInView(row) {
     const box = viewBox();
     if (!box) return true;
@@ -565,7 +629,11 @@ export function createStormLayer({
     if (!_dataset || !_enabled || !_dataSource) return false;
     // Every input that changes the entity set must appear in the key, or the
     // rebuild short-circuits and the control silently does nothing.
-    const key = `${_window.fromYear}:${_window.toYear}:${_includeHail}:${_includeWind}:${_showEvents}:${_surface}`;
+    // The area is part of the key. Without it, isolating a state changed
+    // nothing until some other control happened to force a rebuild - which is
+    // the exact silent no-op the key's own comment warns about for everything
+    // else in it.
+    const key = `${_window.fromYear}:${_window.toYear}:${_includeHail}:${_includeWind}:${_showEvents}:${_surface}:${isolationKey()}`;
     if (
       !force &&
       _stats?.windowKey === key &&
@@ -607,7 +675,7 @@ export function createStormLayer({
     // Rank on the measure the active surface paints by, so the bands
     // describe that measure rather than the damage score.
     surfaceRanks = rankScores(rows, (row) => surfaceMeasure(row));
-    const visible = rows.filter((row) => isInView(row));
+    const visible = rows.filter((row) => isInView(row) && inIsolatedArea(row));
 
     const entities = [];
     const half = STORM_FINE_GRID_DEG / 2;
@@ -903,6 +971,31 @@ export function createStormLayer({
     },
 
     // ── Public control surface ───────────────────────────────────────────
+
+    /**
+     * Filter this surface to an isolated area.
+     *
+     * Part of the area-scoping contract shared with `storm-reports`. The area
+     * is part of the rebuild key, so changing it repaints immediately; cells are
+     * tested at their own centre and counties at theirs.
+     *
+     * @param {object|null} area an isolation area, or null
+     * @returns {boolean} whether an area is in force
+     */
+    setIsolation(area) {
+      const next =
+        area && typeof area === 'object' ? (area.area ?? area) : null;
+      if (next === _isolationArea) return Boolean(_isolationArea);
+      _isolationArea = next;
+      rebuild(true);
+      notify();
+      return Boolean(_isolationArea);
+    },
+
+    /** @returns {object|null} the area in force, or null. */
+    getIsolation() {
+      return _isolationArea;
+    },
 
     /** Set the inclusive year window and rebuild. @param {number} fromYear @param {number} toYear */
     setYearWindow(fromYear, toYear) {

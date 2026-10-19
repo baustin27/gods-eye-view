@@ -230,6 +230,8 @@ test('isolation reaches every layer that can honour it, and is released on abort
       'earthquakes',
       'isolation',
       'local-firms',
+      'storm-expected',
+      'storm-observed',
       'storm-reports',
       'weather-cyclones',
     ],
