@@ -86,23 +86,14 @@ export function parseGeoJsonLines(text) {
  * @param {unknown} raw
  * @returns {Map<number, {hail:number, wind:number}>}
  */
-export function decodeYearBuckets(raw) {
-  const years = new Map();
-  if (!Array.isArray(raw)) return years;
-  for (let i = 0; i + 2 < raw.length; i += 3) {
-    const year = Number(raw[i]);
-    const hail = Number(raw[i + 1]);
-    const wind = Number(raw[i + 2]);
-    if (
-      !Number.isFinite(year) ||
-      !Number.isFinite(hail) ||
-      !Number.isFinite(wind)
-    )
-      continue;
-    years.set(year, { hail, wind });
-  }
-  return years;
-}
+/**
+ * Decode the per-year tallies a snapshot carries.
+ *
+ * The implementation lives in `stormScoring.js` - pure, zero-import, and
+ * importable by a front end that must not pull in this module's artifact URLs.
+ * Re-exported here so the existing importers keep working.
+ */
+export { decodeYearBuckets } from './stormScoring.js';
 
 /**
  * Normalise one bundled grid point feature into the flat cell shape
@@ -138,7 +129,7 @@ export function toCellRecord(feature) {
     injuries: p.in ?? null,
     fatalities: p.ft ?? null,
     decades: p.dc ?? {},
-    years: decodeYearBuckets(p.ye),
+    years: stormScoring.decodeYearBuckets(p.ye),
   };
 }
 
@@ -477,7 +468,7 @@ export function toCountyRecord(feature) {
     lastYear: p.y1 ?? null,
     reportedLoss: p.pl ?? null,
     decades: p.dc ?? {},
-    years: decodeYearBuckets(p.ye),
+    years: stormScoring.decodeYearBuckets(p.ye),
   };
 }
 

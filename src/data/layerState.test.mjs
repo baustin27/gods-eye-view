@@ -288,6 +288,8 @@ test('production registry is exact, canonical, and rejects incomplete contracts'
   for (const [id, token] of Object.entries(LEGACY_LAYER_STATE_TOKENS)) {
     assert.equal(LAYER_STATE_TOKEN_RESERVATIONS[id], token);
   }
+  // 8 is the Hail Desk's, so the free digits are 7 and 9 and the next one
+  // handed out is 7 - the one below the desk.
   assert.equal(nextLayerStateToken(), '7');
   assert.equal(
     // 0-6 are all taken by the published set, the Storm layers, and Isolation.
@@ -297,7 +299,8 @@ test('production registry is exact, canonical, and rejects incomplete contracts'
       alpha: '6',
       bravo: '7',
     }),
-    '8',
+    // 8 is the Hail Desk's, so the token above 7 is 9.
+    '9',
   );
   const digitsExhausted = {
     ...LAYER_STATE_TOKEN_RESERVATIONS,
@@ -355,8 +358,9 @@ test('production registry is exact, canonical, and rejects incomplete contracts'
   assert.equal(
     validateLayerStateAllocations(LAYER_STATE_TOKEN_RESERVATIONS, {
       ...LAYER_STATE_TOKEN_RESERVATIONS,
+      // 7, then 9 - 8 is the Hail Desk's.
       future: '7',
-      next: '8',
+      next: '9',
     }),
     true,
   );

@@ -1,0 +1,396 @@
+/*
+ * The Hail Desk.
+ *
+ * Dark, because it is a table read in a room with a projector on, and because
+ * the globe it sits beside is dark. It is NOT the globe's stylesheet: this is
+ * a different tool for a different job, and the one thing they should share is
+ * the feeling of a console.
+ *
+ * The type scale is small and the rows are dense, because a salesperson
+ * comparing forty counties is reading columns, not prose. Everything here
+ * serves that: the numbers are tabular, the header is sticky, and a phone gets
+ * the same information as a desktop in a shape a thumb can scroll.
+ */
+
+:root {
+  --bg: #0a0e13;
+  --panel: #10161d;
+  --panel-2: #161e27;
+  --line: #223040;
+  --ink: #dce6f0;
+  --ink-dim: #8ea3b8;
+  --ink-faint: #5d7085;
+  --accent: #3ad6c8;
+  --accent-dim: #1d7a74;
+  --warn: #e0a020;
+  --bad: #e06020;
+  --radius: 6px;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mark {
+  color: var(--accent);
+  font-size: 26px;
+  line-height: 1;
+}
+
+.masthead h1 {
+  margin: 0;
+  font: 600 15px/1.2 var(--mono);
+  letter-spacing: 0.22em;
+}
+
+.tagline {
+  margin: 2px 0 0;
+  color: var(--ink-faint);
+  font: 11px/1.3 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.source {
+  margin: 0;
+  color: var(--ink-faint);
+  font: 11px/1.4 var(--mono);
+}
+
+main {
+  padding: 16px 20px 48px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+/* ---- filters ---- */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: flex-end;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field.grow {
+  flex: 1 1 180px;
+  min-width: 140px;
+}
+
+.field label {
+  font: 10px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.field.actions {
+  flex-direction: row;
+  gap: 8px;
+}
+
+input,
+select,
+button {
+  font: 13px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 7px 9px;
+  min-height: 34px;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+input[type="number"] {
+  width: 88px;
+  font-family: var(--mono);
+}
+
+button {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: transparent;
+}
+
+/* ---- summary ---- */
+
+.summary {
+  margin: 14px 0 2px;
+  font: 13px/1.4 var(--mono);
+  color: var(--ink);
+}
+
+.worst {
+  margin: 0 0 12px;
+  font: 12px/1.4 var(--mono);
+  color: var(--ink-dim);
+}
+
+/* ---- table ---- */
+
+.table-wrap {
+  overflow: auto;
+  max-height: calc(100vh - 320px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.loading {
+  margin: 0;
+  padding: 28px 16px;
+  color: var(--ink-dim);
+  font: 13px/1.4 var(--mono);
+  text-align: center;
+}
+
+.loading.error {
+  color: var(--bad);
+  text-align: left;
+}
+
+.desk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-table th,
+.desk-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.desk-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-2);
+  padding: 0;
+  font-weight: 600;
+}
+
+.desk-sort {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 10px;
+  text-align: left;
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.desk-sort:hover {
+  color: var(--ink);
+}
+
+.desk-sort.active {
+  color: var(--accent);
+}
+
+.desk-table td {
+  font: 13px/1.3 var(--mono);
+}
+
+.desk-table td.num {
+  text-align: right;
+}
+
+.desk-table tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.desk-table tbody tr:hover {
+  background: rgba(58, 214, 200, 0.07);
+}
+
+/* ---- notes ---- */
+
+.notes {
+  margin-top: 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  max-width: 900px;
+}
+
+.notes h2 {
+  margin: 0 0 10px;
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.notes dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 6px 16px;
+}
+
+.notes dt {
+  font: 600 12px/1.5 var(--mono);
+  color: var(--accent);
+}
+
+.notes dd {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.caveat {
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---- narrow screens: the table becomes cards ---- */
+
+@media (max-width: 760px) {
+  main {
+    padding: 12px 10px 40px;
+  }
+
+  .masthead {
+    padding: 12px 14px;
+  }
+
+  .filters {
+    gap: 8px 10px;
+  }
+
+  .field.grow {
+    flex-basis: 100%;
+  }
+
+  .table-wrap {
+    max-height: none;
+    border: 0;
+    background: transparent;
+  }
+
+  .desk-table,
+  .desk-table tbody,
+  .desk-table tr,
+  .desk-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .desk-table thead {
+    display: none;
+  }
+
+  .desk-table tr {
+    margin-bottom: 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 6px 4px;
+  }
+
+  .desk-table td {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 0;
+    padding: 3px 10px;
+  }
+
+  /* The label comes from the column, which the card layout restores. */
+  .desk-table td::before {
+    content: attr(data-label);
+    color: var(--ink-faint);
+    font: 10px/1.6 var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .desk-table td:first-child {
+    font-weight: 700;
+    font-size: 15px;
+    padding-bottom: 6px;
+  }
+
+  .desk-table td:first-child::before {
+    display: none;
+  }
+
+  .notes dl {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .notes dd {
+    margin-bottom: 8px;
+  }
+}

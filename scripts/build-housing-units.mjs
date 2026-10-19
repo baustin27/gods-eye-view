@@ -436,6 +436,11 @@ async function main() {
 
   const manifest = {
     title: 'Census ACS 5-year housing units',
+    // The vintage is its own field, not only inside `source`: a consumer
+    // displays it, and parsing it out of a sentence is how a number ends up
+    // labelled with the wrong year.
+    vintage: ACS_VINTAGE,
+    dataset: ACS_DATASET,
     source: `Census ACS ${ACS_VINTAGE} 5-year, table ${VARIABLE}`,
     variable: VARIABLE,
     variableMoe: VARIABLE_MOE,

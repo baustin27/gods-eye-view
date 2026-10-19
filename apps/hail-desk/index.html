@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hail Desk — market view</title>
+    <meta
+      name="description"
+      content="Hail and wind market view: counties, hazard, exposure and housing units, with a table you can filter, sort and export."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">◈</span>
+        <div>
+          <h1>HAIL DESK</h1>
+          <p class="tagline" id="tagline">Market view</p>
+        </div>
+      </div>
+      <p class="source" id="source"></p>
+    </header>
+
+    <main>
+      <form class="filters" id="filters" aria-label="Filters">
+        <div class="field">
+          <label for="state">State</label>
+          <select id="state" name="state">
+            <option value="">All states</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="fromYear">From</label>
+          <input id="fromYear" name="fromYear" type="number" inputmode="numeric" />
+        </div>
+        <div class="field">
+          <label for="toYear">To</label>
+          <input id="toYear" name="toYear" type="number" inputmode="numeric" />
+        </div>
+        <div class="field">
+          <label for="minHail">Min max hail</label>
+          <select id="minHail" name="minHail">
+            <option value="0">Any</option>
+            <option value="10">0.75"</option>
+            <option value="15">1.00"</option>
+            <option value="20">1.25"</option>
+            <option value="25">1.50"</option>
+            <option value="30">1.75"</option>
+            <option value="40">2.00"</option>
+            <option value="50">2.50"</option>
+            <option value="60">3.00"</option>
+          </select>
+        </div>
+        <div class="field grow">
+          <label for="q">Search</label>
+          <input
+            id="q"
+            name="q"
+            type="search"
+            placeholder="County name"
+            autocomplete="off"
+          />
+        </div>
+        <div class="field actions">
+          <button type="button" id="export">Export CSV</button>
+          <button type="button" id="copyLink" class="secondary">Copy link</button>
+        </div>
+      </form>
+
+      <p class="summary" id="summary" role="status" aria-live="polite"></p>
+      <p class="worst" id="worst"></p>
+
+      <div class="table-wrap" id="tableWrap">
+        <p class="loading" id="loading">Loading county data…</p>
+      </div>
+
+      <section class="notes" aria-label="What these numbers mean">
+        <h2>What these numbers are</h2>
+        <dl>
+          <dt>Score</dt>
+          <dd>
+            A model of the likelihood that a residential structure in this
+            county was hit by damaging hail or wind over the selected window.
+            It blends observed hazard, the FEMA National Risk Index's modelled
+            loss rate, and exposure. Sort by it; do not quote it.
+          </dd>
+          <dt>Housing units</dt>
+          <dd>
+            Census ACS 5-year table B25001 — how many roofs are in the county.
+            That is the <em>market size</em>, not the number of houses that were
+            hit. The margin of error is shown because B25001 is a sample
+            estimate.
+          </dd>
+          <dt>Expected loss / yr</dt>
+          <dd>
+            The county's modelled expected annual loss from hail and wind,
+            from the FEMA National Risk Index. A yearly figure, not a dollar
+            amount lost last year.
+          </dd>
+          <dt>Max hail</dt>
+          <dd>
+            The largest stone ever recorded in the county, in inches. Lifetime,
+            not window — a county that had one softball in 1993 still shows it.
+          </dd>
+        </dl>
+        <p class="caveat">
+          Radar says <em>where</em> hail fell; it is unsound as a measure of
+          <em>how big</em> each stone was, so the size columns come from
+          ground reports and the radar is corroboration, never the measure.
+        </p>
+        <p class="caveat">
+          <strong>There is no &ldquo;reported damage&rdquo; column, and that
+          is deliberate.</strong> The Storm Prediction Center's loss field
+          mixes two different things: dollars for hail, and the estimated
+          population affected for wind. A single Houston wind report carries
+          70,000,000 in it, and the two are summed into the same county total.
+          A column of those numbers would look like money and mean nothing, so
+          it is not here. The expected annual loss above is the reliable
+          exposure figure, and the housing-unit count is the reliable market
+          size.
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

@@ -80,6 +80,40 @@ function recordSpan(record) {
 }
 
 /**
+ * Decode the per-year tallies a snapshot carries.
+ *
+ * The on-disk form is a flat array of TRIPLES - year, hail, wind, year, hail,
+ * wind - because a JSON object with 69 numeric keys per county is far larger
+ * than the same numbers in a row, and there are 3,234 counties.
+ *
+ * It lives here rather than in the loader because the Hail Desk needs it and
+ * the loader cannot be imported there: `stormDatasets.js` holds the URL
+ * constants for the 78 MB of storm artifacts at module scope, and importing it
+ * from a second front end would make the bundler emit all of them for a table
+ * that draws none of it.
+ *
+ * @param {Array<number>} raw
+ * @returns {Map<number, {hail: number, wind: number}>}
+ */
+export function decodeYearBuckets(raw) {
+  const years = new Map();
+  if (!Array.isArray(raw)) return years;
+  for (let i = 0; i + 2 < raw.length; i += 3) {
+    const year = Number(raw[i]);
+    const hail = Number(raw[i + 1]);
+    const wind = Number(raw[i + 2]);
+    if (
+      !Number.isFinite(year) ||
+      !Number.isFinite(hail) ||
+      !Number.isFinite(wind)
+    )
+      continue;
+    years.set(year, { hail, wind });
+  }
+  return years;
+}
+
+/**
  * Whether a value is usable as a record-coverage bound.
  *
  * Callers pass 0 as their "unknown" sentinel, and `Number.isFinite(0)` is true,

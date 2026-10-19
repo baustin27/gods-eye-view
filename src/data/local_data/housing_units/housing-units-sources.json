@@ -1,27 +1,29 @@
 {
   "title": "Census ACS 5-year housing units",
+  "vintage": 2023,
+  "dataset": "acs5",
   "source": "Census ACS 2023 5-year, table B25001_001E",
   "variable": "B25001_001E",
   "variableMoe": "B25001_001M",
   "license": "Public domain (U.S. Government work, 17 U.S.C. § 105)",
-  "builtAt": "2026-10-19T21:03:52.803Z",
+  "builtAt": "2026-10-19T21:51:26.637Z",
   "noDataSentinel": -666666666,
   "artifacts": {
     "housing_units_county.json.gz": {
-      "bytes": 45986,
-      "rawBytes": 232919
+      "bytes": 46007,
+      "rawBytes": 232951
     },
     "housing_units_place.json.gz": {
-      "bytes": 475215,
-      "rawBytes": 2372183
+      "bytes": 475235,
+      "rawBytes": 2372215
     },
     "housing_units_tract.json.gz": {
-      "bytes": 17357,
-      "rawBytes": 159826
+      "bytes": 17383,
+      "rawBytes": 159858
     },
     "housing_units_zcta.json.gz": {
-      "bytes": 12238,
-      "rawBytes": 60184
+      "bytes": 12261,
+      "rawBytes": 60216
     }
   },
   "verification": {

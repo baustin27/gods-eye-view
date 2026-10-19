@@ -1,0 +1,97 @@
+/**
+ * The desk's URL state.
+ *
+ * The desk is a second front end over the same data, so its filters are
+ * LAYER state like any other: a desk link and a globe link differ only in
+ * which application reads them. That means a shared view is a URL, with no
+ * server, no account and no database - which is the whole of "a team sharing
+ * views" at its cheapest honest end.
+ *
+ * The codec is the shared one (`src/data/layerState.js`): versioned, token
+ * ledged, fail-closed, and already able to express the desk's options. The
+ * desk does not get a second URL format.
+ */
+
+import {
+  LAYER_STATE_VERSION,
+  decodeOwnerOptions,
+  encodeOwnerOptions,
+} from '../../../src/data/layerState.js';
+
+const OWNER = 'hail-desk';
+
+/**
+ * The owner's token, from the permanent reservation ledger.
+ *
+ * The desk is NOT a layer in the globe's catalog - the globe's catalog
+ * requires every layer-state registry entry to be a layer it can actually
+ * construct - so the desk cannot be a registry entry. It still holds a token,
+ * because it writes the same option format: a link that means one thing in
+ * the desk means the same thing in the globe, and a future layer must not be
+ * able to take the token the desk's links already use.
+ */
+const OWNER_TOKEN = '8';
+
+/** The desk's defaults, matching the registered option specs. */
+export const DEFAULT_FILTERS = Object.freeze({
+  fromYear: 1955,
+  toYear: 2025,
+  state: '',
+  minHailTenths: 10,
+  sort: 'score',
+  dir: 'desc',
+  q: '',
+});
+
+/**
+ * Read the filters out of the URL.
+ *
+ * A link with no desk parameters reads as the defaults, and a link with
+ * garbage reads as the defaults too: `decodeLayerStateParams` returns null for
+ * anything it does not recognise, and a share link that silently changed the
+ * filters it was shared with would be worse than one that ignored them.
+ *
+ * @param {string} hash the location hash
+ * @returns {object} the filters
+ */
+export function filtersFromHash(hash) {
+  const params = new URLSearchParams((hash || '').replace(/^#/, ''));
+  if (params.get('v') !== String(LAYER_STATE_VERSION)) {
+    return { ...DEFAULT_FILTERS };
+  }
+  const tokens = (params.get('lo') || '').split('_').filter(Boolean);
+  const options = decodeOwnerOptions(OWNER, OWNER_TOKEN, tokens);
+  if (!Object.keys(options).length) return { ...DEFAULT_FILTERS };
+  return { ...DEFAULT_FILTERS, ...options };
+}
+
+/**
+ * Write the filters into the URL.
+ *
+ * Only the desk's own options are written. The camera and the style are the
+ * globe's, and a desk link has no camera to describe.
+ *
+ * @param {object} filters
+ * @returns {string} the hash, including its leading `#`
+ */
+export function hashFromFilters(filters) {
+  const params = new URLSearchParams();
+  params.set('v', String(LAYER_STATE_VERSION));
+  // The enabled-layer token says WHICH TOOL the link is for, so a link
+  // identifies itself. The desk's token is not one the globe can enable, and
+  // does not need to be: the globe reads the OPTIONS out of the same string.
+  params.set('l', OWNER_TOKEN);
+  const tokens = encodeOwnerOptions(OWNER, OWNER_TOKEN, filters);
+  if (tokens.length) params.set('lo', tokens.join('_'));
+  return `#${params.toString()}`;
+}
+
+/**
+ * Whether the URL is one this desk understands.
+ * @param {string} hash
+ * @returns {boolean}
+ */
+export function isDeskHash(hash) {
+  const params = new URLSearchParams((hash || '').replace(/^#/, ''));
+  return params.get('l')?.split('.').includes('7') ?? false;
+}

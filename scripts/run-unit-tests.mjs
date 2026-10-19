@@ -33,7 +33,15 @@ export function assertNode24AllocationRuntime(version = process.versions.node) {
  * outside dependencies, build output and dot-directories, so adding a tree
  * without adding it here fails.
  */
-export const UNIT_TEST_ROOTS = Object.freeze(['src', 'server', 'scripts']);
+export const UNIT_TEST_ROOTS = Object.freeze([
+  'src',
+  'server',
+  'scripts',
+  'apps',
+]);
+
+/** Build output and dependencies, which are never the repository's own code. */
+const UNIT_TEST_SKIP_DIRS = Object.freeze(['node_modules', 'dist', 'build']);
 
 /** Discover repository unit tests in stable path order. */
 export function discoverUnitTestFiles(root = process.cwd()) {
@@ -41,8 +49,10 @@ export function discoverUnitTestFiles(root = process.cwd()) {
   const visit = (directory) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);
-      if (entry.isDirectory()) visit(absolute);
-      else if (entry.isFile() && entry.name.endsWith('.test.mjs')) {
+      if (entry.isDirectory()) {
+        if (UNIT_TEST_SKIP_DIRS.includes(entry.name)) continue;
+        visit(absolute);
+      } else if (entry.isFile() && entry.name.endsWith('.test.mjs')) {
         files.push(path.relative(root, absolute).split(path.sep).join('/'));
       }
     }

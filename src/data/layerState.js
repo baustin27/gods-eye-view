@@ -498,6 +498,34 @@ const OPTION_GROUPS = Object.freeze({
       { damage: 'd', 'radar-gap': 'g', 'vs-expected': 'v' },
     ),
   ]),
+  // The Hail Desk is a second front end over the same data, so its filters
+  // are LAYER state like any other: a desk link and a globe link then differ
+  // only in which application reads them, and a globe can hand a selected
+  // county straight to the desk without inventing a second URL format.
+  //
+  // Hail is in tenths of an inch for the same reason the storm layer's is: the
+  // codec has integer options only, and 1.75 must survive a round trip.
+  'hail-desk': Object.freeze([
+    integerOption('fromYear', 'f', 1955),
+    integerOption('toYear', 't', 2025),
+    stringOption('state', 's', ''),
+    integerOption('minHailTenths', 'm', 10),
+    enumOption(
+      'sort',
+      'o',
+      'score',
+      ['score', 'units', 'hail', 'loss', 'pop'],
+      {
+        score: 's',
+        units: 'u',
+        hail: 'h',
+        loss: 'l',
+        pop: 'p',
+      },
+    ),
+    enumOption('dir', 'd', 'desc', ['asc', 'desc'], { asc: 'a', desc: 'd' }),
+    stringOption('q', 'q', ''),
+  ]),
   'storm-reports': Object.freeze([
     // Shareable because the layer's whole claim is which size it is asserting:
     // a link showing "1 inch and up" is a different statement from one showing
@@ -1071,20 +1099,70 @@ export function encodeLayerStateParams(params, state) {
   const encodedOptions = [];
   for (const ownerId of OPTION_OWNER_IDS) {
     const ownerEntry = REGISTRY_BY_ID.get(ownerId);
-    const ownerOptions = normalized.options[ownerId];
-    for (const spec of optionSpecs(ownerId)) {
-      // Omit against what an ABSENT token means to a DECODER, not against the
-      // current default — those are the same thing for every option whose
-      // default never moved, and deliberately different for one whose did.
-      if (ownerOptions[spec.key] === absentTokenValue(spec)) continue;
-      encodedOptions.push(
-        `${ownerEntry.token}.${spec.token}.${spec.encode(ownerOptions[spec.key])}`,
-      );
-    }
+    encodedOptions.push(
+      ...encodeOwnerOptions(
+        ownerId,
+        ownerEntry.token,
+        normalized.options[ownerId],
+      ),
+    );
   }
   if (encodedOptions.length) params.set('lo', encodedOptions.join('_'));
   else params.delete('lo');
   return params;
+}
+
+/**
+ * Encode one option owner's values as `owner.spec.value` triples.
+ *
+ * Split out of {@link encodeLayerStateParams} so a second front end can
+ * produce the SAME format. The Hail Desk is a second front end over the same
+ * data, and it is not a layer in the globe's catalog - so it cannot be an entry
+ * in the layer-state registry, and therefore cannot be reached through the
+ * registry-driven encoder. But its options are expressed with the same option
+ * SPECS, so the tokens it writes are the same tokens, and a link that means
+ * one thing in the desk means the same thing in the globe.
+ *
+ * @param {string} ownerId
+ * @param {string} ownerToken the owner's token from the reservation ledger
+ * @param {object} options
+ * @returns {string[]} the encoded triples
+ */
+export function encodeOwnerOptions(ownerId, ownerToken, options) {
+  const encoded = [];
+  for (const spec of optionSpecs(ownerId)) {
+    // Omit against what an ABSENT token means to a DECODER, not against the
+    // current default — those are the same thing for every option whose
+    // default never moved, and deliberately different for one whose did.
+    if (options?.[spec.key] === absentTokenValue(spec)) continue;
+    encoded.push(
+      `${ownerToken}.${spec.token}.${spec.encode(options[spec.key])}`,
+    );
+  }
+  return encoded;
+}
+
+/**
+ * Decode one option owner's values from `owner.spec.value` triples.
+ *
+ * @param {string} ownerId
+ * @param {string} ownerToken
+ * @param {string[]} tokens
+ * @returns {object} the decoded options, and only the ones that were present
+ */
+export function decodeOwnerOptions(ownerId, ownerToken, tokens) {
+  const out = {};
+  for (const token of tokens) {
+    const [owner, specToken, ...rest] = String(token).split('.');
+    if (owner !== ownerToken) continue;
+    const spec = optionSpecs(ownerId).find(
+      (entry) => entry.token === specToken,
+    );
+    if (!spec) continue;
+    const value = spec.decode(rest.join('.'));
+    if (value !== null && value !== undefined) out[spec.key] = value;
+  }
+  return out;
 }
 
 /** Decode v2 fields. Null means that the layer payload is absent. */
