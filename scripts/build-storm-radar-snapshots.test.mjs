@@ -1431,3 +1431,74 @@ test('a built fine shard round-trips through the runtime decoder', async () => {
     cells.map((c) => `${c.i}:${c.j}:${c.maxMm}`).sort(),
   );
 });
+
+/* ======================================================================
+ * The storage floors stay BELOW the product floor.
+ *
+ * The product draws from one inch (25.4 mm). The artifacts deliberately keep
+ * everything down to 19 mm fine and 10 mm coarse, so sub-inch hail survives on
+ * disk and can be re-thresholded the moment anyone asks a different question.
+ *
+ * This test exists because raising a retention floor is a one-line change that
+ * deletes measured radar, is easy to justify in a commit message ("align with
+ * product"), and is very hard to notice afterwards. Somebody will try. This is
+ * the thing that stops them.
+ * ====================================================================== */
+
+test('the storage floors stay under the product floor', () => {
+  const PRODUCT_FLOOR_MM = 25.4;
+  assert.ok(
+    HAIL_RETAIN_MM_FINE < PRODUCT_FLOOR_MM,
+    `fine storage floor ${HAIL_RETAIN_MM_FINE} mm must stay below the product's ${PRODUCT_FLOOR_MM} mm, or sub-inch hail is being deleted`,
+  );
+  assert.ok(
+    HAIL_RETAIN_MM < PRODUCT_FLOOR_MM,
+    `coarse storage floor ${HAIL_RETAIN_MM} mm must stay below the product's ${PRODUCT_FLOOR_MM} mm`,
+  );
+});
+
+test('the shipped fine shards really do contain sub-inch cells', async () => {
+  // A constant asserting the floor is low proves nothing about the bytes. This
+  // reads actual shipped artifacts and checks the sub-inch data is really there
+  // - which is the whole claim the floor test above protects.
+  const dir = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'src',
+    'data',
+    'local_data',
+    'storm',
+  );
+  const files = (await fs.readdir(dir)).filter((name) =>
+    /^storm_radar_hail_fine_.*\.bin\.gz$/.test(name),
+  );
+  assert.ok(files.length > 0, 'there are fine shards to check');
+
+  const samples = [files[0], files[Math.floor(files.length / 2)], files.at(-1)];
+  let sawSubInch = 0;
+  for (const name of samples) {
+    const buf = zlib.gunzipSync(
+      await fs.readFile(path.join(dir, name)),
+    );
+    assert.equal(
+      buf.slice(0, 4).toString('latin1'),
+      'FINE',
+      `${name} carries the fine magic`,
+    );
+    // 4-byte magic, then 6-byte records, millimetres in tenths.
+    const count = (buf.length - 4) / 6;
+    for (let i = 0; i < count; i += 1) {
+      const at = 4 + i * 6;
+      const mm = buf.readUInt16LE(at + 4) / 10;
+      if (mm >= 25.4) continue;
+      if (mm > 0) {
+        sawSubInch += 1;
+        break;
+      }
+    }
+  }
+  assert.ok(
+    sawSubInch > 0,
+    'sub-inch readings are present in the shipped shards, so the product floor is a rendering choice and not a data loss',
+  );
+});

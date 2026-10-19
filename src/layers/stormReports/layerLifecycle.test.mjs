@@ -1251,6 +1251,51 @@ test('the pins are drawn over the swaths', async () => {
   );
 });
 
+test('a radar cell under an inch is in the data and off the map', async () => {
+  // The stored field deliberately keeps sub-inch hail - deleting measured radar
+  // to tidy a colour ramp is a bad trade. But the product claims to start at an
+  // inch, so painting a 20 mm cell in the colour that MEANS "1 to 1.5 inches"
+  // is the map asserting a size nobody inferred.
+  //
+  // This is the trap the old ramp's final fallback set: `under 10 mm` had a
+  // floor of zero, so EVERY cell matched the weakest band and a 20 mm cell was
+  // drawn as the weakest hail on the map.
+  const day = radarDayIndex('2026-08-10');
+  const cells = new Map([
+    [cellKey(35.11, -97.4), 20],
+    [cellKey(38.61, -101.2), 30],
+  ]);
+  const radarSource = { daysFor: async () => new Map([[day, cells]]) };
+  const viewer = stubViewer();
+  const { layer } = makeLayer([REPORT(2, { lat: 35.11 })], [], {
+    radarSource,
+    viewer,
+  });
+  layer.init(viewer);
+  layer.enable();
+  await layer.update();
+  layer.setDate('2026-08-10');
+  await settled(layer);
+  layer.setRadarSwath(true);
+
+  const drawn = swathEntities(viewer, 'radar');
+  assert.equal(drawn.length, 1, 'only the cell that reached an inch is drawn');
+  assert.ok(
+    String(drawn[0].id).includes('1-1.5"'),
+    'and it is banded from its real reading, not the weakest band',
+  );
+
+  const bands = layer
+    .getRowControls()
+    .legend.filter((entry) => String(entry.label).startsWith('Radar hail'));
+  assert.equal(bands.length, 3, 'three bands, all of them an inch or more');
+  assert.deepEqual(
+    bands.map((b) => b.label),
+    ['Radar hail 3.5"+', 'Radar hail 1.5-3.5"', 'Radar hail 1-1.5"'],
+    'the ramp starts at an inch and nowhere else',
+  );
+});
+
 test('the radar swath merges a window per cell, worst reading wins', async () => {
   const d1 = radarDayIndex('2026-08-09');
   const d2 = radarDayIndex('2026-08-10');
@@ -1259,7 +1304,12 @@ test('the radar swath merges a window per cell, worst reading wins', async () =>
   const radarSource = {
     daysFor: async () =>
       new Map([
-        [d1, new Map([[repeated, 30], [extra, 10]])],
+        // The extra cell used to be 10 mm, which is UNDER the product's one
+        // inch floor, so it would now correctly paint nothing and this test
+        // could no longer tell "weaker band" from "not drawn at all". 28 mm
+        // sits just above the floor in the weakest band, which is the
+        // distinction this test is actually about.
+        [d1, new Map([[repeated, 30], [extra, 28]])],
         [d2, new Map([[repeated, 55]])],
       ]),
   };
@@ -1291,10 +1341,10 @@ test('the radar swath merges a window per cell, worst reading wins', async () =>
   assert.equal(cells.length, 2, 'the union of both days is two cells');
   // The repeatedly-hit cell keeps the WORST reading across the window, not the
   // first day's: 55mm from the 10th, over 30mm from the 9th. 55 lands in the
-  // 50-75mm band, 30 in the 25-50mm one, and the two differ in green. The
-  // entity id names the BAND rather than the cell, since Phase F draws a band
-  // at a time, so the band is what identifies the drawing here.
-  const worst = cells.find((entity) => String(entity.id).includes('50-75 mm'));
+  // 1.5-3.5" band, 28 in the 1-1.5" one. The entity id names the BAND rather
+  // than the cell, since a band is drawn at a time, so the band is what
+  // identifies the drawing here.
+  const worst = cells.find((entity) => String(entity.id).includes('1.5-3.5"'));
   assert.ok(worst, 'the windowed cell is drawn in its worst band');
   const material = value(worst.polygon.material);
   assert.ok(
@@ -1304,7 +1354,7 @@ test('the radar swath merges a window per cell, worst reading wins', async () =>
     'the windowed cell is coloured by its maximum, not its first day',
   );
   assert.ok(
-    cells.some((entity) => !String(entity.id).includes('50-75 mm')),
+    cells.some((entity) => String(entity.id).includes('1-1.5"')),
     'and the other cell stays in its own, weaker band',
   );
   const alphas = cells.map((entity) => value(entity.polygon.material).color.alpha);

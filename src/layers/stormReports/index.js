@@ -230,12 +230,23 @@ const SWATH_MAX_RINGS = 3000;
  * the measured stone, and a millimetre reading is not on the inch chart — so
  * the ramp lives here. Descending thresholds so the first match is the worst.
  */
+/**
+ * The product's hail floor, in millimetres. One inch, exactly.
+ *
+ * This is a DISPLAY floor, not a storage one. The artifacts deliberately keep
+ * everything down to 19 mm (fine) and 10 mm (coarse) because deleting measured
+ * radar to tidy a colour ramp is a bad trade, and the coarsest data predates
+ * this decision. So cells below an inch still exist, and the only honest thing
+ * this product can do with them is NOT paint them - see `radarColorFor` and
+ * the swath band lookup, both of which return nothing rather than falling back
+ * to the weakest band.
+ */
+const RADAR_FLOOR_MM = 25.4;
+
 const RADAR_RAMP_MM = Object.freeze([
-  Object.freeze({ min: 75, color: '#c81e1e', label: '75 mm+' }),
-  Object.freeze({ min: 50, color: '#e06020', label: '50-75 mm' }),
-  Object.freeze({ min: 25, color: '#e0a020', label: '25-50 mm' }),
-  Object.freeze({ min: 10, color: '#2fa84f', label: '10-25 mm' }),
-  Object.freeze({ min: 0, color: '#4a90d9', label: 'under 10 mm' }),
+  Object.freeze({ min: 88.9, color: '#c81e1e', label: '3.5"+' }),
+  Object.freeze({ min: 38.1, color: '#e06020', label: '1.5-3.5"' }),
+  Object.freeze({ min: RADAR_FLOOR_MM, color: '#e0a020', label: '1-1.5"' }),
 ]);
 
 /** How an implausible radar reading is drawn: present, but not ranked. */
@@ -245,12 +256,22 @@ const RADAR_IMPLAUSIBLE_COLOR = '#8a8a8a';
 const IMPACTED_PLACES_LIMIT = 12;
 const IMPACTED_PLACES_INLINE = 4;
 
-/** The colour a radar peak paints, or the implausible grey. */
+/**
+ * The colour a radar peak paints, the implausible grey, or null.
+ *
+ * Null is a real answer and the reason this is not a plain loop with a final
+ * `return`: the stored field goes down to 19 mm, the product starts at 25.4 mm,
+ * and a cell reading 22 mm is under the line the product claims to show. The
+ * old fallback returned the weakest band's colour, so every sub-inch cell was
+ * painted in the colour that MEANS "1 to 1.5 inches" - the map asserting a
+ * size nobody inferred. Below the floor the correct output is no shape at all.
+ * @returns {string|null}
+ */
 function radarColorFor(cell) {
   if (cell.implausible) return RADAR_IMPLAUSIBLE_COLOR;
   for (const step of RADAR_RAMP_MM)
     if (cell.peakMm >= step.min) return step.color;
-  return RADAR_RAMP_MM[RADAR_RAMP_MM.length - 1].color;
+  return null;
 }
 
 /**
@@ -1895,10 +1916,17 @@ export function createStormReportsLayer({
           // 55 mm core gets banded — and painted — as the weakest hail on the
           // map. (A test caught this; the ramp is declared worst-first, so
           // reversing it and keeping the first match silently inverts it.)
-          let chosen = ascending[0];
+          // NULL under the product floor, not the weakest band. See
+          // `radarColorFor`: a sub-inch cell painted in the 1-1.5" colour is a
+          // claim about a size nobody inferred from anything.
+          let chosen = null;
           for (const step of ascending) {
             if (cell.peakMm >= step.min) chosen = step;
           }
+          // `drawSwathBand` skips a null band, which is what we want here: the
+          // cell is real and still on disk, it is just under the line this
+          // product draws. Dropping it is not a claim that no hail fell.
+          if (!chosen) return null;
           const index = ascending.indexOf(chosen);
           return {
             key: chosen.label,
@@ -3284,9 +3312,14 @@ export function createStormReportsLayer({
                 label: `Radar hail ${step.label}`,
                 color: step.color,
                 // The caveat travels with the colour: a millimetre read off a
-                // radar is not a stone anyone measured.
+                // radar is not a stone anyone measured. The floor is named here
+                // rather than left implicit, because the stored field goes BELOW
+                // it - a user who asks why a 20mm cell is missing deserves an
+                // answer on screen, not just in a constant.
                 blurb:
-                  'Vertically-integrated radar estimate, not a measured stone',
+                  'Vertically-integrated radar estimate, not a measured stone. ' +
+                  'Nothing under an inch is drawn: the stored field keeps it, ' +
+                  'the product does not.',
               }))
             : []),
           ...(_showRadarSwath
