@@ -1057,6 +1057,19 @@ export class LayerLifecycle {
   /**
    * Ensure a layer is in the requested enabled/disabled state.
    * Deterministic helper for scripted scene playback.
+   *
+   * USE THIS, NOT `layer.enabled = true`. Setting the flag by hand writes the
+   * layer's STATE without running its LIFECYCLE: the data is never fetched,
+   * the surface is never built, and the layer stays uninitialised while
+   * claiming to be on. What makes it a trap is that it is not obvious - the
+   * flag reads `true`, so the layer looks enabled, and the next click of the
+   * real toggle turns it back OFF. The layer then reports `state: disabled`
+   * and `initialized: false`, and `getStats()` on it throws, which reads as a
+   * broken build rather than a broken driver.
+   *
+   * It cost an hour to find on the storm layer in the production build, where
+   * the assets were in fact all present and all fetched with a 200. The bug
+   * was in the driving.
    */
   setEnabled(
     layerId,
