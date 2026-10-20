@@ -56,6 +56,14 @@ export const SOURCES = Object.freeze({
     url: 'https://www2.census.gov/geo/tiger/GENZ2025/shp/cb_2025_us_county_5m.zip',
     sha256: 'faec522080681e79be5be435c981009a77891206ff8a7f1d142f3bf5da9ebd74',
   },
+  // Census PLACE boundaries: cities, towns and CDPs. They are what a
+  // canvasser works in - "the town" is the unit of a day - and the globe used
+  // to approximate a city with a 0.25-degree BOX because no city boundary
+  // shipped with these bundles. It now can be exact.
+  censusPlaces: {
+    url: 'https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_place_500k.zip',
+    sha256: '27562072c8e7890cafa6b3ac7a44e5e394b34da210501b48500052bc56b8a18d',
+  },
 });
 
 /**
@@ -93,6 +101,19 @@ export const PARAMS = Object.freeze({
     minPartKm2: 1,
     minPartShare: 0.001,
     minHoleKm2: 1,
+  },
+  // City and town boundaries. Finer than the counties on purpose: a place is
+  // a neighbourhood, not a region, and the whole point of having a boundary
+  // rather than a box is that the edge lands on the edge of the town.
+  // `minPartKm2` is a square kilometre because a CDP can be a hamlet.
+  censusPlaces: {
+    toleranceFactor: 0.002,
+    minToleranceDeg: 0.0002,
+    maxToleranceDeg: 0.006,
+    decimals: 4,
+    minPartKm2: 0.15,
+    minPartShare: 0.001,
+    minHoleKm2: 0.15,
   },
   // A bare admin-1 name is marked ambiguous — the resolver then lets a
   // geocoder decide — when it is also a country, the name of a city of at
@@ -864,6 +885,61 @@ async function buildCounties() {
   };
 }
 
+/**
+ * The Census PLACE boundaries: cities, towns, villages and CDPs.
+ *
+ * The GEOID is the seven-digit state+place FIPS, which is the SAME key the
+ * ACS housing-unit artifact is keyed by, so a place joins to its housing
+ * count with no crosswalk at all.
+ */
+async function buildCensusPlaces() {
+  const params = PARAMS.censusPlaces;
+  const source = await fetchPinned('censusPlaces');
+  const files = unzip(source.bytes);
+  const base = path.basename(
+    new URL(SOURCES.censusPlaces.url).pathname,
+    '.zip',
+  );
+  const shapes = readShp(files.get(`${base}.shp`));
+  const records = readDbf(files.get(`${base}.dbf`));
+  if (shapes.length !== records.length)
+    throw new Error('census places: shp/dbf record counts differ');
+  const features = [];
+  records.forEach((record, index) => {
+    const unit = simplifyUnit(shpPolygons(shapes[index]), params);
+    if (!unit.polygons.length) return;
+    const lsad = record.NAMELSAD.startsWith(record.NAME)
+      ? record.NAMELSAD.slice(record.NAME.length).trim()
+      : '';
+    features.push({
+      name: record.NAME,
+      full: record.NAMELSAD,
+      ...(lsad ? { lsad } : {}),
+      state: record.STATE_NAME,
+      st: record.STUSPS,
+      geoid: record.GEOID,
+      ...(unit.decimals !== params.decimals ? { d: unit.decimals } : {}),
+      polygons: encodeUnit(unit),
+    });
+  });
+  features.sort((a, b) => a.geoid.localeCompare(b.geoid));
+  return {
+    meta: {
+      title: 'US Census Bureau cartographic boundary places',
+      source: base,
+      url: SOURCES.censusPlaces.url,
+      sha256: source.digest,
+      license: 'Public domain (U.S. Government work, 17 U.S.C. § 105)',
+      schema:
+        'features[]: name, full (NAMELSAD), lsad? (City, town, CDP, …), state, st (USPS), geoid (7-digit state+place FIPS, the key the ACS housing-unit artifact uses), d? (decimals when not meta.decimals), polygons[][ring] (first ring outer, rest holes; each ring open and encoded as integers in 10^-d degrees, first vertex absolute then [dLon, dLat] deltas)',
+      decimals: params.decimals,
+      curation: params,
+      script: 'scripts/build-admin-packs.mjs',
+    },
+    features,
+  };
+}
+
 /** Parts and vertices of an outline pack, for the build log. */
 function outlineSummary(pack) {
   const parts = pack.features.reduce((n, f) => n + f.polygons.length, 0);
@@ -893,6 +969,12 @@ async function writePack(relative, pack, summarize = outlineSummary) {
     `${relative}: ${summarize(pack)}, ${Buffer.byteLength(text)} bytes`,
   );
 }
+
+if (!only || only === 'census-places')
+  await writePack(
+    'src/data/local_data/us_census_places/places.json',
+    await buildCensusPlaces(),
+  );
 
 if (!only || only === 'countries')
   await writePack(

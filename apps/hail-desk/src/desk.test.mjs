@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { queryCounties, yearBounds } from './data.js';
+import {
+  indexCities,
+  queryCities,
+  queryCounties,
+  yearBounds,
+} from './data.js';
 import { csvFilename, toCsv } from './csv.js';
 import { DEFAULT_FILTERS, filtersFromHash, hashFromFilters } from './state.js';
 
@@ -208,4 +213,132 @@ test('a link with a different version is ignored rather than half-read', () => {
 test('the export filename says what the file is', () => {
   const name = csvFilename({ state: 'co', fromYear: 2000, toYear: 2024 });
   assert.match(name, /^hail-desk-co-2000-2024\.csv$/);
+});
+
+
+/* ======================================================================
+ * The CITY view, which is the point of the desk.
+ *
+ * A canvasser works in a town. These assertions are about the town rows
+ * being OBSERVED - counted from the individual reports - rather than
+ * modelled, because that was the whole reason the city table exists.
+ * ====================================================================== */
+
+/** A city row, and the per-year hail that fell in it. */
+function cityFixture(over = {}) {
+  const {
+    id = '0820000',
+    name = 'Denver',
+    full = 'Denver city',
+    st = 'CO',
+    state = 'Colorado',
+    units = 352593,
+    umoe = 173,
+    pop = 713734,
+    ...rest
+  } = over;
+  return { id, name, full, st, state, units, umoe, pop, ...rest };
+}
+
+const cityPayload = {
+  cities: [
+    cityFixture(),
+    cityFixture({ id: '4055000', name: 'Oklahoma City', full: 'Oklahoma City city', st: 'OK', state: 'Oklahoma', units: 302751, umoe: 1383, pop: 688693 }),
+    cityFixture({ id: '0831150', name: 'Nowhere', st: 'CO', units: 100, umoe: 5, pop: 200 }),
+  ],
+  cityYears: [
+    { geoid: '0820000', y: 2000, n: 10, n1: 4, n15: 2, n2: 1, n3: 0, max: 2.5, wind: 3, wmax: 60 },
+    { geoid: '0820000', y: 2020, n: 20, n1: 8, n15: 3, n2: 2, n3: 1, max: 3.5, wind: 5, wmax: 70 },
+    { geoid: '4055000', y: 2020, n: 30, n1: 12, n15: 5, n2: 2, n3: 0, max: 2, wind: 1, wmax: 55 },
+  ],
+};
+
+test('a city row counts the hail that actually fell in it', () => {
+  const index = indexCities(cityPayload);
+  const out = queryCities(index, {
+    ...DEFAULT_FILTERS,
+    fromYear: 2000,
+    toYear: 2020,
+    state: '',
+    minHailTenths: 0,
+    q: '',
+  });
+  const denver = out.find((row) => row.id === '0820000');
+  assert.ok(denver, 'the city is in the result');
+  assert.equal(denver.hail, 30, 'both years are summed');
+  assert.equal(denver.severe, 12, 'and so are the severe counts');
+  assert.equal(denver.max, 3.5, 'the largest stone is the largest of the window');
+  assert.equal(denver.years, 2);
+});
+
+test('a window is a window, not a share of an average', () => {
+  const index = indexCities(cityPayload);
+  const one = queryCities(index, {
+    ...DEFAULT_FILTERS,
+    fromYear: 2020,
+    toYear: 2020,
+    state: '',
+    minHailTenths: 0,
+    q: '',
+  });
+  const denver = one.find((row) => row.id === '0820000');
+  assert.equal(denver.hail, 20, 'the 2020 year alone');
+  assert.equal(denver.severe, 8);
+  assert.equal(denver.years, 1);
+});
+
+test('the state filter keeps only that state', () => {
+  const index = indexCities(cityPayload);
+  const out = queryCities(index, {
+    ...DEFAULT_FILTERS,
+    fromYear: 1955,
+    toYear: 2025,
+    state: 'ok',
+    minHailTenths: 0,
+    q: '',
+  });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].st, 'OK');
+});
+
+test('the hail threshold is on the window, not on a lifetime maximum', () => {
+  const index = indexCities(cityPayload);
+  const out = queryCities(index, {
+    ...DEFAULT_FILTERS,
+    fromYear: 2020,
+    toYear: 2020,
+    state: '',
+    minHailTenths: 30,
+    q: '',
+  });
+  // Oklahoma City's max in 2020 is 2.00", Denver's is 3.50".
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, '0820000');
+});
+
+test('a city with no hail in the window is not in the list', () => {
+  const index = indexCities(cityPayload);
+  const out = queryCities(index, {
+    ...DEFAULT_FILTERS,
+    fromYear: 1955,
+    toYear: 1959,
+    state: '',
+    minHailTenths: 0,
+    q: '',
+  });
+  assert.equal(out.length, 0, 'nothing fell in those years');
+});
+
+test('the city search matches a name', () => {
+  const index = indexCities(cityPayload);
+  const out = queryCities(index, {
+    ...DEFAULT_FILTERS,
+    fromYear: 1955,
+    toYear: 2025,
+    state: '',
+    minHailTenths: 0,
+    q: 'oklahoma',
+  });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].name, 'Oklahoma City');
 });

@@ -89,6 +89,37 @@ main {
   margin: 0 auto;
 }
 
+/* ---- view switch ---- */
+
+.views {
+  display: flex;
+  gap: 0;
+  margin: 0 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.views button {
+  border: 0;
+  border-radius: 0;
+  background: var(--panel);
+  padding: 8px 18px;
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.12em;
+  color: var(--ink-dim);
+}
+
+.views button + button {
+  border-left: 1px solid var(--line);
+}
+
+.views button.active {
+  background: var(--accent);
+  color: #05100f;
+}
+
 /* ---- filters ---- */
 
 .filters {

@@ -1,5 +1,5 @@
 /**
- * The market table.
+ * The market tables.
  *
  * A table, not a map, and not a list of names. Every cell is a number a
  * salesperson can act on, every number carries its caveat, and every column
@@ -11,16 +11,106 @@
  * is a model.
  */
 
-/**
- * How many county names the summary line names.
- *
- * A local constant on purpose. The globe's equivalent lives in the LAYER
- * module, and importing the layer into the desk would pull Cesium in behind it
- * - the whole point of the core boundary is that this app never does.
- */
-const WORST_INLINE = 4;
+/** The columns a CITY row has. */
+export const CITY_COLUMNS = Object.freeze([
+  {
+    key: 'name',
+    label: 'City',
+    align: 'left',
+    get: (row) => row.full || row.name,
+    title:
+      'The Census place: a city, town, village or CDP. A canvasser works in ' +
+      'a town, not a county, and this is the row that says what fell in it.',
+  },
+  {
+    key: 'st',
+    label: 'St',
+    align: 'left',
+    get: (row) => row.st || '',
+    title: 'Two-letter state code.',
+  },
+  {
+    key: 'severe',
+    label: 'Hail ≥1"',
+    align: 'right',
+    get: (row) => row.severe,
+    format: (value) => value.toLocaleString(),
+    title:
+      'Hail reports of an inch or more, in this town, inside the selected ' +
+      'window. Counted from the individual reports - this is what was ' +
+      'reported, not what a model thinks.',
+  },
+  {
+    key: 'severe15',
+    label: '≥1.5"',
+    align: 'right',
+    get: (row) => row.severe15,
+    format: (value) => value.toLocaleString(),
+    title:
+      'Reports of an inch and a half or more. The insurance threshold: an inch ' +
+      'is cosmetic damage, an inch and a half is a repair.',
+  },
+  {
+    key: 'big',
+    label: '≥2"',
+    align: 'right',
+    get: (row) => row.big,
+    format: (value) => value.toLocaleString(),
+    title: 'Reports of two inches or more - a replacement, not a repair.',
+  },
+  {
+    key: 'max',
+    label: 'Max hail',
+    align: 'right',
+    get: (row) => row.max,
+    format: (value) => (value ? `${value.toFixed(2)}"` : '-'),
+    title:
+      'The largest stone REPORTED in this town inside the window, in inches. ' +
+      'A measured stone, not a radar estimate - radar is sound about where ' +
+      'hail fell and unsound about how big each stone was.',
+  },
+  {
+    key: 'hail',
+    label: 'All hail',
+    align: 'right',
+    get: (row) => row.hail,
+    format: (value) => value.toLocaleString(),
+    title: 'Every hail report in the window, at any size.',
+  },
+  {
+    key: 'units',
+    label: 'Housing units',
+    align: 'right',
+    get: (row) => row.units ?? null,
+    format: (value) => (value === null ? '-' : value.toLocaleString()),
+    title:
+      'How many roofs are in this town: Census ACS 5-year table B25001. This ' +
+      'is the MARKET SIZE - the number of possible customers - and it is NOT ' +
+      'the number of houses that were hit.',
+  },
+  {
+    key: 'umoe',
+    label: '±',
+    align: 'right',
+    get: (row) => row.umoe ?? null,
+    format: (value) => (value === null ? '-' : `±${value.toLocaleString()}`),
+    title:
+      'The 90% margin of error on the housing-unit count. B25001 is a SAMPLE ' +
+      'estimate, and a town with 1,900 units can carry a margin of 125. A ' +
+      'number without its margin is a claim the data does not support.',
+  },
+  {
+    key: 'pop',
+    label: 'Population',
+    align: 'right',
+    get: (row) => row.pop ?? null,
+    format: (value) => (value === null ? '-' : value.toLocaleString()),
+    title: 'How many people live in this town.',
+  },
+]);
 
-export const COLUMNS = Object.freeze([
+/** The columns a COUNTY row has. */
+export const COUNTY_COLUMNS = Object.freeze([
   {
     key: 'name',
     label: 'County',
@@ -67,7 +157,7 @@ export const COLUMNS = Object.freeze([
       'that year and not with a fraction of a seventy-year average.',
   },
   {
-    key: 'hailSevere',
+    key: 'severe',
     label: 'Severe',
     align: 'right',
     get: (row) => row.window?.hailEvents ?? 0,
@@ -84,21 +174,18 @@ export const COLUMNS = Object.freeze([
     get: (row) => row.maxHailIn || 0,
     format: (value) => (value ? `${value.toFixed(2)}"` : '-'),
     title:
-      'The largest stone EVER recorded in this county, in inches. ' +
-      'Lifetime, not window: a county that had one softball in 1993 still ' +
-      'shows it here.',
+      'The largest stone EVER recorded in this county, in inches. Lifetime, ' +
+      'not window: a county that had one softball in 1993 still shows it here.',
   },
   {
     key: 'units',
     label: 'Housing units',
     align: 'right',
     get: (row) => row.units ?? null,
-    format: (value, row) =>
-      value === null ? '-' : value.toLocaleString(),
+    format: (value) => (value === null ? '-' : value.toLocaleString()),
     title:
       'How many roofs are in this county: Census ACS 5-year table B25001. ' +
-      'This is the MARKET SIZE - the number of possible customers - and it is ' +
-      'not the number of houses that were hit.',
+      'Market size, not houses hit.',
   },
   {
     key: 'umoe',
@@ -106,10 +193,7 @@ export const COLUMNS = Object.freeze([
     align: 'right',
     get: (row) => row.umoe ?? null,
     format: (value) => (value === null ? '-' : `±${value.toLocaleString()}`),
-    title:
-      'The 90% margin of error on the housing-unit count. B25001 is a ' +
-      'SAMPLE estimate; a county with 1,900 units can carry a margin of 125. ' +
-      'A number without its margin is a claim the data does not support.',
+    title: 'The 90% margin of error on the housing-unit count.',
   },
   {
     key: 'pop',
@@ -129,34 +213,44 @@ export const COLUMNS = Object.freeze([
     title:
       'The county\u2019s EXPECTED ANNUAL LOSS from hail and wind, from the ' +
       'FEMA National Risk Index. Not a dollar amount lost last year - a ' +
-      'modelled yearly figure. The dataset calls this building value; it is ' +
-      'not, and the label here says what the number actually is.',
+      'modelled yearly figure.',
   },
 ]);
 
-/** How the desk's five sorts read, for the column headers. */
+/** How each sort reads, per view. */
 const SORTERS = {
-  score: (row) => row.score,
-  units: (row) => row.units ?? -1,
-  hail: (row) => row.window?.hailCount ?? 0,
-  loss: (row) => row.pl ?? -1,
-  pop: (row) => row.pop ?? -1,
+  city: {
+    severe: (row) => row.severe,
+    severe15: (row) => row.severe15,
+    max: (row) => row.max,
+    units: (row) => row.units ?? -1,
+    pop: (row) => row.pop ?? -1,
+    hail: (row) => row.hail,
+  },
+  county: {
+    score: (row) => row.score,
+    units: (row) => row.units ?? -1,
+    hail: (row) => row.window?.hailCount ?? 0,
+    pop: (row) => row.pop ?? -1,
+  },
 };
 
 /**
  * Sort the rows for the table.
  *
- * Ties break on the county name, so the order is STABLE: two rows with the
- * same score must not swap places between renders, because a list that
- * reorders itself under the cursor is a list nobody can read a row out of.
+ * Ties break on the name, so the order is STABLE: two rows with the same
+ * score must not swap places between renders, because a list that reorders
+ * itself under the cursor is a list nobody can read a row out of.
  *
  * @param {Array<object>} rows
- * @param {string} sort one of the desk's sort keys
+ * @param {string} view 'city' or 'county'
+ * @param {string} sort
  * @param {string} dir 'asc' or 'desc'
  * @returns {Array<object>}
  */
-export function sortRows(rows, sort, dir) {
-  const key = SORTERS[sort] || SORTERS.score;
+export function sortRows(rows, view, sort, dir) {
+  const table = SORTERS[view] || SORTERS.city;
+  const key = table[sort] || Object.values(table)[0];
   const sign = dir === 'asc' ? 1 : -1;
   return [...rows].sort((a, b) => {
     const left = key(a);
@@ -167,7 +261,9 @@ export function sortRows(rows, sort, dir) {
     } else if (left !== right) {
       return (left - right) * sign;
     }
-    return String(a.name).localeCompare(String(b.name));
+    return String(a.name ?? a.full ?? '').localeCompare(
+      String(b.name ?? b.full ?? ''),
+    );
   });
 }
 
@@ -176,24 +272,28 @@ export function sortRows(rows, sort, dir) {
  *
  * @param {HTMLElement} container
  * @param {Array<object>} rows
+ * @param {Array<object>} columns
  * @param {object} state
  * @param {(key: string) => void} onSort
  */
-export function renderTable(container, rows, state, onSort) {
+export function renderTable(container, rows, columns, state, onSort) {
   container.replaceChildren();
   const table = document.createElement('table');
   table.className = 'desk-table';
 
   const head = document.createElement('thead');
   const headRow = document.createElement('tr');
-  for (const column of COLUMNS) {
+  for (const column of columns) {
     const cell = document.createElement('th');
     cell.scope = 'col';
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'desk-sort';
     if (state.sort === column.key) {
-      cell.setAttribute('aria-sort', state.dir === 'asc' ? 'ascending' : 'descending');
+      cell.setAttribute(
+        'aria-sort',
+        state.dir === 'asc' ? 'ascending' : 'descending',
+      );
       button.classList.add('active');
     }
     button.textContent = column.label;
@@ -208,7 +308,7 @@ export function renderTable(container, rows, state, onSort) {
   const body = document.createElement('tbody');
   for (const row of rows) {
     const tr = document.createElement('tr');
-    for (const column of COLUMNS) {
+    for (const column of columns) {
       const cell = document.createElement('td');
       // The card layout on a phone has no header row, so the label travels
       // with the cell. A table that turns into cards without its labels is
@@ -233,35 +333,34 @@ export function renderTable(container, rows, state, onSort) {
 /**
  * The one-line summary of a filtered view.
  *
- * It names the COUNT of counties and the size of the market underneath them,
- * because those are the two numbers that say whether a market is worth a
- * day: how many places were hit, and how many roofs are in them.
+ * It names the COUNT of places and the size of the market underneath them,
+ * because those are the two numbers that say whether a market is worth a day:
+ * how many places were hit, and how many roofs are in them.
  *
  * @param {Array<object>} rows
  * @param {object} filters
+ * @param {string} view
  * @returns {string}
  */
-export function summarise(rows, filters) {
-  if (!rows.length) return 'No counties match these filters.';
+export function summarise(rows, filters, view = 'city') {
+  if (!rows.length) return 'No places match these filters.';
   const units = rows.reduce((total, row) => total + (row.units || 0), 0);
   const withUnits = rows.filter((row) => row.units !== null).length;
-  const window = `${filters.fromYear}–${filters.toYear}`;
+  const noun = view === 'city' ? 'place' : 'county';
   const parts = [
-    `${rows.length.toLocaleString()} ${rows.length === 1 ? 'county' : 'counties'}`,
-    `${window}`,
+    `${rows.length.toLocaleString()} ${rows.length === 1 ? noun : `${noun}s`}`,
+    `${filters.fromYear}–${filters.toYear}`,
   ];
   if (withUnits) {
-    parts.push(
-      `${units.toLocaleString()} housing units across them`,
-    );
+    parts.push(`${units.toLocaleString()} housing units across them`);
   }
   return parts.join(' · ');
 }
 
-/** The names of the worst few counties, for the panel's line under the table. */
-export function topNames(rows, limit = WORST_INLINE) {
+/** The names of the worst few places, for the line under the table. */
+export function topNames(rows, limit = 4) {
   return rows
     .slice(0, limit)
-    .map((row) => `${row.name} ${row.st || ''}`.trim())
+    .map((row) => row.full || row.name)
     .join(', ');
 }

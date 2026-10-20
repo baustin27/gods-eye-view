@@ -39,6 +39,7 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 import { parseGeoJsonLines } from '../src/data/stormDatasets.js';
+import { decodeRing, pointInRing } from '../src/data/adminBoundaries.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -47,6 +48,32 @@ const COUNTIES_URL = new URL(
   '../src/data/local_data/storm/storm_counties.geojsonl',
   import.meta.url,
 );
+
+/**
+ * The Census PLACE boundaries: cities, towns, villages and CDPs.
+ *
+ * A canvasser works in a town, not a county, so the desk's row unit is a
+ * place. The GEOID is the seven-digit state+place FIPS, which is exactly the
+ * key the ACS housing-unit artifact uses, so a place joins to its housing
+ * count with no crosswalk.
+ */
+const PLACES_PACK = path.join(
+  ROOT,
+  'src/data/local_data/us_census_places/places.json',
+);
+
+/** The report artifacts, one per year. */
+const REPORT_FILES = [2021, 2022, 2023, 2024, 2025, 2026];
+
+/** The size bands a desk row counts. The thresholds are the ones the industry
+ *  uses: an inch is cosmetic, an inch and a half is a repair, two inches is a
+ *  replacement, and three is a catastrophe. */
+const HAIL_BANDS = Object.freeze([
+  { key: 'n1', min: 1 },
+  { key: 'n15', min: 1.5 },
+  { key: 'n2', min: 2 },
+  { key: 'n3', min: 3 },
+]);
 
 /** The housing-unit artifact the desk joins to. */
 const HOUSING_DIR = path.join(ROOT, 'src/data/local_data/housing_units');
@@ -103,7 +130,26 @@ function readHousingUnits() {
       moe: row.moe ?? null,
     });
   }
-  return { byFips, meta: payload.meta };
+  // The place table is a different artifact from the county one, and the
+  // places are keyed by the SAME seven-digit FIPS the TIGER boundaries use.
+  let byPlace = new Map();
+  const placeFile = path.join(HOUSING_DIR, 'housing_units_place.json.gz');
+  if (fs.existsSync(placeFile)) {
+    const places = JSON.parse(
+      zlib.gunzipSync(fs.readFileSync(placeFile)).toString('utf8'),
+    );
+    byPlace = new Map(
+      (places.rows || []).map((row) => [
+        String(row.id),
+        {
+          units: row.units,
+          moe: row.moe ?? null,
+          population: row.population ?? null,
+        },
+      ]),
+    );
+  }
+  return { byFips, byPlace, meta: payload.meta };
 }
 
 /**
@@ -126,6 +172,179 @@ function toDeskRow(properties, housing) {
   row.units = housing?.units ?? null;
   row.umoe = housing?.moe ?? null;
   return row;
+}
+
+/**
+ * A grid index over the place boundaries.
+ *
+ * 155,738 reports against 32,607 places is five billion pair tests, which is
+ * not a build. The index buckets places by the one-degree cells their
+ * BOUNDING BOX touches - so a place is listed in every cell its box covers, and
+ * a report only ever tests the places in its own cell. A city is smaller than
+ * a degree almost everywhere, so a cell holds a handful of candidates.
+ */
+function indexPlaces(features) {
+  const grid = new Map();
+  for (const feature of features) {
+    const rings = feature.rings;
+    if (!rings.length) continue;
+    let minLat = Infinity;
+    let minLon = Infinity;
+    let maxLat = -Infinity;
+    let maxLon = -Infinity;
+    // THREE levels: rings is a list of POLYGONS, a polygon is a list of RINGS,
+    // and a ring is a list of [lon, lat] pairs. Iterating one level too few
+    // compares an ARRAY against a number, every comparison is false, and the
+    // bounding box stays Infinity - which makes the grid silently empty rather
+    // than wrong, and placed zero reports without an error.
+    for (const polygon of rings) {
+      for (const ring of polygon) {
+        for (const [lon, lat] of ring) {
+          if (lon < minLon) minLon = lon;
+          if (lon > maxLon) maxLon = lon;
+          if (lat < minLat) minLat = lat;
+          if (lat > maxLat) maxLat = lat;
+        }
+      }
+    }
+    const entry = { geoid: feature.geoid, rings, minLat, minLon, maxLat, maxLon };
+    for (let lat = Math.floor(minLat); lat <= Math.floor(maxLat); lat += 1) {
+      for (let lon = Math.floor(minLon); lon <= Math.floor(maxLon); lon += 1) {
+        const key = `${lat}:${lon}`;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(entry);
+      }
+    }
+  }
+  return grid;
+}
+
+/** The place containing this point, or null. */
+function placeAt(grid, lat, lon) {
+  const candidates = grid.get(`${Math.floor(lat)}:${Math.floor(lon)}`);
+  if (!candidates) return null;
+  for (const place of candidates) {
+    if (lat < place.minLat || lat > place.maxLat) continue;
+    if (lon < place.minLon || lon > place.maxLon) continue;
+    for (const polygon of place.rings) {
+      const [outer, ...holes] = polygon;
+      if (!pointInRing(outer, lat, lon)) continue;
+      if (holes.some((hole) => pointInRing(hole, lat, lon))) continue;
+      return place.geoid;
+    }
+  }
+  return null;
+}
+
+/**
+ * The desk's CITY rows: one per place, with the hail that actually fell in it.
+ *
+ * This is the whole difference between the desk being a browser of a model and
+ * a market view. The county table answered "what does the model think of this
+ * county, averaged over seventy years"; this answers "how many stones fell in
+ * this town, how big, and when".
+ */
+async function buildCities() {
+  if (!fs.existsSync(PLACES_PACK)) {
+    throw new Error(
+      `${PLACES_PACK} is missing. Run "node scripts/build-admin-packs.mjs --only census-places" first.`,
+    );
+  }
+  step('reading the place boundaries');
+  const pack = JSON.parse(fs.readFileSync(PLACES_PACK, 'utf8'));
+  const decimals = pack.meta?.decimals ?? 4;
+  const features = pack.features
+    .map((feature) => ({
+      geoid: feature.geoid,
+      name: feature.name,
+      full: feature.full,
+      st: feature.st,
+      state: feature.state,
+      rings: feature.polygons.map((polygon) =>
+        polygon.map((ring) => decodeRing(ring, feature.d ?? decimals)),
+      ),
+    }))
+    .filter((feature) => feature.rings.length);
+  step(`places: ${features.length}`);
+
+  const grid = indexPlaces(features);
+
+  step('reading the reports');
+  const byPlaceYear = new Map();
+  let read = 0;
+  let placed = 0;
+  for (const year of REPORT_FILES) {
+    const file = path.join(
+      ROOT,
+      'src/data/local_data/storm',
+      `storm_reports_${year}.json.gz`,
+    );
+    if (!fs.existsSync(file)) continue;
+    const payload = JSON.parse(
+      zlib.gunzipSync(fs.readFileSync(file)).toString('utf8'),
+    );
+    for (const report of payload.reports || []) {
+      read += 1;
+      const [date, , hazard, size, lat, lon] = report;
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      const geoid = placeAt(grid, lat, lon);
+      if (!geoid) continue;
+      placed += 1;
+      const yearKey = String(date).slice(0, 4);
+      const key = `${geoid}:${yearKey}`;
+      let row = byPlaceYear.get(key);
+      if (!row) {
+        row = {
+          geoid,
+          y: Number(yearKey),
+          n: 0,
+          n1: 0,
+          n15: 0,
+          n2: 0,
+          n3: 0,
+          max: 0,
+          wind: 0,
+          wmax: 0,
+          loss: 0,
+        };
+        byPlaceYear.set(key, row);
+      }
+      if (hazard === 0) {
+        row.n += 1;
+        for (const band of HAIL_BANDS) if (size >= band.min) row[band.key] += 1;
+        if (size > row.max) row.max = size;
+        row.loss += Number(report[9]) || 0;
+      } else {
+        row.wind += 1;
+        if (size > row.wmax) row.wmax = size;
+      }
+    }
+  }
+  step(`reports: ${read.toLocaleString()} read, ${placed.toLocaleString()} placed in a place`);
+
+  const housing = readHousingUnits();
+  const cityRows = features.map((feature) => {
+    const units = housing.byPlace.get(feature.geoid);
+    return {
+      id: feature.geoid,
+      name: feature.name,
+      full: feature.full,
+      st: feature.st,
+      state: feature.state,
+      units: units?.units ?? null,
+      umoe: units?.moe ?? null,
+      pop: units?.population ?? null,
+    };
+  });
+  cityRows.sort((a, b) => a.id.localeCompare(b.id));
+
+  const yearRows = [...byPlaceYear.values()].sort(
+    (a, b) => a.geoid.localeCompare(b.geoid) || a.y - b.y,
+  );
+  step(
+    `city rows: ${cityRows.length}; place-years: ${yearRows.length}`,
+  );
+  return { cities: cityRows, cityYears: yearRows };
 }
 
 function writeGzipJson(target, payload) {
@@ -196,10 +415,28 @@ async function main() {
     rows,
   };
 
+  const { cities, cityYears } = await buildCities();
+
   fs.mkdirSync(outDir, { recursive: true });
   const target = path.join(outDir, 'counties.json.gz');
   const bytes = writeGzipJson(target, out);
   step(`wrote ${path.relative(ROOT, target)} — ${(bytes / 1024).toFixed(0)} KB`);
+
+  const cityTarget = path.join(outDir, 'cities.json.gz');
+  const cityBytes = writeGzipJson(cityTarget, {
+    meta: {
+      ...out.meta,
+      title: "God's Eye View - Hail Desk city market",
+      rows: cities.length,
+      note:
+        'One row per Census PLACE - city, town, village or CDP - with the ' +
+        'hail that actually fell in it, per year. The year rows are the ' +
+        'OBSERVED reports, not a model.',
+    },
+    cities,
+    cityYears,
+  });
+  step(`wrote ${path.relative(ROOT, cityTarget)} — ${(cityBytes / 1024).toFixed(0)} KB`);
 
   const manifest = {
     title: out.meta.title,
@@ -209,6 +446,11 @@ async function main() {
         bytes,
         rawBytes: fs.statSync(target).size,
         rows: rows.length,
+      },
+      'cities.json.gz': {
+        bytes: cityBytes,
+        rows: cities.length,
+        placeYears: cityYears.length,
       },
     },
     housing: {

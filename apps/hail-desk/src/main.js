@@ -5,60 +5,80 @@
  * this is the right tool for WORKING a market, and a market is a list with
  * numbers in it that a person sorts, filters and exports.
  *
+ * The CITIES view is the default and the point: one row per town, with the
+ * hail that actually fell in it, counted from the 155,738 individual reports.
+ * The COUNTIES view is the coarser market view, with the shared core's score.
+ *
  * The scores come from the shared core, so a county's score here is the same
  * score the globe shows. That is the whole point of one core: two front ends,
  * one answer.
  */
 
-import { loadDeskData, queryCounties, yearBounds } from './data.js';
+import {
+  cityYearBounds,
+  indexCities,
+  loadGzippedJson,
+  queryCities,
+  queryCounties,
+  yearBounds,
+} from './data.js';
 import { DEFAULT_FILTERS, filtersFromHash, hashFromFilters } from './state.js';
-import { COLUMNS, renderTable, sortRows, summarise, topNames } from './table.js';
+import {
+  CITY_COLUMNS,
+  COUNTY_COLUMNS,
+  renderTable,
+  sortRows,
+  summarise,
+  topNames,
+} from './table.js';
 import { csvFilename, downloadCsv, toCsv } from './csv.js';
 
-/**
- * The data URL.
- *
- * The artifact is in `public/`, so it is fetched at a plain path rather than
- * through a bundler asset reference: a .gz referenced from source is a thing
- * the bundler wants to transform, and the one transform it would apply is to
- * make it not-a-.gz.
- */
-const DATA_URL = `${import.meta.env.BASE_URL}data/counties.json.gz`;
+const CITY_DATA_URL = `${import.meta.env.BASE_URL}data/cities.json.gz`;
+const COUNTY_DATA_URL = `${import.meta.env.BASE_URL}data/counties.json.gz`;
 
 /** The state of the app. Filters live in the URL, so the URL is the state. */
 const state = {
+  view: 'city',
   filters: { ...DEFAULT_FILTERS },
   rows: [],
-  allRows: [],
+  cityIndex: null,
+  countyRows: [],
 };
 
-/**
- * The columns the CSV carries.
- *
- * The SAME columns the table shows, in the same order, with the same values.
- * A file whose columns differ from the screen is a file nobody can reconcile.
- */
-const CSV_COLUMNS = [
-  { label: 'County', get: (row) => row.name },
-  { label: 'State', get: (row) => row.st || '' },
-  { label: 'Score', get: (row) => row.score?.toFixed(4) ?? '' },
-  { label: 'Band', get: (row) => row.band || '' },
-  { label: 'Hail events in window', get: (row) => row.window?.hailCount ?? 0 },
-  {
-    label: 'Severe hail events in window',
-    get: (row) => Math.round(row.window?.hailEvents ?? 0),
-  },
-  { label: 'Max hail ever (in)', get: (row) => row.maxHailIn || '' },
-  { label: 'Housing units', get: (row) => row.units ?? '' },
-  { label: 'Housing units MOE', get: (row) => row.umoe ?? '' },
-  { label: 'Population', get: (row) => row.pop ?? '' },
-  {
-    label: 'Expected annual loss (FEMA NRI)',
-    get: (row) => row.bld ?? '',
-  },
-  { label: 'First year', get: (row) => row.y0 ?? '' },
-  { label: 'Last year', get: (row) => row.y1 ?? '' },
-];
+const CSV_COLUMNS = {
+  city: [
+    { label: 'City', get: (row) => row.full || row.name },
+    { label: 'State', get: (row) => row.st || '' },
+    { label: 'Hail reports >= 1 in', get: (row) => row.severe },
+    { label: 'Hail reports >= 1.5 in', get: (row) => row.severe15 },
+    { label: 'Hail reports >= 2 in', get: (row) => row.big },
+    { label: 'Largest stone reported (in)', get: (row) => row.max },
+    { label: 'All hail reports', get: (row) => row.hail },
+    { label: 'Wind reports', get: (row) => row.wind },
+    { label: 'Housing units', get: (row) => row.units ?? '' },
+    { label: 'Housing units MOE', get: (row) => row.umoe ?? '' },
+    { label: 'Population', get: (row) => row.pop ?? '' },
+  ],
+  county: [
+    { label: 'County', get: (row) => row.name },
+    { label: 'State', get: (row) => row.st || '' },
+    { label: 'Score', get: (row) => row.score?.toFixed(4) ?? '' },
+    { label: 'Band', get: (row) => row.band || '' },
+    { label: 'Hail events in window', get: (row) => row.window?.hailCount ?? 0 },
+    {
+      label: 'Severe hail events in window',
+      get: (row) => Math.round(row.window?.hailEvents ?? 0),
+    },
+    { label: 'Max hail ever (in)', get: (row) => row.maxHailIn || '' },
+    { label: 'Housing units', get: (row) => row.units ?? '' },
+    { label: 'Housing units MOE', get: (row) => row.umoe ?? '' },
+    { label: 'Population', get: (row) => row.pop ?? '' },
+    {
+      label: 'Expected annual loss (FEMA NRI)',
+      get: (row) => row.bld ?? '',
+    },
+  ],
+};
 
 /** The elements, looked up once. */
 const el = {
@@ -73,20 +93,33 @@ const el = {
   tableWrap: document.getElementById('tableWrap'),
   loading: document.getElementById('loading'),
   source: document.getElementById('source'),
-  tagline: document.getElementById('tagline'),
   export: document.getElementById('export'),
   copyLink: document.getElementById('copyLink'),
+  views: document.getElementById('views'),
 };
+
+/** The columns for the current view. */
+const columns = () => (state.view === 'city' ? CITY_COLUMNS : COUNTY_COLUMNS);
 
 /** Repaint from the current filters. */
 function render() {
-  const rows = queryCounties(state.allRows, state.filters);
-  state.rows = sortRows(rows, state.filters.sort, state.filters.dir);
-  renderTable(el.tableWrap, state.rows, state.filters, onSort);
-  el.summary.textContent = summarise(state.rows, state.filters);
+  const rows =
+    state.view === 'city'
+      ? queryCities(state.cityIndex, state.filters)
+      : queryCounties(state.countyRows, state.filters);
+  state.rows = sortRows(rows, state.view, state.filters.sort, state.filters.dir);
+  renderTable(el.tableWrap, state.rows, columns(), state.filters, onSort);
+  el.summary.textContent = summarise(state.rows, state.filters, state.view);
   const names = topNames(state.rows);
   el.worst.textContent = names ? `Worst first: ${names}` : '';
   el.export.disabled = state.rows.length === 0;
+  el.views.querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.view === state.view);
+    button.setAttribute(
+      'aria-pressed',
+      button.dataset.view === state.view ? 'true' : 'false',
+    );
+  });
 }
 
 /** Write the filters into the URL, then repaint. */
@@ -106,7 +139,12 @@ function syncControls() {
   if (document.activeElement !== el.fromYear) el.fromYear.value = fromYear;
   if (document.activeElement !== el.toYear) el.toYear.value = toYear;
   if (document.activeElement !== el.q) el.q.value = q;
-  el.state.value = st;
+  // The codec lower-cases every string option, and the option VALUES here are
+  // the USPS codes, which are upper case. Assigning a lower-case code to a
+  // select with upper-case options finds no match, the control renders BLANK,
+  // and the filter keeps working on a value the user cannot see. A dropdown
+  // that disagrees with the filter is worse than no dropdown.
+  el.state.value = String(st || '').toUpperCase();
   el.minHail.value = String(minHailTenths);
 }
 
@@ -120,10 +158,10 @@ function onSort(key) {
 }
 
 /** Populate the state dropdown from the states the data actually covers. */
-function fillStates(rows) {
+function fillStates(rows, key) {
   const states = new Map();
   for (const row of rows) {
-    const code = String(row.st || '').trim();
+    const code = String(row[key] || '').trim();
     if (!code) continue;
     states.set(code, (states.get(code) || 0) + 1);
   }
@@ -137,32 +175,49 @@ function fillStates(rows) {
 
 async function main() {
   try {
-    const { meta, rows } = await loadDeskData(DATA_URL);
-    state.allRows = rows;
-    const bounds = yearBounds(rows);
+    const [citiesPayload, countiesPayload] = await Promise.all([
+      loadGzippedJson(CITY_DATA_URL),
+      loadGzippedJson(COUNTY_DATA_URL),
+    ]);
+    state.cityIndex = indexCities(citiesPayload);
+    state.countyRows = countiesPayload.rows || [];
 
-    // The year control cannot offer a window the record does not cover.
-    el.fromYear.min = String(bounds.min);
-    el.fromYear.max = String(bounds.max);
-    el.toYear.min = String(bounds.min);
-    el.toYear.max = String(bounds.max);
+    const cityBounds = cityYearBounds(state.cityIndex);
+    const countyBounds = yearBounds(state.countyRows);
+    el.fromYear.min = String(Math.min(cityBounds.min, countyBounds.min));
+    el.fromYear.max = String(Math.max(cityBounds.max, countyBounds.max));
+    el.toYear.min = el.fromYear.min;
+    el.toYear.max = el.fromYear.max;
 
     // The URL wins over the defaults: a shared link is the point.
-    state.filters = { ...DEFAULT_FILTERS, ...filtersFromHash(window.location.hash) };
-    state.filters.fromYear = clamp(state.filters.fromYear, bounds.min, bounds.max);
-    state.filters.toYear = clamp(state.filters.toYear, bounds.min, bounds.max);
+    state.filters = {
+      ...DEFAULT_FILTERS,
+      ...filtersFromHash(window.location.hash),
+    };
+    state.filters.fromYear = clamp(
+      state.filters.fromYear,
+      Number(el.fromYear.min),
+      Number(el.fromYear.max),
+    );
+    state.filters.toYear = clamp(
+      state.filters.toYear,
+      Number(el.fromYear.min),
+      Number(el.fromYear.max),
+    );
     if (state.filters.fromYear > state.filters.toYear) {
       state.filters.fromYear = state.filters.toYear;
     }
 
-    fillStates(rows);
+    fillStates(state.cityIndex.cities, 'st');
     syncControls();
     render();
 
     el.loading.remove();
+    const cityCount = state.cityIndex.byYear.size;
     el.source.textContent =
-      `${rows.length.toLocaleString()} counties · ACS ${meta.housingVintage ?? ''} ` +
-      `housing units (${meta.housingVariable ?? 'B25001_001E'}) · built ${String(meta.builtAt ?? '').slice(0, 10)}`;
+      `${cityCount.toLocaleString()} places with hail · ` +
+      `${state.countyRows.length.toLocaleString()} counties · ` +
+      `ACS ${citiesPayload.meta?.housingVintage ?? ''} housing units`;
   } catch (error) {
     el.loading.textContent = `Could not load the county data: ${error.message}`;
     el.loading.className = 'loading error';
@@ -172,16 +227,35 @@ async function main() {
   el.filters.addEventListener('change', (event) => {
     const target = event.target;
     if (target === el.state) applyFilters({ state: el.state.value });
-    else if (target === el.fromYear) applyFilters({ fromYear: Number(el.fromYear.value) });
-    else if (target === el.toYear) applyFilters({ toYear: Number(el.toYear.value) });
+    else if (target === el.fromYear)
+      applyFilters({ fromYear: Number(el.fromYear.value) });
+    else if (target === el.toYear)
+      applyFilters({ toYear: Number(el.toYear.value) });
     else if (target === el.minHail)
       applyFilters({ minHailTenths: Number(el.minHail.value) });
   });
   el.q.addEventListener('input', () => {
     applyFilters({ q: el.q.value });
   });
+  el.views.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-view]');
+    if (!button) return;
+    state.view = button.dataset.view;
+    // The sort key is per-view, so switching views resets it to that view's
+    // best column rather than leaving a column that does not exist.
+    const first = columns()[0];
+    state.filters.sort =
+      state.view === 'city' ? 'severe' : 'score';
+    state.filters.dir = 'desc';
+    void first;
+    syncControls();
+    render();
+  });
   el.export.addEventListener('click', () => {
-    downloadCsv(toCsv(state.rows, CSV_COLUMNS), csvFilename(state.filters));
+    downloadCsv(
+      toCsv(state.rows, CSV_COLUMNS[state.view]),
+      csvFilename(state.filters),
+    );
   });
   el.copyLink.addEventListener('click', async () => {
     const url = `${window.location.origin}${window.location.pathname}${hashFromFilters(state.filters)}`;
@@ -196,7 +270,10 @@ async function main() {
     }, 2000);
   });
   window.addEventListener('hashchange', () => {
-    state.filters = { ...DEFAULT_FILTERS, ...filtersFromHash(window.location.hash) };
+    state.filters = {
+      ...DEFAULT_FILTERS,
+      ...filtersFromHash(window.location.hash),
+    };
     syncControls();
     render();
   });

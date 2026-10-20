@@ -23,6 +23,11 @@
     </header>
 
     <main>
+      <div class="views" id="views" role="group" aria-label="View">
+        <button type="button" data-view="city" class="active" aria-pressed="true">CITIES</button>
+        <button type="button" data-view="county" aria-pressed="false">COUNTIES</button>
+      </div>
+
       <form class="filters" id="filters" aria-label="Filters">
         <div class="field">
           <label for="state">State</label>
@@ -78,6 +83,14 @@
       <section class="notes" aria-label="What these numbers mean">
         <h2>What these numbers are</h2>
         <dl>
+          <dt>Hail &ge; 1&Prime;</dt>
+          <dd>
+            Hail reports of an inch or more in this place, inside the selected
+            window, counted from the individual reports. This is a
+            <em>count of what was reported</em>, not a model. A town with 232
+            of them is a real signal; a town with two is likely a quiet
+            reporting culture rather than a quiet sky.
+          </dd>
           <dt>Score</dt>
           <dd>
             A model of the likelihood that a residential structure in this
@@ -108,6 +121,15 @@
           Radar says <em>where</em> hail fell; it is unsound as a measure of
           <em>how big</em> each stone was, so the size columns come from
           ground reports and the radar is corroboration, never the measure.
+        </p>
+        <p class="caveat">
+          <strong>There is no &ldquo;houses hit&rdquo; column, and that is
+          deliberate too.</strong> Housing units are the market size - how many
+          roofs are in the town - and they are not the number that were hit.
+          Counting the roofs in the swath needs the radar at a resolution that
+          can be laid over a town boundary, which is the next piece of work;
+          until then, a number here would be an estimate dressed as a
+          count.
         </p>
         <p class="caveat">
           <strong>There is no &ldquo;reported damage&rdquo; column, and that

@@ -79,6 +79,15 @@ const VARIABLE = 'B25001_001E';
 const VARIABLE_MOE = 'B25001_001M';
 
 /**
+ * Total population, in the same request.
+ *
+ * Housing units are the market size for a canvasser - how many roofs - but
+ * population is the number a market is usually described by, and it costs one
+ * more column in a request that is being made anyway.
+ */
+const VARIABLE_POP = 'B01003_001E';
+
+/**
  * The other two ACS housing-unit totals, used to VERIFY the one above.
  *
  * B25002 (occupancy status) and B25003 (tenure) both publish a total. B25002
@@ -187,7 +196,7 @@ const RETRY_BASE_MS = 800;
  * @returns {Promise<{header: string[], rows: string[][]}>}
  */
 async function fetchAcs(query, label) {
-  const url = `${ACS_BASE}?get=NAME,${VARIABLE},${VARIABLE_MOE}&${query}&key=${API_KEY}`;
+  const url = `${ACS_BASE}?get=NAME,${VARIABLE},${VARIABLE_MOE},${VARIABLE_POP}&${query}&key=${API_KEY}`;
   let lastError = null;
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt += 1) {
     if (attempt > 1) {
@@ -259,6 +268,7 @@ function toRows(table, { idColumns }) {
   }
   const valueAt = index[VARIABLE];
   const moeAt = index[VARIABLE_MOE];
+  const popAt = index[VARIABLE_POP];
   const nameAt = index.NAME;
   const rows = [];
   let dropped = 0;
@@ -271,11 +281,13 @@ function toRows(table, { idColumns }) {
       continue;
     }
     const moeValue = Number.isFinite(moe) && moe !== NO_MOE && moe >= 0 ? moe : null;
+    const population = Number(row[popAt]);
     rows.push({
       id: idAt.map((at) => row[at]).join(''),
       name: String(row[nameAt] ?? ''),
       units,
       moe: moeValue,
+      population: Number.isFinite(population) && population >= 0 ? population : null,
     });
   }
   return { rows, dropped };
@@ -388,7 +400,7 @@ async function verifyHousingTable(states) {
   let checked = 0;
   for (const state of states) {
     const table = await fetchAcs(
-      `for=county:*&in=state:${state}&get=NAME,${VARIABLE},${VERIFY_TOTAL},${VERIFY_OCCUPIED}`,
+      `for=county:*&in=state:${state}&get=NAME,${VARIABLE},${VARIABLE_POP},${VERIFY_TOTAL},${VERIFY_OCCUPIED}`,
       `verification in ${state}`,
     );
     const index = Object.fromEntries(table.header.map((name, at) => [name, at]));
@@ -444,6 +456,7 @@ async function main() {
     source: `Census ACS ${ACS_VINTAGE} 5-year, table ${VARIABLE}`,
     variable: VARIABLE,
     variableMoe: VARIABLE_MOE,
+    variablePopulation: VARIABLE_POP,
     license: 'Public domain (U.S. Government work, 17 U.S.C. § 105)',
     builtAt: new Date().toISOString(),
     noDataSentinel: NO_DATA,
