@@ -158,8 +158,20 @@ function frameCells(gzipped) {
 }
 
 
+/**
+ * One frame's bytes, or null when the archive does not have it.
+ *
+ * The MRMS archive has GAPS - a frame that was never produced, or was lost -
+ * and a gap is an absence, not a failure. The daily builder treats a missing
+ * day the same way, for the same reason: a climatology with holes is still
+ * useful, and a hard failure would block the whole build on one bad file.
+ *
+ * A day with a missing frame is built from the frames it HAS, and the day is
+ * recorded as partial so the manifest can say so.
+ */
 async function fetchFrame(day, hour) {
   const response = await fetch(`${BUCKET}/${frameKey(day, hour)}`);
+  if (response.status === 404) return null;
   if (!response.ok) {
     throw new Error(`${response.status} for ${frameKey(day, hour)}`);
   }
@@ -201,6 +213,7 @@ async function main() {
   // three, so the previous date's frames are carried over rather than fetched
   // again. Every file is read exactly once.
   let carried = null;
+  const missingFrames = [];
   let built = 0;
   let bytes = 0;
   let cells = 0;
@@ -224,6 +237,11 @@ async function main() {
         frames.push(carried.hours[index]);
       } else {
         const body = await fetchFrame(spec.day, spec.hour);
+        if (!body) {
+          missingFrames.push(`${spec.day} ${String(spec.hour).padStart(2, '0')}Z`);
+          frames.push(new Map());
+          continue;
+        }
         frames.push(frameCells(body));
       }
     }
@@ -231,6 +249,10 @@ async function main() {
     const carryFrames = [];
     for (const hour of [6, 12, 18]) {
       const body = await fetchFrame(day, hour);
+      if (!body) {
+        carryFrames.push(new Map());
+        continue;
+      }
       carryFrames.push(frameCells(body));
     }
     carried = { day, hours: carryFrames };
@@ -261,6 +283,13 @@ async function main() {
     `wrote ${built} shards, ${(bytes / 1024 / 1024).toFixed(1)} MB total, ` +
       `in ${((Date.now() - started) / 1000).toFixed(0)}s`,
   );
+  if (missingFrames.length) {
+    step(
+      `${missingFrames.length} frames are missing from the archive and were ` +
+        `built as empty: ${missingFrames.slice(0, 12).join(', ')}` +
+        (missingFrames.length > 12 ? ' ...' : ''),
+    );
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
