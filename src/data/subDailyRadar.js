@@ -22,6 +22,7 @@
  */
 
 import { RADAR_FINE_GRID, RADAR_PER_DAY_MM_SCALE } from './stormDatasets.js';
+import { inflateBytesUint8Array } from './stormReports.inflateHelper.js';
 
 /** Magic at the head of a sub-daily shard: ASCII `SUBD`. */
 export const SUB_DAILY_MAGIC = Object.freeze([0x53, 0x55, 0x42, 0x44]);
@@ -218,11 +219,15 @@ export async function loadSubDailyDay(day, options = {}) {
       }
       throw new Error(`sub-daily radar: HTTP ${response.status} for ${url.href}`);
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const stream = new Blob([bytes]).stream().pipeThrough(
-      new DecompressionStream('gzip'),
+    // The shared inflate helper, and not a bare `DecompressionStream`. A server
+    // that answers a `.gz` with `Content-Encoding: gzip` has ALREADY
+    // decompressed the body by the time the browser hands it over, and
+    // inflating that again fails - which reads as an absent shard rather than
+    // as a broken one. The helper looks at the magic first and inflates only
+    // when there is something to inflate.
+    payload = await inflateBytesUint8Array(
+      new Uint8Array(await response.arrayBuffer()),
     );
-    payload = new Uint8Array(await new Response(stream).arrayBuffer());
   } catch (error) {
     if (error?.message?.includes('404')) {
       const empty = { frameCount: 0, frames: [], times: subDailyFrameTimes(key) };

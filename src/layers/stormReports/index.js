@@ -1112,31 +1112,37 @@ export function createStormReportsLayer({
     _radarFine = false;
     const token = ++_comparisonToken;
     try {
+      // The sub-daily frames are loaded ALONGSIDE the coarse field rather
+      // than after it, and both are applied under one token check. Loading
+      // them after would let the window move between the two loads, and the
+      // frames would be thrown away with the coarse cells they belong to -
+      // which is exactly what happens when a person picks a storm day from a
+      // list that is already loaded: the first refresh is still in flight when
+      // the second starts.
+      const day = _options.fromDate;
+      const singleDay = day && day === _options.toDate;
+      let frames = null;
+      let framesFailed = false;
       const cells = await loadRadarWindow(_request?.signal);
+      if (singleDay) {
+        try {
+          frames = await radarSubDailyDay(day, _request?.signal);
+        } catch (error) {
+          if (error?.name === 'AbortError') return;
+          // A day with no sub-daily shard is an absence, not a failure: the
+          // timeline simply is not offered for it.
+          framesFailed = true;
+        }
+      }
       // The window can move while radar is in flight; a stale swath or split
       // for a day nobody is looking at is worse than nothing at all.
       if (token !== _comparisonToken) return;
       _radarWindowCells = cells;
-      // The sub-daily frames, when the window is a single day. They are a
-      // SIBLING of the fine field, not a replacement: the day's maximum stays
-      // the summary and the frames are the detail underneath it.
-      try {
-        const frames =
-          _options.fromDate === _options.toDate
-            ? await radarSubDailyDay(_options.fromDate, _request?.signal)
-            : null;
-        if (token !== _comparisonToken) return;
-        _subDailyFrames = frames;
-        // A frame that no longer exists must not survive the day changing
-        // under it.
-        if (_radarFrame !== null && (!frames || _radarFrame >= frames.length)) {
-          _radarFrame = null;
-        }
-      } catch (error) {
-        if (error?.name === 'AbortError') return;
-        // A day with no sub-daily shard is an absence, not a failure: the
-        // timeline simply is not offered for it.
-        _subDailyFrames = null;
+      _subDailyFrames = framesFailed ? null : frames;
+      // A frame that no longer exists must not survive the day changing
+      // under it.
+      if (_radarFrame !== null && (!_subDailyFrames || _radarFrame >= _subDailyFrames.length)) {
+        _radarFrame = null;
       }
       // Banded whenever EITHER swath is on, not only for RADAR. Gating this on
       // the radar chip made PROSPECT depend on a different toggle being
@@ -1160,6 +1166,11 @@ export function createStormReportsLayer({
     }
     render();
     publish();
+    // The panel CACHES each row's controls and only re-reads them when the
+    // layer says so. The sub-daily frames arrived with this load, so the row's
+    // chips have changed - the timeline chips exist now - and without this
+    // the panel keeps drawing the controls it read before the frames landed.
+    notifyRowControls();
   }
 
   /**
