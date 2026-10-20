@@ -289,6 +289,23 @@ button.secondary {
   text-align: right;
 }
 
+/*
+ * The row height is PINNED, because the table is a window onto the rows
+ * rather than a copy of them, and the window is computed from the scroll
+ * position. A row that is one pixel taller than the arithmetic thinks puts
+ * the last visible row under the sticky header.
+ */
+.desk-table tbody tr {
+  height: 30px;
+}
+
+/* A row of nothing, standing in for the rows it replaces. */
+.desk-table tbody tr.desk-spacer td {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .desk-table tbody tr:nth-child(even) {
   background: rgba(255, 255, 255, 0.015);
 }

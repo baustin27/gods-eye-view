@@ -514,13 +514,43 @@ const OPTION_GROUPS = Object.freeze({
       'sort',
       'o',
       'score',
-      ['score', 'units', 'hail', 'loss', 'pop'],
+      // EVERY sort key a column header offers, so every header round-trips
+      // through a link. The city view's own default sort is 'severe', which
+      // was not in this list - so it encoded as the literal string
+      // "undefined" and every city link read back sorted by something else.
+      // 'loss' was here too and matched no column at all; the column is
+      // 'bld', and 'l' stays its code so old links keep their meaning.
+      [
+        'score',
+        'units',
+        'hail',
+        'bld',
+        'pop',
+        'name',
+        'st',
+        'severe',
+        'severe15',
+        'big',
+        'max',
+        'maxHail',
+        'band',
+        'umoe',
+      ],
       {
         score: 's',
         units: 'u',
         hail: 'h',
-        loss: 'l',
+        bld: 'l',
         pop: 'p',
+        name: 'n',
+        st: 't',
+        severe: '1',
+        severe15: '2',
+        big: '3',
+        max: '4',
+        maxHail: '5',
+        band: 'b',
+        umoe: 'e',
       },
     ),
     enumOption('dir', 'd', 'desc', ['asc', 'desc'], { asc: 'a', desc: 'd' }),
@@ -1135,8 +1165,20 @@ export function encodeOwnerOptions(ownerId, ownerToken, options) {
     // current default — those are the same thing for every option whose
     // default never moved, and deliberately different for one whose did.
     if (options?.[spec.key] === absentTokenValue(spec)) continue;
+    // NEVER encode an unknown value as `undefined`.
+    //
+    // The spec's encoder is called WITHOUT normalising the value first, so a
+    // key an enum does not know became the literal string "undefined" in the
+    // link - and the link then decoded to the default, silently. That is how
+    // the city view's own default sort vanished from every link it produced.
+    // An unknown value falls back to the spec's default, which is a visible
+    // wrong answer rather than an invisible one.
+    const encodedValue = spec.encode(options[spec.key]);
     encoded.push(
-      `${ownerToken}.${spec.token}.${spec.encode(options[spec.key])}`,
+      `${ownerToken}.${spec.token}.` +
+        (encodedValue === undefined || encodedValue === null
+          ? spec.encode(spec.defaultValue)
+          : encodedValue),
     );
   }
   return encoded;

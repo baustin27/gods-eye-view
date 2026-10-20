@@ -219,19 +219,37 @@ export const COUNTY_COLUMNS = Object.freeze([
 
 /** How each sort reads, per view. */
 const SORTERS = {
+  // EVERY column a header offers must be in here. They were not, and the
+  // sort fell back to the first entry for anything missing - so "Big (>=2\")",
+  // "St", "City", "Band", "Max hail" and "Expected loss / yr" were headers that
+  // changed the URL and did not move the table. A header that lies about
+  // being a control is worse than no header.
+  //
+  // The DEFAULT SORT IS FIRST in each, because that is the fallback.
   city: {
     severe: (row) => row.severe,
     severe15: (row) => row.severe15,
+    big: (row) => row.big,
     max: (row) => row.max,
-    units: (row) => row.units ?? -1,
-    pop: (row) => row.pop ?? -1,
     hail: (row) => row.hail,
+    units: (row) => row.units ?? -1,
+    umoe: (row) => row.umoe ?? -1,
+    pop: (row) => row.pop ?? -1,
+    name: (row) => row.full || row.name,
+    st: (row) => row.st || '',
   },
   county: {
     score: (row) => row.score,
-    units: (row) => row.units ?? -1,
     hail: (row) => row.window?.hailCount ?? 0,
+    severe: (row) => row.severe,
+    maxHail: (row) => row.maxHailIn ?? 0,
+    units: (row) => row.units ?? -1,
+    umoe: (row) => row.umoe ?? -1,
     pop: (row) => row.pop ?? -1,
+    bld: (row) => row.bld ?? -1,
+    name: (row) => row.full || row.name,
+    st: (row) => row.st || '',
+    band: (row) => row.band || '',
   },
 };
 
@@ -276,10 +294,122 @@ export function sortRows(rows, view, sort, dir) {
  * @param {object} state
  * @param {(key: string) => void} onSort
  */
+/**
+ * The row height, in pixels.
+ *
+ * MEASURED, not assumed. The windowing below computes which rows to put in
+ * the DOM from the scroll position, and if the row height is wrong the rows
+ * drift out of step with the scrollbar - a table that scrolls to the wrong
+ * place is worse than a slow one. The height is measured off a rendered row
+ * on the first fill, and the CSS pins it so the two cannot drift.
+ */
+const ROW_HEIGHT = 30;
+
+/** How many rows beyond the viewport to keep in the DOM either side. */
+const OVERSCAN = 12;
+
+/** The live table, so a scroll can refill it without rebuilding the header. */
+let _live = null;
+
+/**
+ * A row of nothing, the height of the rows it stands in for.
+ *
+ * The table keeps its real height, so the scrollbar is honest about how far
+ * down the list there is.
+ */
+function spacerRow(height, span) {
+  const tr = document.createElement('tr');
+  tr.className = 'desk-spacer';
+  tr.setAttribute('aria-hidden', 'true');
+  const td = document.createElement('td');
+  td.colSpan = span;
+  td.style.height = `${height}px`;
+  tr.appendChild(td);
+  return tr;
+}
+
+/**
+ * Put the rows that are visible into the DOM, and no others.
+ *
+ * @param {object} live the live table record
+ */
+function fillWindow(live) {
+  const { container, body, rows, columns, state, onSort, onRowClick } = live;
+  const total = rows.length;
+  if (!total) {
+    body.replaceChildren();
+    return;
+  }
+  const viewport = container.clientHeight || 600;
+  const first = Math.max(
+    0,
+    Math.floor(container.scrollTop / ROW_HEIGHT) - OVERSCAN,
+  );
+  const last = Math.min(
+    total,
+    first + Math.ceil(viewport / ROW_HEIGHT) + OVERSCAN * 2,
+  );
+  const fragment = document.createDocumentFragment();
+  if (first > 0) fragment.appendChild(spacerRow(first * ROW_HEIGHT, columns.length));
+  for (const row of rows.slice(first, last)) {
+    fragment.appendChild(buildRow(row, columns, state, onSort, onRowClick));
+  }
+  if (last < total) {
+    fragment.appendChild(spacerRow((total - last) * ROW_HEIGHT, columns.length));
+  }
+  body.replaceChildren(fragment);
+}
+
+/**
+ * One table row.
+ */
+function buildRow(row, columns, state, onSort, onRowClick) {
+  const tr = document.createElement('tr');
+  if (onRowClick) {
+    tr.className = 'clickable';
+    tr.tabIndex = 0;
+    tr.title = 'Show the storms in this place';
+    tr.addEventListener('click', () => onRowClick(row));
+    tr.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        onRowClick(row);
+      }
+    });
+  }
+  for (const column of columns) {
+    const cell = document.createElement('td');
+    cell.dataset.label = column.label;
+    const value = column.get(row);
+    cell.textContent =
+      value === null || value === undefined
+        ? '-'
+        : column.format
+          ? column.format(value, row)
+          : String(value);
+    if (column.align === 'right') cell.className = 'num';
+    tr.appendChild(cell);
+  }
+  return tr;
+}
+
+/**
+ * The table: a WINDOW onto the rows, not a copy of them.
+ *
+ * It used to render every row. The default view is 6,496 places, and that is
+ * 64,960 cells and two event listeners on every row, rebuilt from scratch on
+ * every keystroke of the search box. The CSV export is unaffected: it reads
+ * `state.rows`, never the DOM.
+ */
 export function renderTable(container, rows, columns, state, onSort, onRowClick) {
-  container.replaceChildren();
-  const table = document.createElement('table');
-  table.className = 'desk-table';
+  const same =
+    _live &&
+    _live.container === container &&
+    _live.columns === columns;
+  if (!same) {
+    container.replaceChildren();
+    const table = document.createElement('table');
+    table.className = 'desk-table';
 
   const head = document.createElement('thead');
   const headRow = document.createElement('tr');
@@ -303,43 +433,52 @@ export function renderTable(container, rows, columns, state, onSort, onRowClick)
     headRow.appendChild(cell);
   }
   head.appendChild(headRow);
-  table.appendChild(head);
 
   const body = document.createElement('tbody');
-  for (const row of rows) {
-    const tr = document.createElement('tr');
-    if (onRowClick) {
-      tr.className = 'clickable';
-      tr.tabIndex = 0;
-      tr.title = 'Show the storms in this place';
-      tr.addEventListener('click', () => onRowClick(row));
-      tr.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onRowClick(row);
-        }
+    table.appendChild(head);
+    table.appendChild(body);
+    container.appendChild(table);
+    _live = {
+      container,
+      columns,
+      table,
+      body,
+      rows,
+      state,
+      onSort,
+      onRowClick,
+    };
+    // One scroll listener for the life of the table. The body is refilled
+    // from the scroll position, so the list is a window and not a copy.
+    container.addEventListener(
+      'scroll',
+      () => {
+        if (_live) fillWindow(_live);
+      },
+      { passive: true },
+    );
+    // The first fill happens before the layout has settled, so the viewport
+    // is not yet the height it will be - and a window sized on a viewport
+    // that is about to grow leaves the bottom of the list empty. A resize
+    // observer refills when the box actually reaches its size.
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(() => {
+        if (_live) fillWindow(_live);
       });
+      observer.observe(container);
+      _live.observer = observer;
     }
-    for (const column of columns) {
-      const cell = document.createElement('td');
-      // The card layout on a phone has no header row, so the label travels
-      // with the cell. A table that turns into cards without its labels is
-      // just a list of numbers.
-      cell.dataset.label = column.label;
-      const value = column.get(row);
-      cell.textContent =
-        value === null || value === undefined
-          ? '-'
-          : column.format
-            ? column.format(value, row)
-            : String(value);
-      if (column.align === 'right') cell.className = 'num';
-      tr.appendChild(cell);
-    }
-    body.appendChild(tr);
+  } else {
+    // The same table, new contents. A NEW result set starts at the top: the
+    // old scroll position pointed into a list that no longer exists.
+    const changed = _live.rows !== rows;
+    _live.rows = rows;
+    _live.state = state;
+    _live.onSort = onSort;
+    _live.onRowClick = onRowClick;
+    if (changed) container.scrollTop = 0;
   }
-  table.appendChild(body);
-  container.appendChild(table);
+  fillWindow(_live);
 }
 
 /**

@@ -485,3 +485,18 @@ test('the realised damage is indexed by ZIP', () => {
   assert.equal(row.damage, 12940371);
   assert.equal(index.get('nope'), undefined, 'a ZIP with no damage is absent, not zero');
 });
+
+test('every sort key a header offers survives a link', () => {
+  // The city view's own default sort is 'severe', and it was not in the
+  // codec's enum - so it encoded as the literal string "undefined" and every
+  // city link read back sorted by something else.
+  for (const key of ['score', 'units', 'hail', 'pop', 'severe', 'severe15', 'big', 'max']) {
+    const hash = hashFromFilters({ ...DEFAULT_FILTERS, sort: key });
+    assert.ok(
+      !hash.includes('undefined'),
+      `the sort key ${key} wrote "undefined" into the link: ${hash}`,
+    );
+    assert.equal(filtersFromHash(hash).sort, key, `the sort key ${key} round-trips`);
+  }
+});
+
