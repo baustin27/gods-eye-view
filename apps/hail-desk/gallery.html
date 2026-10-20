@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hail Desk — swath gallery</title>
+    <style>
+      /*
+       * The gallery is a WORKING PAGE, not a mockup. Every storm in it is
+       * rendered from the committed 1 km field with the repo's own geometry,
+       * so what it shows is what the product would show.
+       */
+      :root {
+        --bg: #0a0e13;
+        --panel: #10161d;
+        --line: #223040;
+        --ink: #dce6f0;
+        --ink-dim: #8ea3b8;
+        --accent: #3ad6c8;
+        --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.5 var(--mono);
+        padding: 20px 24px 60px;
+      }
+      h1 { font-size: 15px; letter-spacing: 0.22em; font-weight: 600; margin: 0 0 4px; }
+      p.lede { color: var(--ink-dim); font-size: 12px; margin: 0 0 22px; max-width: 80ch; }
+      h2 { font-size: 13px; letter-spacing: 0.16em; margin: 34px 0 10px; color: var(--ink); }
+      .storm { margin-bottom: 34px; }
+      .storm h3 { font-size: 12px; color: var(--accent); margin: 0 0 8px; font-weight: 600; }
+      .row { display: flex; gap: 14px; flex-wrap: wrap; }
+      figure { margin: 0; }
+      figure canvas, figure svg { display: block; border: 1px solid var(--line); border-radius: 6px; background: #05080b; }
+      figcaption { color: var(--ink-dim); font-size: 11px; margin-top: 6px; letter-spacing: 0.06em; }
+      .ramp { display: flex; gap: 0; margin: 10px 0 4px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+      .ramp div { padding: 8px 14px; font-size: 11px; color: #0a0e13; font-weight: 700; }
+      .note { color: var(--ink-dim); font-size: 12px; max-width: 90ch; margin: 6px 0 0; }
+      .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 5px; }
+    </style>
+  </head>
+  <body>
+    <h1>HAIL DESK — SWATH GALLERY</h1>
+    <p class="lede">
+      Every storm here is rendered from the committed 1 km MRMS MESH field with
+      the repository's own geometry, so this is what the product draws — not a
+      mockup. The point is to choose a treatment by looking at it.
+    </p>
+    <div id="out"><p class="lede">Loading the storm index…</p></div>
+
+    <script type="module">
+      // The shared core, by relative path — the desk's own pattern
+      // (apps/hail-desk/src/data.js imports across the tree the same way).
+      // In dev, Vite serves it under /@fs/ and the shards with it.
+      import { loadFineRadarDay, loadStormIndex } from '../../src/data/stormReports.js';
+      import { contourRings } from '../../src/layers/stormReports/model.js';
+
+      const GRID = 0.01;
+
+      /** The ramp, in the order the layer declares it. */
+      const RAMP = [
+        { min: 25.4, color: '#6d28d9', label: '1-1.5"', outline: '#9333ea' },
+        { min: 38.1, color: '#9333ea', label: '1.5-2"', outline: '#c026d3' },
+        { min: 50.8, color: '#c026d3', label: '2-2.75"', outline: '#e879f9' },
+        { min: 69.85, color: '#e879f9', label: '2.75-3.5"', outline: '#fdf4ff' },
+        { min: 88.9, color: '#fdf4ff', label: '3.5"+', outline: '#ffffff' },
+      ];
+
+      const out = document.getElementById('out');
+
+      /** The band a reading falls in. */
+      function bandFor(mm) {
+        let chosen = null;
+        for (const step of RAMP) if (mm >= step.min) chosen = step;
+        return chosen;
+      }
+
+      /**
+       * The fine cells, in the shape `contourRings` reads.
+       *
+       * It reads `v` or `peakMm` — NEVER `maxMm`, which is what the loader
+       * hands back. Left as `maxMm` it contours nothing at all and the
+       * gallery is blank, which looks like a data problem.
+       */
+      function peaked(cells) {
+        return cells.map((cell) => ({ i: cell.i, j: cell.j, v: cell.maxMm }));
+      }
+
+      /** The bounds of the cells, trimmed so one stray cell cannot shrink the storm to a speck. */
+      function bounds(cells) {
+        const lats = cells.map((c) => c.i * GRID).sort((a, b) => a - b);
+        const lons = cells.map((c) => c.j * GRID).sort((a, b) => a - b);
+        const q = (a, p) => a[Math.floor(a.length * p)];
+        return {
+          south: q(lats, 0.02),
+          north: q(lats, 0.98),
+          west: q(lons, 0.02),
+          east: q(lons, 0.98),
+        };
+      }
+
+      /** An SVG of the storm under one treatment. */
+      function renderSvg(cells, treatment, width, height) {
+        const box = bounds(cells);
+        const sx = width / Math.max(1e-6, box.east - box.west);
+        const sy = height / Math.max(1e-6, box.north - box.south);
+        const project = (lat, lon) => [
+          (lon - box.west) * sx,
+          (box.north - lat) * sy,
+        ];
+        let body = '';
+        if (treatment === 'cells') {
+          // A: every cell a rectangle. What the product used to do.
+          for (const cell of cells) {
+            const band = bandFor(cell.maxMm);
+            if (!band) continue;
+            const [x, y] = project(cell.i * GRID + GRID / 2, cell.j * GRID + GRID / 2);
+            body += `<rect x="${(x - (GRID * sx) / 2).toFixed(1)}" y="${(y - (GRID * sy) / 2).toFixed(1)}" width="${(GRID * sx + 0.7).toFixed(1)}" height="${(GRID * sy + 0.7).toFixed(1)}" fill="${band.color}" fill-opacity="0.8"/>`;
+          }
+        } else {
+          // B and C: the contour filled, the hottest band on top, each band
+          // outlined in the next hotter colour.
+          const field = peaked(cells);
+          for (const band of [...RAMP].reverse()) {
+            const rings = contourRings(field, band.min, GRID);
+            const d = rings
+              .map((ring) => {
+                const outer = ring.outer
+                  .map((p, i) => {
+                    const [x, y] = project(p.lat, p.lon);
+                    return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+                  })
+                  .join('') + 'Z';
+                const holes = (ring.holes || [])
+                  .map((hole) =>
+                    hole
+                      .map((p, i) => {
+                        const [x, y] = project(p.lat, p.lon);
+                        return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+                      })
+                      .join('') + 'Z',
+                  )
+                  .join('');
+                return outer + holes;
+              })
+              .join('');
+            body += `<path d="${d}" fill="${band.color}" fill-opacity="0.85" fill-rule="evenodd"/>`;
+            if (treatment === 'contour-edge') {
+              body += `<path d="${d}" fill="none" stroke="${band.outline}" stroke-width="1.4" fill-rule="evenodd"/>`;
+            }
+          }
+        }
+        return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#05080b"/>${body}</svg>`;
+      }
+
+      /**
+       * The biggest storms in the record, by RADAR COVERAGE.
+       *
+       * The storm index counts REPORTS, and a storm with many reports is not
+       * always a storm with a big footprint - a town full of spotters reports
+       * a small cell. So the candidates are ranked by reports, their shards
+       * are loaded, and the ranking that decides what is shown is the number
+       * of 1 km cells over the floor.
+       */
+      async function biggestStorms(count) {
+        const index = await loadStormIndex();
+        const candidates = Object.entries(index.days || {})
+          .filter(([date]) => date >= '2024-01-01')
+          .map(([date, day]) => ({ date, reports: day.hail || 0 }))
+          .sort((a, b) => b.reports - a.reports)
+          .slice(0, 40);
+        const measured = [];
+        for (const candidate of candidates) {
+          const { cells } = await loadFineRadarDay(candidate.date);
+          if (cells && cells.length) {
+            measured.push({ date: candidate.date, cells: cells.length });
+          }
+        }
+        return measured.sort((a, b) => b.cells - a.cells).slice(0, count);
+      }
+
+      async function main() {
+        out.innerHTML = '<p class="lede">Loading the storm index…</p>';
+        const storms = await biggestStorms(5);
+        out.innerHTML = '';
+        const ramp = document.createElement('div');
+        ramp.className = 'ramp';
+        ramp.innerHTML = RAMP.slice()
+          .reverse()
+          .map(
+            (b) =>
+              `<div style="background:${b.color}">${b.label}</div>`,
+          )
+          .join('');
+        out.appendChild(ramp);
+        out.insertAdjacentHTML(
+          'beforeend',
+          '<p class="note">The ramp, hottest first. Each band is outlined in the ' +
+            'next hotter one. PROSPECT keeps the cold blue; the report pins keep ' +
+            'green, amber, orange and red.</p>',
+        );
+
+        for (const storm of storms) {
+          const { cells } = await loadFineRadarDay(storm.date);
+          if (!cells || !cells.length) continue;
+          const section = document.createElement('div');
+          section.className = 'storm';
+          section.insertAdjacentHTML(
+            'beforeend',
+            `<h3>${storm.date} — ${cells.length.toLocaleString()} cells over the floor</h3>`,
+          );
+          const row = document.createElement('div');
+          row.className = 'row';
+          for (const [treatment, label] of [
+            ['cells', 'A — every cell a rectangle (what it did)'],
+            ['contour', 'B — the contour filled'],
+            ['contour-edge', 'C — the contour filled, hot edge'],
+          ]) {
+            const figure = document.createElement('figure');
+            figure.innerHTML =
+              renderSvg(cells, treatment, 430, 330) +
+              `<figcaption>${label}</figcaption>`;
+            row.appendChild(figure);
+          }
+          section.appendChild(row);
+          out.appendChild(section);
+        }
+      }
+
+      main().catch((error) => {
+        out.innerHTML = `<p class="lede">The gallery failed: ${error.message}</p>`;
+        console.error(error);
+      });
+    </script>
+  </body>
+</html>
