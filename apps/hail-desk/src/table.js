@@ -509,6 +509,67 @@ export function summarise(rows, filters, view = 'city') {
 }
 
 /** The names of the worst few places, for the line under the table. */
+/**
+ * How many places the ranked list names.
+ *
+ * Twelve, because that is what the globe's county list keeps
+ * (`STORM_COUNTY_LIST_LIMIT`): enough to be a market, few enough to read.
+ */
+export const RANKED_LIST_LIMIT = 12;
+
+/**
+ * The ranked list: the places worth the afternoon.
+ *
+ * This is the desk's answer to "which towns should I drive to", and it is
+ * what a table of 6,496 rows cannot say. The shape is the globe's county
+ * list (`src/layers/hailwind/index.js:634-658`) exactly, because the two
+ * surfaces should say the same thing the same way:
+ *
+ *   - `lead` is a SHORT, fixed-width marker - the state - so the eye can
+ *     scan the column.
+ *   - `text` carries the value as a SHARE OF THE MAXIMUM, not as an
+ *     absolute. An absolute score is not comparable across windows: 4
+ *     severe reports in a week with no hail is a different thing from 4
+ *     severe reports in a week with hail everywhere, and the share says so.
+ *   - `ordinal` is the rank, and the rank is the point.
+ *
+ * @param {Array<object>} rows the filtered, sorted rows
+ * @param {object} [options]
+ * @param {string} [options.view] 'city' or 'county'
+ * @param {string|null} [options.currentId] the place the drill-down is on
+ * @returns {{ariaLabel: string, items: Array<object>}}
+ */
+export function rankedList(rows, { view = 'city', currentId = null } = {}) {
+  const top = (rows || []).slice(0, RANKED_LIST_LIMIT);
+  const measure = view === 'city' ? (r) => r.severe : (r) => r.score;
+  const max = top.reduce((m, r) => Math.max(m, Number(measure(r)) || 0), 0);
+  return {
+    ariaLabel:
+      view === 'city'
+        ? 'Places by hail reports of an inch or more'
+        : 'Counties by hail and wind damage likelihood',
+    items: top.map((row, index) => {
+      const id = row.id ?? row.fips;
+      const share = max > 0 ? Math.round(((Number(measure(row)) || 0) / max) * 100) : 0;
+      const worst =
+        view === 'city'
+          ? row.max
+          : row.maxHailIn;
+      return {
+        id: `${view}-rank:${id}`,
+        ordinal: index + 1,
+        lead: row.st || '',
+        text:
+          `${row.full || row.name} · ${share}%` +
+          (worst ? ` · max ${Number(worst).toFixed(2)}"` : ''),
+        active: false,
+        current: id === currentId,
+        params: { id },
+      };
+    }),
+  };
+}
+
 export function topNames(rows, limit = 4) {
   return rows
     .slice(0, limit)

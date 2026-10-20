@@ -201,6 +201,72 @@ button.secondary {
 
 /* ---- summary ---- */
 
+/*
+ * The ranked list: the places worth the afternoon.
+ *
+ * The same vocabulary the globe's county list uses, so the two surfaces say
+ * the same thing the same way. The lead is a short fixed-width marker so the
+ * eye can scan the column; the text carries the value as a share of the
+ * maximum, because an absolute score is not comparable across windows.
+ */
+.data-row-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 2px 8px;
+}
+
+.data-row-list li {
+  margin: 0;
+}
+
+.data-row-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: 13px/1.3 var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.data-row-list-item:hover {
+  border-color: var(--accent-dim);
+  background: var(--panel-2);
+}
+
+.data-row-list-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.data-row-list-lead {
+  flex: 0 0 auto;
+  min-width: 2.4em;
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.data-row-list-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-row-list-item[aria-current='step'] {
+  border-color: var(--accent);
+}
+
 .summary {
   margin: 14px 0 2px;
   font: 13px/1.4 var(--mono);

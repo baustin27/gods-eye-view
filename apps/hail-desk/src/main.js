@@ -31,10 +31,10 @@ import { DEFAULT_FILTERS, filtersFromHash, hashFromFilters } from './state.js';
 import {
   CITY_COLUMNS,
   COUNTY_COLUMNS,
+  rankedList,
   renderTable,
   sortRows,
   summarise,
-  topNames,
 } from './table.js';
 import { csvFilename, downloadCsv, toCsv } from './csv.js';
 
@@ -98,7 +98,7 @@ const el = {
   minHail: document.getElementById('minHail'),
   q: document.getElementById('q'),
   summary: document.getElementById('summary'),
-  worst: document.getElementById('worst'),
+  ranked: document.getElementById('ranked'),
   tableWrap: document.getElementById('tableWrap'),
   loading: document.getElementById('loading'),
   source: document.getElementById('source'),
@@ -127,8 +127,7 @@ function render() {
     state.view === 'city' ? onCityClick : null,
   );
   el.summary.textContent = summarise(state.rows, state.filters, state.view);
-  const names = topNames(state.rows);
-  el.worst.textContent = names ? `Worst first: ${names}` : '';
+  renderRankedList();
   el.export.disabled = state.rows.length === 0;
   el.views.querySelectorAll('button').forEach((button) => {
     button.classList.toggle('active', button.dataset.view === state.view);
@@ -140,6 +139,43 @@ function render() {
 }
 
 /** Write the filters into the URL, then repaint. */
+/**
+ * The ranked list: the places worth the afternoon.
+ *
+ * A table of 6,496 rows cannot say which towns to drive to. This can, and it
+ * is the same shape the globe's county list uses - a short fixed-width lead,
+ * the value as a share of the maximum, and the rank.
+ */
+function renderRankedList() {
+  const list = rankedList(state.rows, { view: state.view });
+  el.ranked.replaceChildren();
+  for (const item of list.items) {
+    const li = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'data-row-list-item';
+    button.dataset.listItemId = item.id;
+    button.setAttribute('aria-pressed', String(Boolean(item.active)));
+    if (item.current) button.setAttribute('aria-current', 'step');
+    button.title = item.text;
+    const lead = document.createElement('span');
+    lead.className = 'data-row-list-lead';
+    lead.textContent = item.lead;
+    const text = document.createElement('span');
+    text.className = 'data-row-list-text';
+    text.textContent = item.text;
+    button.append(lead, text);
+    button.addEventListener('click', () => {
+      const row = state.rows.find(
+        (candidate) => (candidate.id ?? candidate.fips) === item.params.id,
+      );
+      if (row && state.view === 'city') onCityClick(row);
+    });
+    li.appendChild(button);
+    el.ranked.appendChild(li);
+  }
+}
+
 function applyFilters(next) {
   state.filters = { ...state.filters, ...next };
   const hash = hashFromFilters(state.filters);
