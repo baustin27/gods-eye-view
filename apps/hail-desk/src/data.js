@@ -86,18 +86,33 @@ export function indexCities(payload) {
 }
 
 /**
- * The storms that hit a place, worst first.
+ * The storms that hit a place, worst first, inside the selected window.
  *
  * "Worst" is the number of severe reports, then the largest stone - so a day
  * with one 3-inch stone in it is not ranked below a day with eight 1-inch
  * stones, and a day with a single trace is not in the list at all.
  *
+ * The WINDOW is applied here and not by the caller, because the list is a
+ * different grain from the table: a place's storm days are its own rows, and a
+ * table filtered to 2024-2026 that then opened a list showing 1987 is a filter
+ * that does not filter.
+ *
  * @param {object} index
  * @param {string} geoid
+ * @param {object} [filters] `{fromYear, toYear}`
  * @returns {Array<object>}
  */
-export function cityStorms(index, geoid) {
-  return (index.byDay.get(String(geoid)) || []).filter((row) => row.n > 0);
+export function cityStorms(index, geoid, filters = {}) {
+  const { fromYear, toYear } = filters;
+  return (index.byDay.get(String(geoid)) || []).filter((row) => {
+    if (row.n <= 0) return false;
+    // The YEAR, not the date: '2025-01-18' > '2025' as strings, which
+    // silently drops the last year of every window.
+    const year = row.d.slice(0, 4);
+    if (fromYear && year < String(fromYear)) return false;
+    if (toYear && year > String(toYear)) return false;
+    return true;
+  });
 }
 
 /**
@@ -160,6 +175,85 @@ export function queryCities(index, filters) {
     });
   }
   return out;
+}
+
+/**
+ * The swaths: how many houses were under the hail, per place per day.
+ *
+ * Indexed by `place:day` because that is the question the drill-down asks:
+ * "this storm hit this town - how many roofs were under it".
+ *
+ * The rows only exist from 2024-01-01, which is where the 1 km radar field
+ * starts. A storm before that has no number here, and the desk says so rather
+ * than showing a zero.
+ *
+ * @param {object} payload the swaths artifact
+ * @returns {{byPlaceDay: Map<string, {tracts: number, houses: number, maxMm: number}>,
+ *   firstDay: string}}
+ */
+export function indexSwaths(payload) {
+  const byPlaceDay = new Map();
+  const byPlace = new Map();
+  let firstDay = null;
+  for (const row of payload.rows || []) {
+    const key = `${row.k}:${row.d}`;
+    let entry = byPlaceDay.get(key);
+    if (!entry) {
+      entry = { tracts: 0, houses: 0, maxMm: 0 };
+      byPlaceDay.set(key, entry);
+      if (!byPlace.has(row.k)) byPlace.set(row.k, new Map());
+      byPlace.get(row.k).set(row.d, entry);
+    }
+    entry.tracts += 1;
+    entry.houses += row.u || 0;
+    if (row.m > entry.maxMm) entry.maxMm = row.m;
+    if (firstDay === null || row.d < firstDay) firstDay = row.d;
+  }
+  return { byPlaceDay, byPlace, firstDay };
+}
+
+/**
+ * The days the RADAR reached a place, with the houses under it.
+ *
+ * This is the other half of the picture and it is the half that matters. A
+ * report says somebody measured a stone. The radar says hail fell. Where the
+ * two DISAGREE - the radar reached a town and nobody called it in - is the
+ * canvassing thesis, and it is invisible in a table of reports.
+ *
+ * @param {object} index
+ * @param {string} placeGeoid
+ * @param {object} [filters] `{fromYear, toYear}`
+ * @returns {Array<{d: string, tracts: number, houses: number, maxMm: number}>}
+ */
+export function radarDays(index, placeGeoid, filters = {}) {
+  const { fromYear, toYear } = filters;
+  const days = index.byPlace.get(String(placeGeoid));
+  if (!days) return [];
+  const out = [];
+  for (const [day, entry] of days) {
+    // The YEAR, not the date. '2025-01-18' <= '2025' is FALSE as strings, so
+    // comparing the whole date against a bare year silently drops the last
+    // year of every window - and a window that quietly loses its final year
+    // looks exactly like a window that works.
+    const year = day.slice(0, 4);
+    if (fromYear && year < String(fromYear)) continue;
+    if (toYear && year > String(toYear)) continue;
+    out.push({ d: day, ...entry });
+  }
+  out.sort((a, b) => b.houses - a.houses || a.d.localeCompare(b.d));
+  return out;
+}
+
+/**
+ * The houses under a storm in a place, or null when the radar does not reach
+ * back that far.
+ * @param {object} index
+ * @param {string} placeGeoid
+ * @param {string} day
+ * @returns {{tracts: number, houses: number, maxMm: number}|null}
+ */
+export function swathFor(index, placeGeoid, day) {
+  return index.byPlaceDay.get(`${placeGeoid}:${day}`) || null;
 }
 
 /**

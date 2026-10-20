@@ -4,8 +4,10 @@ import test from 'node:test';
 import {
   cityStorms,
   indexCities,
+  indexSwaths,
   queryCities,
   queryCounties,
+  radarDays,
   yearBounds,
 } from './data.js';
 import { csvFilename, toCsv } from './csv.js';
@@ -375,4 +377,57 @@ test('the storms in a place are worst first, and a trace is not a storm', () => 
 test('a place with no storms has none', () => {
   const index = indexCities(cityPayload);
   assert.deepEqual(cityStorms(index, 'nowhere-at-all'), []);
+});
+
+
+/* ======================================================================
+ * The swaths: how many houses were under the hail.
+ *
+ * This is the number the business acts on, and the two halves of it come
+ * from different places - the radar says WHERE, the Census says HOW MANY -
+ * so the join is where the bugs live.
+ * ====================================================================== */
+
+const swathPayload = {
+  meta: { thresholdMm: 25.4 },
+  rows: [
+    { g: '11001020100', k: '1100100', d: '2024-07-17', m: 42.5, c: 3, u: 4000 },
+    { g: '11001020200', k: '1100100', d: '2024-07-17', m: 38, c: 2, u: 3000 },
+    { g: '11001020300', k: '1100100', d: '2024-07-17', m: 30, c: 1, u: 2000 },
+    { g: '11001020400', k: '1100100', d: '2025-01-18', m: 28, c: 1, u: 500 },
+  ],
+};
+
+test('the swaths roll the tracts up into houses for a place', () => {
+  const index = indexSwaths(swathPayload);
+  const day = index.byPlaceDay.get('1100100:2024-07-17');
+  assert.ok(day, 'the day is there');
+  assert.equal(day.tracts, 3, 'three tracts were reached');
+  assert.equal(day.houses, 9000, 'and they hold 9,000 houses');
+  assert.equal(day.maxMm, 42.5, 'the largest reading among them');
+});
+
+test('a place with no radar has no swaths', () => {
+  const index = indexSwaths(swathPayload);
+  assert.equal(radarDays(index, 'nowhere', { fromYear: 1955, toYear: 2025 }).length, 0);
+});
+
+test('the radar days respect the window', () => {
+  const index = indexSwaths(swathPayload);
+  const all = radarDays(index, '1100100', { fromYear: 1955, toYear: 2025 });
+  assert.equal(all.length, 2, 'both days');
+  const narrow = radarDays(index, '1100100', { fromYear: 2025, toYear: 2025 });
+  assert.equal(narrow.length, 1, 'only the 2025 day');
+  assert.equal(narrow[0].d, '2025-01-18');
+});
+
+test('the storm list respects the window too', () => {
+  // A table filtered to 2024-2026 that then opened a list showing 1987 is a
+  // filter that does not filter.
+  const index = indexCities(cityPayload);
+  const all = cityStorms(index, '0820000', { fromYear: 1955, toYear: 2025 });
+  assert.equal(all.length, 3, 'every storm day');
+  const narrow = cityStorms(index, '0820000', { fromYear: 2020, toYear: 2021 });
+  assert.equal(narrow.length, 3, 'only the days inside the window');
+  for (const storm of narrow) assert.ok(storm.d >= '2020' && storm.d <= '2021');
 });

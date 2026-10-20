@@ -18,9 +18,12 @@ import {
   cityStorms,
   cityYearBounds,
   indexCities,
+  indexSwaths,
   loadGzippedJson,
   queryCities,
   queryCounties,
+  radarDays,
+  swathFor,
   yearBounds,
 } from './data.js';
 import { DEFAULT_FILTERS, filtersFromHash, hashFromFilters } from './state.js';
@@ -36,6 +39,7 @@ import { csvFilename, downloadCsv, toCsv } from './csv.js';
 
 const CITY_DATA_URL = `${import.meta.env.BASE_URL}data/cities.json.gz`;
 const COUNTY_DATA_URL = `${import.meta.env.BASE_URL}data/counties.json.gz`;
+const SWATH_DATA_URL = `${import.meta.env.BASE_URL}data/swaths.json.gz`;
 
 /** The state of the app. Filters live in the URL, so the URL is the state. */
 const state = {
@@ -44,6 +48,7 @@ const state = {
   rows: [],
   cityIndex: null,
   countyRows: [],
+  swathIndex: null,
 };
 
 const CSV_COLUMNS = {
@@ -174,7 +179,24 @@ function onSort(key) {
  * the list a canvasser actually works from.
  */
 function onCityClick(row) {
-  const storms = cityStorms(state.cityIndex, row.id);
+  const reported = cityStorms(state.cityIndex, row.id, state.filters);
+  const radar = radarDays(state.swathIndex, row.id, state.filters);
+  // The union of the two. A day the radar reached but nobody reported is not
+  // missing - it is the LEAD: the hail fell, and the only people who know are
+  // the people who did not call it in.
+  const byDay = new Map(reported.map((storm) => [storm.d, { ...storm, reported: true }]));
+  for (const day of radar) {
+    const existing = byDay.get(day.d);
+    if (existing) existing.swath = day;
+    else byDay.set(day.d, { d: day.d, n: 0, n1: 0, n15: 0, n2: 0, max: 0, wind: 0, reported: false, swath: day });
+  }
+  const storms = [...byDay.values()].sort(
+    (a, b) =>
+      (b.swath?.houses ?? 0) - (a.swath?.houses ?? 0) ||
+      b.n1 - a.n1 ||
+      b.max - a.max ||
+      a.d.localeCompare(b.d),
+  );
   el.detail.replaceChildren();
   el.detail.hidden = false;
 
@@ -195,10 +217,26 @@ function onCityClick(row) {
   const summary = document.createElement('p');
   summary.className = 'detail-summary';
   const worst = storms[0];
+  const swathed = storms.filter((storm) => storm.swath);
+  const unreported = swathed.filter((storm) => !storm.reported);
+  const houses = swathed.reduce(
+    (total, storm) =>
+      total + (swathFor(state.swathIndex, row.id, storm.d)?.houses || 0),
+    0,
+  );
   summary.textContent = worst
     ? `${storms.length} ${storms.length === 1 ? 'day' : 'days'} with hail reported in this place. ` +
       `Worst: ${worst.d} with ${worst.n1} of an inch or more and a largest stone of ${worst.max.toFixed(2)}\". ` +
-      `${(row.units ?? 0).toLocaleString()} housing units in the place.`
+      `${(row.units ?? 0).toLocaleString()} housing units in the place. ` +
+      (swathed.length
+        ? `${houses.toLocaleString()} of them were under the radar on ` +
+          `${swathed.length} of these days` +
+          (unreported.length
+            ? `, and nobody called in ${unreported.length} of them - ` +
+              'that is the lead list.'
+            : '.')
+        : 'The 1 km radar field does not reach back far enough to say how ' +
+          'many of them were under the hail.')
     : 'No hail reported in this place inside the selected window.';
 
   const table = document.createElement('table');
@@ -212,6 +250,19 @@ function onCityClick(row) {
     ['≥2"', 'Reports of two inches or more.'],
     ['Max', 'The largest stone reported that day, in inches.'],
     ['Wind', 'Wind reports that day.'],
+    [
+      'Houses',
+      'Housing units in the tracts the RADAR reached in this place that ' +
+        'day. A tract the radar reached is a tract to work and every house ' +
+        'in it is a candidate: the radar is sound about where hail fell and ' +
+        'unsound about how big each stone was. Blank before 2024-01-01, ' +
+        'which is where the 1 km radar field starts.',
+    ],
+    [
+      'Lead',
+      'The radar reached this place and nobody called it in. A day with ' +
+        'houses under it and no reports is where the canvassing is.',
+    ],
   ]) {
     const cell = document.createElement('th');
     cell.scope = 'col';
@@ -224,6 +275,7 @@ function onCityClick(row) {
   const body = document.createElement('tbody');
   for (const storm of storms) {
     const tr = document.createElement('tr');
+    const swath = storm.swath;
     for (const value of [
       storm.d,
       storm.n1.toLocaleString(),
@@ -231,6 +283,8 @@ function onCityClick(row) {
       storm.n2.toLocaleString(),
       `${storm.max.toFixed(2)}"`,
       storm.wind.toLocaleString(),
+      swath ? swath.houses.toLocaleString() : '—',
+      swath && !storm.reported ? 'nobody called it in' : '',
     ]) {
       const cell = document.createElement('td');
       cell.textContent = String(value);
@@ -261,12 +315,14 @@ function fillStates(rows, key) {
 
 async function main() {
   try {
-    const [citiesPayload, countiesPayload] = await Promise.all([
+    const [citiesPayload, countiesPayload, swathPayload] = await Promise.all([
       loadGzippedJson(CITY_DATA_URL),
       loadGzippedJson(COUNTY_DATA_URL),
+      loadGzippedJson(SWATH_DATA_URL),
     ]);
     state.cityIndex = indexCities(citiesPayload);
     state.countyRows = countiesPayload.rows || [];
+    state.swathIndex = indexSwaths(swathPayload);
 
     const cityBounds = cityYearBounds(state.cityIndex);
     const countyBounds = yearBounds(state.countyRows);
