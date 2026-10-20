@@ -18,6 +18,7 @@ import {
   cityStorms,
   cityYearBounds,
   indexCities,
+  indexFema,
   indexSwaths,
   loadGzippedJson,
   queryCities,
@@ -40,6 +41,7 @@ import { csvFilename, downloadCsv, toCsv } from './csv.js';
 const CITY_DATA_URL = `${import.meta.env.BASE_URL}data/cities.json.gz`;
 const COUNTY_DATA_URL = `${import.meta.env.BASE_URL}data/counties.json.gz`;
 const SWATH_DATA_URL = `${import.meta.env.BASE_URL}data/swaths.json.gz`;
+const FEMA_DATA_URL = `${import.meta.env.BASE_URL}data/fema_damage.json.gz`;
 
 /** The state of the app. Filters live in the URL, so the URL is the state. */
 const state = {
@@ -49,6 +51,7 @@ const state = {
   cityIndex: null,
   countyRows: [],
   swathIndex: null,
+  femaIndex: null,
 };
 
 const CSV_COLUMNS = {
@@ -341,15 +344,86 @@ async function showStreets(state, county) {
       note.textContent = `Could not load the street list: ${payload.error || response.status}`;
       return;
     }
-    const zips = new Set(payload.streets.map((street) => street.zip));
+    // The realised damage, by ZIP, for the ZIPs in this county.
+    const byZip = new Map();
+    for (const street of payload.streets) {
+      let entry = byZip.get(street.zip);
+      if (!entry) {
+        // Optional, because the damage file is a separate download and the
+        // street list must still work when it is not there. A missing index
+        // is an absence, not a crash.
+        const fema = state.femaIndex?.get(String(street.zip));
+        entry = {
+          zip: street.zip,
+          segments: 0,
+          households: fema?.households ?? 0,
+          damage: fema?.damage ?? 0,
+          approved: fema?.approved ?? 0,
+        };
+        byZip.set(street.zip, entry);
+      }
+      entry.segments += 1;
+    }
+    const zips = byZip.size;
     note.textContent =
       `${payload.count.toLocaleString()} street segments across ` +
-      `${zips.size} ZIPs, ${payload.addresses.toLocaleString()} addresses in the ` +
+      `${zips} ZIPs, ${payload.addresses.toLocaleString()} addresses in the ` +
       `ranges. ` +
       'A range is the stretch of the street the Census edge covers, which can ' +
       'be more than one block, and the number is ADDRESSES in it - the count ' +
       'of HOUSES in a ZIP comes from the Census, and the two are never added ' +
       'together.';
+    // The damage table first: the street list is the navigation, and this is
+    // the reason to navigate. Sorted by damage, because a ZIP nobody applied
+    // for help in is a ZIP to drive past.
+    const damaged = [...byZip.values()].sort((a, b) => b.damage - a.damage);
+    const withDamage = damaged.filter((zip) => zip.households > 0);
+    if (withDamage.length) {
+      const zipTable = document.createElement('table');
+      zipTable.className = 'desk-table storm-table';
+      const zh = document.createElement('thead');
+      const zhr = document.createElement('tr');
+      for (const label of [
+        'ZIP',
+        'Households helped',
+        'Damage reported',
+        'Approved',
+        'Street segments',
+      ]) {
+        const th = document.createElement('th');
+        th.scope = 'col';
+        th.textContent = label;
+        zhr.appendChild(th);
+      }
+      zh.appendChild(zhr);
+      zipTable.appendChild(zh);
+      const zbody = document.createElement('tbody');
+      for (const zip of withDamage.slice(0, 60)) {
+        const tr = document.createElement('tr');
+        for (const value of [
+          zip.zip,
+          zip.households.toLocaleString(),
+          `$${zip.damage.toLocaleString()}`,
+          `$${zip.approved.toLocaleString()}`,
+          zip.segments.toLocaleString(),
+        ]) {
+          const td = document.createElement('td');
+          td.textContent = String(value);
+          tr.appendChild(td);
+        }
+        zbody.appendChild(tr);
+      }
+      zipTable.appendChild(zbody);
+      const caption = document.createElement('p');
+      caption.className = 'detail-summary';
+      caption.textContent =
+        'Realised damage, from FEMA Individual Assistance registrations - ' +
+        'households that applied for help, the damage they reported and what ' +
+        'they were approved. It is a FLOOR: most people with hail damage ' +
+        'never apply for anything.';
+      panel.append(caption, zipTable);
+    }
+
     const table = document.createElement('table');
     table.className = 'desk-table storm-table';
     const head = document.createElement('thead');
@@ -383,6 +457,7 @@ async function showStreets(state, county) {
     panel.appendChild(table);
   } catch (error) {
     note.textContent = `Could not load the street list: ${error.message}`;
+    console.error('[desk] street list failed', error);
   }
 }
 
@@ -404,14 +479,21 @@ function fillStates(rows, key) {
 
 async function main() {
   try {
-    const [citiesPayload, countiesPayload, swathPayload] = await Promise.all([
+    const [
+      citiesPayload,
+      countiesPayload,
+      swathPayload,
+      femaPayload,
+    ] = await Promise.all([
       loadGzippedJson(CITY_DATA_URL),
       loadGzippedJson(COUNTY_DATA_URL),
       loadGzippedJson(SWATH_DATA_URL),
+      loadGzippedJson(FEMA_DATA_URL),
     ]);
     state.cityIndex = indexCities(citiesPayload);
     state.countyRows = countiesPayload.rows || [];
     state.swathIndex = indexSwaths(swathPayload);
+    state.femaIndex = indexFema(femaPayload);
 
     const cityBounds = cityYearBounds(state.cityIndex);
     const countyBounds = yearBounds(state.countyRows);

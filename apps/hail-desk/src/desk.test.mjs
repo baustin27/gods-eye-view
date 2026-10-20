@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   cityStorms,
   indexCities,
+  indexFema,
   indexSwaths,
   queryCities,
   queryCounties,
@@ -430,4 +431,27 @@ test('the storm list respects the window too', () => {
   const narrow = cityStorms(index, '0820000', { fromYear: 2020, toYear: 2021 });
   assert.equal(narrow.length, 3, 'only the days inside the window');
   for (const storm of narrow) assert.ok(storm.d >= '2020' && storm.d <= '2021');
+});
+
+
+/* ======================================================================
+ * Realised damage by ZIP.
+ *
+ * The only number in the desk that says damage HAPPENED rather than
+ * that hail fell - and the only one with a floor under it that has to be
+ * said out loud: most people with hail damage never apply for help.
+ * ====================================================================== */
+
+test('the realised damage is indexed by ZIP', () => {
+  const index = indexFema({
+    zips: [
+      { zip: '80027', households: 14, damage: 12940371, approved: 9000000 },
+      { zip: '80620', households: 3, damage: 7840142, approved: 5000000 },
+    ],
+  });
+  assert.equal(index.size, 2);
+  const row = index.get('80027');
+  assert.equal(row.households, 14);
+  assert.equal(row.damage, 12940371);
+  assert.equal(index.get('nope'), undefined, 'a ZIP with no damage is absent, not zero');
 });

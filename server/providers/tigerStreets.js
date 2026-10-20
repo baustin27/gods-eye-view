@@ -150,11 +150,28 @@ export async function countyStreets(state, county, zip) {
     path.join(REPO, 'scripts/lib/binary-geo.mjs')
   );
   const entries = readZipEntries(fs.readFileSync(file));
+  if (!entries || !entries.size) throw new Error('TIGER EDGES file is empty');
   const member = [...entries.keys()].find((name) =>
     name.endsWith('_edges.dbf'),
   );
   if (!member) throw new Error(`TIGER EDGES for ${state}${county} has no dbf`);
-  const rows = parseDbf(entries.get(member));
+  let rows;
+  try {
+    rows = parseDbf(entries.get(member));
+  } catch (error) {
+    // A download interrupted half way leaves a TRUNCATED zip, and a truncated
+    // zip reads as an empty one rather than as an error. So the cached file is
+    // thrown away and fetched again, once, before the failure is reported.
+    await fs.promises.rm(file, { force: true });
+    const refetched = await countyEdgesPath(state, county);
+    const fresh = readZipEntries(fs.readFileSync(refetched));
+    const freshMember = [...fresh.keys()].find((name) =>
+      name.endsWith('_edges.dbf'),
+    );
+    if (!freshMember)
+      throw new Error(`TIGER EDGES for ${state}${county} has no dbf`);
+    rows = parseDbf(fresh.get(freshMember));
+  }
 
   const wanted = String(zip || '').trim();
   const streets = [];

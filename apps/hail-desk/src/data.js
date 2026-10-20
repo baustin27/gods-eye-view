@@ -178,6 +178,27 @@ export function queryCities(index, filters) {
 }
 
 /**
+ * Realised damage by ZIP, from FEMA's Individual Assistance register.
+ *
+ * This is the only number in the desk that says damage HAPPENED rather than
+ * that hail fell. A household that registered for help, the damage it
+ * reported, and the help it was approved.
+ *
+ * It is also a FLOOR, not a total: most people who have hail damage do not
+ * apply for anything, so a ZIP with nothing in it may still have been hit.
+ *
+ * @param {object} payload the fema artifact
+ * @returns {Map<string, object>}
+ */
+export function indexFema(payload) {
+  const byZip = new Map();
+  for (const row of payload.zips || []) {
+    byZip.set(String(row.zip), row);
+  }
+  return byZip;
+}
+
+/**
  * The swaths: how many houses were under the hail, per place per day.
  *
  * Indexed by `place:day` because that is the question the drill-down asks:
