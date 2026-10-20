@@ -305,7 +305,7 @@ function onCityClick(row) {
       button.className = 'link-button';
       button.textContent = 'streets';
       button.addEventListener('click', () =>
-        showStreets(swath.state, swath.county),
+        showStreets(swath.state, swath.county, storm.d),
       );
       streetCell.appendChild(button);
     }
@@ -324,8 +324,13 @@ function onCityClick(row) {
  * street files are a third of a gigabyte a county and are fetched per county
  * the first time they are asked for. The service is the desk's own server, so
  * it is the same origin and there is nothing to allow.
+ *
+ * The DAY is what makes the list a work list. Without it the streets come
+ * back sorted by how many addresses they carry, which is a list of long
+ * streets. With it the service lays the day's 1 km radar field over the
+ * streets and says how many of each street's addresses were under the hail.
  */
-async function showStreets(state, county) {
+async function showStreets(state, county, day) {
   const panel = document.getElementById('streets');
   panel.hidden = false;
   panel.replaceChildren();
@@ -336,9 +341,9 @@ async function showStreets(state, county) {
   note.textContent = 'Loading the Census street list for this ZIP…';
   panel.append(heading, note);
   try {
-    const response = await fetch(
-      `/api/desk/streets?state=${state}&county=${county}`,
-    );
+    const query = new URLSearchParams({ state, county });
+    if (day) query.set('day', day);
+    const response = await fetch(`/api/desk/streets?${query}`);
     const payload = await response.json();
     if (!response.ok || payload.error) {
       note.textContent = `Could not load the street list: ${payload.error || response.status}`;
@@ -356,6 +361,8 @@ async function showStreets(state, county) {
         entry = {
           zip: street.zip,
           segments: 0,
+          addresses: 0,
+          underHail: 0,
           households: fema?.households ?? 0,
           damage: fema?.damage ?? 0,
           approved: fema?.approved ?? 0,
@@ -363,6 +370,8 @@ async function showStreets(state, county) {
         byZip.set(street.zip, entry);
       }
       entry.segments += 1;
+      entry.addresses += street.addresses || 0;
+      entry.underHail += street.underHail || 0;
     }
     const zips = byZip.size;
     note.textContent =
@@ -373,6 +382,36 @@ async function showStreets(state, county) {
       'be more than one block, and the number is ADDRESSES in it - the count ' +
       'of HOUSES in a ZIP comes from the Census, and the two are never added ' +
       'together.';
+    // The hail on the day, when the service was asked about a day.
+    if (payload.hail) {
+      const hailNote = document.createElement('p');
+      hailNote.className = 'detail-summary';
+      if (!payload.hail.found) {
+        hailNote.textContent =
+          `There is no 1 km radar field for ${payload.hail.day} - the fine ` +
+          'field starts on 2024-01-01 - so this list cannot be ranked by what ' +
+          'fell.';
+      } else {
+        const underStreets = payload.streets.filter(
+          (street) => street.underHail > 0,
+        ).length;
+        hailNote.textContent =
+          `Under the hail on ${payload.hail.day}: ` +
+          `${payload.underHail.toLocaleString()} of ` +
+          `${payload.addresses.toLocaleString()} addresses, over ` +
+          `${underStreets.toLocaleString()} street segments. ` +
+          `The threshold is ${(payload.hail.thresholdMm / 25.4).toFixed(2)} ` +
+          'inches, the largest reading that day was ' +
+          `${(payload.hail.maxMm / 25.4).toFixed(2)} inches, and the field ` +
+          `reached ${payload.hail.cells.toLocaleString()} cells over it. ` +
+          'A street is a LINE and a hail cell is an AREA, so each street is ' +
+          'measured by the share of its length that was under the hail, and ' +
+          'that share is applied to the addresses in its range. It is not a ' +
+          'claim that those roofs were damaged - it is the number of ' +
+          'addresses on a street that were UNDER hail on a day.';
+        panel.append(hailNote);
+      }
+    }
     // The damage table first: the street list is the navigation, and this is
     // the reason to navigate. Sorted by damage, because a ZIP nobody applied
     // for help in is a ZIP to drive past.
@@ -389,6 +428,7 @@ async function showStreets(state, county) {
         'Damage reported',
         'Approved',
         'Street segments',
+        ...(payload.hail ? ['Addresses under the hail'] : []),
       ]) {
         const th = document.createElement('th');
         th.scope = 'col';
@@ -406,6 +446,7 @@ async function showStreets(state, county) {
           `$${zip.damage.toLocaleString()}`,
           `$${zip.approved.toLocaleString()}`,
           zip.segments.toLocaleString(),
+          ...(payload.hail ? [zip.underHail.toLocaleString()] : []),
         ]) {
           const td = document.createElement('td');
           td.textContent = String(value);
@@ -428,7 +469,15 @@ async function showStreets(state, county) {
     table.className = 'desk-table storm-table';
     const head = document.createElement('thead');
     const hr = document.createElement('tr');
-    for (const label of ['Street', 'ZIP', 'From', 'To', 'Side', 'Addresses']) {
+    for (const label of [
+      'Street',
+      'ZIP',
+      'From',
+      'To',
+      'Side',
+      'Addresses',
+      ...(payload.hail ? ['Under the hail', 'Share'] : []),
+    ]) {
       const th = document.createElement('th');
       th.scope = 'col';
       th.textContent = label;
@@ -446,6 +495,12 @@ async function showStreets(state, county) {
         street.to,
         street.side === 'L' ? 'left' : 'right',
         street.addresses.toLocaleString(),
+        ...(payload.hail
+          ? [
+              street.underHail.toLocaleString(),
+              `${Math.round((street.hailShare || 0) * 100)}%`,
+            ]
+          : []),
       ]) {
         const td = document.createElement('td');
         td.textContent = String(value);

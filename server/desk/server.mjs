@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 
-import { countyStreets } from '../providers/tigerStreets.js';
+import { streetsPayload } from '../providers/hailStreets.js';
 
 const REPO = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -60,7 +60,6 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/desk/streets') {
     const state = String(url.searchParams.get('state') || '').trim();
     const county = String(url.searchParams.get('county') || '').trim();
-    const zip = String(url.searchParams.get('zip') || '').trim();
     if (!/^\d{2}$/.test(state) || !/^\d{3}$/.test(county)) {
       send(
         res,
@@ -71,26 +70,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const streets = await countyStreets(state, county, zip);
-      send(
-        res,
-        200,
-        JSON.stringify({
-          state,
-          county,
-          zip: zip || null,
-          count: streets.length,
-          // The addresses in the ranges, which is what these numbers are.
-          // The number of HOUSES in a ZIP comes from the Census, and the two
-          // are not the same and are never added together.
-          addresses: streets.reduce(
-            (total, street) => total + street.addresses,
-            0,
-          ),
-          streets,
-        }),
-        TYPES['.json'],
-      );
+      const payload = await streetsPayload({
+        state,
+        county,
+        zip: url.searchParams.get('zip') || '',
+        day: url.searchParams.get('day') || '',
+        thresholdMm: url.searchParams.get('thresholdMm') || '',
+      });
+      send(res, 200, JSON.stringify(payload), TYPES['.json']);
     } catch (error) {
       send(res, 500, JSON.stringify({ error: error.message }), TYPES['.json']);
     }

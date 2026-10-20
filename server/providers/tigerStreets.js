@@ -22,6 +22,12 @@
  * Routes:
  *   GET /api/desk/streets?state=08&county=031&zip=80202
  *     → {state, county, zip, count, houses, streets}
+ *
+ * THE GEOMETRY. The EDGES file also carries the LINE each edge describes, in
+ * the `.shp` inside the same zip. It is read here rather than fetched
+ * separately because it is what turns "how many addresses on this street" into
+ * "how many of them were under the hail" - a street is a line and a hail cell
+ * is an area, and without the line the two cannot be compared.
  */
 
 import fs from 'node:fs';
@@ -145,11 +151,34 @@ function parseDbf(buffer) {
  * @returns {Promise<Array<object>>}
  */
 export async function countyStreets(state, county, zip) {
+  const streets = await countyEdges(state, county, zip);
+  // The geometry is for the server's own arithmetic and is not sent to the
+  // browser: a county's edges are hundreds of thousands of coordinates, and
+  // the client has no use for them.
+  return streets.map(({ points, ...rest }) => rest);
+}
+
+/**
+ * The streets of one county, WITH the line each one describes.
+ *
+ * The `.shp` and the `.dbf` inside the EDGES zip hold one record per edge in
+ * the SAME order, and the join between them is by position - there is no key
+ * to join on. That makes the record counts a load-bearing check rather than a
+ * formality: if the two files disagree about how many edges they have, every
+ * street after the divergence is attached to the wrong line, and the hail
+ * lands on the wrong streets with nothing reporting an error.
+ *
+ * @param {string} state two-digit state FIPS
+ * @param {string} county three-digit county FIPS
+ * @param {string} [zip] only this ZIP, if given
+ * @returns {Promise<Array<object>>} each with a `points` flat [lon, lat, ...]
+ */
+export async function countyEdges(state, county, zip) {
   const file = await countyEdgesPath(state, county);
-  const { readZipEntries } = await import(
+  const { readZipEntries, readShapefile } = await import(
     path.join(REPO, 'scripts/lib/binary-geo.mjs')
   );
-  const entries = readZipEntries(fs.readFileSync(file));
+  let entries = readZipEntries(fs.readFileSync(file));
   if (!entries || !entries.size) throw new Error('TIGER EDGES file is empty');
   const member = [...entries.keys()].find((name) =>
     name.endsWith('_edges.dbf'),
@@ -164,20 +193,43 @@ export async function countyStreets(state, county, zip) {
     // thrown away and fetched again, once, before the failure is reported.
     await fs.promises.rm(file, { force: true });
     const refetched = await countyEdgesPath(state, county);
-    const fresh = readZipEntries(fs.readFileSync(refetched));
-    const freshMember = [...fresh.keys()].find((name) =>
+    entries = readZipEntries(fs.readFileSync(refetched));
+    const freshMember = [...entries.keys()].find((name) =>
       name.endsWith('_edges.dbf'),
     );
     if (!freshMember)
       throw new Error(`TIGER EDGES for ${state}${county} has no dbf`);
-    rows = parseDbf(fresh.get(freshMember));
+    rows = parseDbf(entries.get(freshMember));
+  }
+
+  // The geometry. The `.shp` is read from the same archive, and the two files
+  // are read from the SAME buffer so that a retry cannot mix a fresh `.shp`
+  // with a stale `.dbf`.
+  const shpMember = [...entries.keys()].find((name) =>
+    name.endsWith('_edges.shp'),
+  );
+  let shapes = { records: [] };
+  if (shpMember) {
+    try {
+      shapes = readShapefile(entries.get(shpMember));
+    } catch {
+      shapes = { records: [] };
+    }
+  }
+  if (shapes.records.length && shapes.records.length !== rows.length) {
+    throw new Error(
+      `TIGER EDGES for ${state}${county} has ${rows.length} attribute rows ` +
+        `and ${shapes.records.length} shapes; they cannot be joined.`,
+    );
   }
 
   const wanted = String(zip || '').trim();
   const streets = [];
-  for (const row of rows) {
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
     const name = row.FULLNAME;
     if (!name) continue;
+    const points = shapes.records.length ? edgePoints(shapes.records[index]) : [];
     for (const side of ['L', 'R']) {
       const from = row[`${side}FROMADD`];
       const to = row[`${side}TOADD`];
@@ -197,6 +249,7 @@ export async function countyStreets(state, county, zip) {
         zip: rowZip,
         side,
         addresses: count,
+        points,
       });
     }
   }
@@ -210,7 +263,37 @@ export async function countyStreets(state, county, zip) {
 }
 
 /**
+ * The vertices of one edge, as a flat [lon, lat, ...] list.
+ *
+ * An edge is normally a single part. The few with more are joined end to
+ * end, and the shared vertex between two parts is dropped once so the line
+ * does not double back on itself at the join.
+ *
+ * @param {{parts: number[][]}} record
+ * @returns {number[]}
+ */
+function edgePoints(record) {
+  const parts = record?.parts || [];
+  if (!parts.length) return [];
+  const out = [];
+  for (const part of parts) {
+    if (!part || part.length < 4) continue;
+    const start = out.length ? 2 : 0;
+    for (let at = start; at < part.length; at += 2) {
+      out.push(part[at], part[at + 1]);
+    }
+  }
+  return out;
+}
+
+/**
  * The Vite plugin that serves the street list.
+ *
+ * The same payload the desk's own server answers with, so the app sees one
+ * shape in development and in the built app. The handler is imported lazily
+ * because the hail join pulls in the storm loader, and the plugin is loaded
+ * by the globe's dev server too - which has no business paying for it.
+ *
  * @returns {import('vite').Plugin}
  */
 export function tigerStreetsPlugin() {
@@ -221,30 +304,16 @@ export function tigerStreetsPlugin() {
         if (!req.url?.startsWith('/api/desk/streets')) return next();
         try {
           const url = new URL(req.url, 'http://localhost');
-          const state = String(url.searchParams.get('state') || '').trim();
-          const county = String(url.searchParams.get('county') || '').trim();
-          const zip = String(url.searchParams.get('zip') || '').trim();
-          if (!/^\d{2}$/.test(state) || !/^\d{3}$/.test(county)) {
-            res.statusCode = 400;
-            res.setHeader('content-type', 'application/json');
-            res.end(JSON.stringify({ error: 'state and county are required' }));
-            return;
-          }
-          const streets = await countyStreets(state, county, zip);
+          const { streetsPayload } = await import('./hailStreets.js');
+          const payload = await streetsPayload({
+            state: url.searchParams.get('state') || '',
+            county: url.searchParams.get('county') || '',
+            zip: url.searchParams.get('zip') || '',
+            day: url.searchParams.get('day') || '',
+            thresholdMm: url.searchParams.get('thresholdMm') || '',
+          });
           res.setHeader('content-type', 'application/json');
-          res.end(
-            JSON.stringify({
-              state,
-              county,
-              zip: zip || null,
-              count: streets.length,
-              houses: streets.reduce(
-                (total, street) => total + street.houses,
-                0,
-              ),
-              streets,
-            }),
-          );
+          res.end(JSON.stringify(payload));
         } catch (error) {
           res.statusCode = 500;
           res.setHeader('content-type', 'application/json');
