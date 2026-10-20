@@ -350,6 +350,22 @@ button.secondary {
   color: var(--ink-faint);
 }
 
+.link-button {
+  background: transparent;
+  border: 1px solid var(--accent-dim);
+  color: var(--accent);
+  padding: 3px 9px;
+  min-height: 0;
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.link-button:hover {
+  background: rgba(58, 214, 200, 0.12);
+  color: var(--ink);
+}
+
 .storm-table td {
   padding: 4px 10px 4px 0;
   border-bottom: 1px solid rgba(34, 48, 64, 0.6);

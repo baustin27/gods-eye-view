@@ -263,6 +263,7 @@ function onCityClick(row) {
       'The radar reached this place and nobody called it in. A day with ' +
         'houses under it and no reports is where the canvassing is.',
     ],
+    ['Streets', 'The street list for the ZIP under the hail.'],
   ]) {
     const cell = document.createElement('th');
     cell.scope = 'col';
@@ -276,7 +277,7 @@ function onCityClick(row) {
   for (const storm of storms) {
     const tr = document.createElement('tr');
     const swath = storm.swath;
-    for (const value of [
+    const values = [
       storm.d,
       storm.n1.toLocaleString(),
       storm.n15.toLocaleString(),
@@ -285,16 +286,104 @@ function onCityClick(row) {
       storm.wind.toLocaleString(),
       swath ? swath.houses.toLocaleString() : '—',
       swath && !storm.reported ? 'nobody called it in' : '',
-    ]) {
+    ];
+    for (const value of values) {
       const cell = document.createElement('td');
       cell.textContent = String(value);
       tr.appendChild(cell);
     }
+    // The knock list. The street service is a SEPARATE thing from this app -
+    // it is a server, not a file - so the button asks for it and shows what
+    // comes back, and says so if the county is not the one you think.
+    const streetCell = document.createElement('td');
+    if (swath && swath.state && swath.county) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'link-button';
+      button.textContent = 'streets';
+      button.addEventListener('click', () =>
+        showStreets(swath.state, swath.county),
+      );
+      streetCell.appendChild(button);
+    }
+    tr.appendChild(streetCell);
     body.appendChild(tr);
   }
   table.appendChild(body);
   el.detail.append(head, summary, table);
   el.detail.scrollIntoView({ block: 'nearest' });
+}
+
+/**
+ * The street list for a ZIP, from the Census TIGER files.
+ *
+ * It comes from a service rather than from this app's data, because the
+ * street files are a third of a gigabyte a county and are fetched per county
+ * the first time they are asked for. The service is the desk's own server, so
+ * it is the same origin and there is nothing to allow.
+ */
+async function showStreets(state, county) {
+  const panel = document.getElementById('streets');
+  panel.hidden = false;
+  panel.replaceChildren();
+  const heading = document.createElement('h2');
+  heading.textContent = `Streets in county ${state}${county}`;
+  const note = document.createElement('p');
+  note.className = 'detail-summary';
+  note.textContent = 'Loading the Census street list for this ZIP…';
+  panel.append(heading, note);
+  try {
+    const response = await fetch(
+      `/api/desk/streets?state=${state}&county=${county}`,
+    );
+    const payload = await response.json();
+    if (!response.ok || payload.error) {
+      note.textContent = `Could not load the street list: ${payload.error || response.status}`;
+      return;
+    }
+    const zips = new Set(payload.streets.map((street) => street.zip));
+    note.textContent =
+      `${payload.count.toLocaleString()} street segments across ` +
+      `${zips.size} ZIPs, ${payload.addresses.toLocaleString()} addresses in the ` +
+      `ranges. ` +
+      'A range is the stretch of the street the Census edge covers, which can ' +
+      'be more than one block, and the number is ADDRESSES in it - the count ' +
+      'of HOUSES in a ZIP comes from the Census, and the two are never added ' +
+      'together.';
+    const table = document.createElement('table');
+    table.className = 'desk-table storm-table';
+    const head = document.createElement('thead');
+    const hr = document.createElement('tr');
+    for (const label of ['Street', 'ZIP', 'From', 'To', 'Side', 'Addresses']) {
+      const th = document.createElement('th');
+      th.scope = 'col';
+      th.textContent = label;
+      hr.appendChild(th);
+    }
+    head.appendChild(hr);
+    table.appendChild(head);
+    const body = document.createElement('tbody');
+    for (const street of payload.streets.slice(0, 400)) {
+      const tr = document.createElement('tr');
+      for (const value of [
+        street.name,
+        street.zip,
+        street.from,
+        street.to,
+        street.side === 'L' ? 'left' : 'right',
+        street.addresses.toLocaleString(),
+      ]) {
+        const td = document.createElement('td');
+        td.textContent = String(value);
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+    table.appendChild(body);
+    panel.appendChild(table);
+  } catch (error) {
+    note.textContent = `Could not load the street list: ${error.message}`;
+  }
 }
 
 /** Populate the state dropdown from the states the data actually covers. */

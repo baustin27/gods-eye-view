@@ -204,6 +204,19 @@ export function indexSwaths(payload) {
       if (!byPlace.has(row.k)) byPlace.set(row.k, new Map());
       byPlace.get(row.k).set(row.d, entry);
     }
+    // The county and the ZIP, for the knock list. The county is in the tract's
+    // own GEOID - state, then county, then tract - and the ZIP came with the
+    // row. The desk needs both to ask the street service for the streets.
+    if (!entry.state) {
+      // The county is EXACT: it is the middle of the tract's own GEOID, which
+      // is state, county, tract. The ZIP is not exact and is not here - a ZCTA
+      // has no boundary in this dataset, only a gazetteer point, and placing a
+      // tract in the nearest point put a Washington DC tract in a Portland ZIP.
+      // The street list asks for the COUNTY and lets the Census say which ZIPs
+      // are in it.
+      entry.state = String(row.g || '').slice(0, 2);
+      entry.county = String(row.g || '').slice(2, 5);
+    }
     entry.tracts += 1;
     entry.houses += row.u || 0;
     if (row.m > entry.maxMm) entry.maxMm = row.m;

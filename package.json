@@ -50,6 +50,7 @@
     "build:hail-desk-data": "node scripts/build-hail-desk-data.mjs",
     "build:desk": "vite build --config apps/hail-desk/vite.config.js",
     "dev:desk": "vite --config apps/hail-desk/vite.config.js",
+    "serve:desk": "node server/desk/server.mjs",
     "test:storm-radar": "node --test scripts/build-storm-radar-snapshots.test.mjs",
     "test": "node scripts/run-unit-tests.mjs",
     "test:track": "node scripts/track-regression.mjs",
