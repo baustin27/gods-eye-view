@@ -145,3 +145,47 @@ The gallery's renderer (B2.3) and the desk's painter (WAVE 3) are the seed: **th
 All 4,405,145 hit cells across the 1,019 days now round-trip with zero mismatches, and there is a test that pins it.
 
 **Never trust a cell lookup that has not been round-tripped.**
+
+---
+
+# STATUS — as of 2026-10-20, end of the first build session
+
+## DONE and committed
+
+| id | commit | what |
+|---|---|---|
+| B0.1 | `0971421a` | the `showStreets` shadowing bug — the FEMA damage table can render now |
+| B0.2 | `da8efbc1` | `setRadarSwath(false)` re-renders, so the swath comes off the map |
+| B0.3 | `da8efbc1` | the storm table's tenth cell (10 headers, 9 cells) |
+| B1.1 | `da8efbc1` | RADAR on by default, conditionally on a radar source |
+| B1.2 | `da8efbc1` | the five-stop violet→magenta→white ramp, off the pins' colours |
+| B1.3 | `da8efbc1` | each band outlined in the next hotter band's colour |
+| B1.7 | `da8efbc1` | the chip titles, which described a per-cell fill that is gone |
+| B1.8 | `da8efbc1` | the QA harness, which would have toggled RADAR OFF |
+| B1.0.1 | `da8efbc1` | the scope mask off by default — **the porthole is gone, the map is full-bleed** |
+| B1.0.2 | `da8efbc1` | the keyhole label fade tied to the porthole, not to a pinned constant |
+| B3.1 | `ae95bb58` | the table is a window: 6,496 rows → 47 in the DOM, 30.005 px/row |
+| B3.5 | `ae95bb58` | every visible sort header is a control again |
+| B3.6 | `ae95bb58` | every sort key round-trips through a link, and the shared encoder can no longer write `undefined` |
+| B2.1–B2.3 | `cf88f3e2` | **the gallery** — `apps/hail-desk/gallery.html`, five real storms × three treatments |
+| B3.4 | `0971421a` | **the ranked list** — the globe's county-list vocabulary, twelve entries, clickable |
+
+## STILL TO DO
+
+| id | what | size |
+|---|---|---|
+| **B1.4** | the bands do not TILE: every band is contoured at the 25.4 mm floor, so the shared boundary between two bands is interpolated twice at different sub-cell positions — a seam up to ~400 m. Fix: contour the field once per level and build each band as an annulus (`outer = contour(F_k)`, `holes = contour(F_{k+1})`). | medium |
+| **B1.5** | the third LOD tier: fine to 60 km, a 0.05° mid tier (5×5 max-downsample) to 600 km, coarse above. The blocky band is 12–100 km, not 100–600 km. | medium |
+| **B1.6** | the REPORTED swath is still a staircase. Contour the union per level and draw annuli, as B1.4. | medium |
+| **B1.0.4–B1.0.7** | the celestial ring must hug the globe not the porthole (`frameRadius`); the HUD becomes one telemetry strip; the rails stop collapsing around it; `foundation.css` loses `#scope-mask` and the cockpit clip-path. | medium |
+| **B3.2** | the desk's layout: a grid — rail / map / list — and the three drill-down sections collapse into ONE panel with a `drillStack`. | large |
+| **B3.3** | the control rail, porting the globe's `.data-toggle-*` / `.data-row-list` vocabulary into a new `apps/hail-desk/src/rail.js`. | large |
+| **B3.7** | lat/lon for the city and county rows, so the map has something to plot. `scripts/build-hail-desk-data.mjs` already computes the rings' bounds. | small |
+| **WAVE 3** | the 2D map: the `GEVS` tile format, the `tileMath.js` exports, the `/api/desk/tiles/...` route, the parse-once county index, the desk's canvas pane, and `deskApiPlugin()` so dev and prod share one handler. | large |
+| **WAVE 4** | the per-storm artifact — the gallery's renderer, made static. | medium |
+
+**The one thing to read before starting WAVE 3:** the tile source must be the RAW EDGES
+records, not `countyEdges()`. `countyEdges()` drops every edge whose side has no
+address range — on Douglas County that is 37% of the named centrelines, so a map
+built from it has holes. Split `countyEdges()` into an exported
+`countyEdgeRecords()` and keep `countyEdges()` on top of it.
