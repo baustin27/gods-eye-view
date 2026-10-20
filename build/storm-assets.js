@@ -59,6 +59,7 @@ export const STORM_PAYLOAD_PATTERNS = Object.freeze([
   /^storm_radar_hail_\d{4}\.geojsonl\.gz$/,
   /^storm_radar_hail_perday_\d{4}\.bin\.gz$/,
   /^storm_radar_hail_fine_\d{4}-\d{2}-\d{2}\.bin\.gz$/,
+  /^storm_radar_hail_sub_\d{4}-\d{2}-\d{2}\.bin\.gz$/,
   /^storm_report_index\.json\.gz$/,
 ]);
 

@@ -526,6 +526,23 @@ export function createStormReportsLayer({
   let _fineRadarCells = null;
   /** Whether the current wash came from the fine field. Read by the renderer. */
   let _radarFine = false;
+  /**
+   * The day's sub-daily frames, when the window is one day and the shard
+   * existed. Each frame is the hail that was over the threshold in that six
+   * hours, so the day can be replayed rather than only summarised.
+   *
+   * Null means there is no timeline: a multi-day window has no frames, and a
+   * day outside the retention window has no shard.
+   */
+  let _subDailyFrames = null;
+  /**
+   * Which frame the timeline is showing, or null for the whole day.
+   *
+   * Null is the day's maximum, which is what the layer has always drawn. A
+   * frame is a SUBSET of the day, so the day's numbers stay the honest
+   * summary and the frame is the detail.
+   */
+  let _radarFrame = null;
   // The two swath toggles. Both exist; each paints independently, and both are
   // off until asked for: the pins are what this layer shipped, and a swath is
   // an added claim on top of them.
@@ -1100,6 +1117,27 @@ export function createStormReportsLayer({
       // for a day nobody is looking at is worse than nothing at all.
       if (token !== _comparisonToken) return;
       _radarWindowCells = cells;
+      // The sub-daily frames, when the window is a single day. They are a
+      // SIBLING of the fine field, not a replacement: the day's maximum stays
+      // the summary and the frames are the detail underneath it.
+      try {
+        const frames =
+          _options.fromDate === _options.toDate
+            ? await radarSubDailyDay(_options.fromDate, _request?.signal)
+            : null;
+        if (token !== _comparisonToken) return;
+        _subDailyFrames = frames;
+        // A frame that no longer exists must not survive the day changing
+        // under it.
+        if (_radarFrame !== null && (!frames || _radarFrame >= frames.length)) {
+          _radarFrame = null;
+        }
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+        // A day with no sub-daily shard is an absence, not a failure: the
+        // timeline simply is not offered for it.
+        _subDailyFrames = null;
+      }
       // Banded whenever EITHER swath is on, not only for RADAR. Gating this on
       // the radar chip made PROSPECT depend on a different toggle being
       // enabled first: turn PROSPECT on alone and it found an empty banded
@@ -1149,6 +1187,36 @@ export function createStormReportsLayer({
    * @param {Array<{i: number, j: number, maxMm: number}>|null} cells
    * @returns {Array<object>} swath cells on the fine grid
    */
+  /**
+   * The six-hour frame chips, when the day has frames.
+   *
+   * The times are the hours each frame ENDS at, in UTC, because MRMS names a
+   * file for the window ending at its timestamp and the shard for a day holds
+   * the frames that tile the same 24 hours the daily field covers.
+   *
+   * @returns {Array<object>}
+   */
+  function frameChips() {
+    if (!_subDailyFrames || !_subDailyFrames.length) return [];
+    return _subDailyFrames.map((frame, index) => {
+      // The hours each frame ENDS at: 06Z, 12Z, 18Z and 00Z. The shard for a
+      // day holds the four frames that tile the same 24 hours the daily field
+      // covers, and MRMS names a file for the window ENDING at its timestamp -
+      // so the first three of them end on the previous calendar day.
+      const hour = (6 + index * 6) % 24;
+      const label = `${String(hour).padStart(2, '0')}Z`;
+      return {
+        id: `storm-reports-frame-${index}`,
+        label,
+        title:
+          `The hail over the threshold in the six hours ending ${label}, ` +
+          'in the 1 km field. A frame is a subset of the day.',
+        active: _radarFrame === index,
+        onClick: () => self().setRadarFrame(index),
+      };
+    });
+  }
+
   function fineSwathCells(cells) {
     if (!Array.isArray(cells) || !cells.length) return [];
     const byKey = new Map();
@@ -1167,6 +1235,19 @@ export function createStormReportsLayer({
       { date: _options.fromDate, cells: byKey },
       { date: _options.fromDate, implausibleMm: RADAR_IMPLAUSIBLE_MM },
     );
+  }
+
+  /**
+   * The fine cells to draw: the selected frame's, or the whole day's.
+   *
+   * A frame is a subset of the day, so falling back to the day's cells when
+   * no frame is selected is the same answer with more in it.
+   *
+   * @returns {Array<{i: number, j: number, maxMm: number}>}
+   */
+  function frameRadarCells() {
+    if (_radarFrame === null || !_subDailyFrames) return _fineRadarCells;
+    return _subDailyFrames[_radarFrame] || [];
   }
 
   function swathCellsForWindow(cells) {
@@ -1284,6 +1365,26 @@ export function createStormReportsLayer({
     if (typeof call !== 'function')
       throw new TypeError('radarSource needs a daysFor(year, signal) method');
     return normaliseRadarDays(await call.call(radarSource, year, signal));
+  }
+
+  /**
+   * The sub-daily frames for one day, or null when the source has none.
+   *
+   * A sibling of {@link radarFineDay} with its own optional method on the
+   * injected source, so a layer constructed without one behaves exactly as
+   * before. The frames are the day's hail split into six-hourly pieces, which
+   * is what lets the day be replayed instead of only summarised.
+   *
+   * @param {string} date
+   * @param {AbortSignal} [signal]
+   * @returns {Promise<Array<Array<object>>|null>}
+   */
+  async function radarSubDailyDay(date, signal) {
+    const call = radarSource?.subDayFor;
+    if (typeof call !== 'function' || !date) return null;
+    const raw = await call.call(radarSource, date, signal);
+    if (!Array.isArray(raw?.frames) || !raw.frames.length) return null;
+    return raw.frames;
   }
 
   /**
@@ -1755,6 +1856,10 @@ export function createStormReportsLayer({
 
   /** Whether the camera is close enough for the fine 1km field to be worth drawing. */
   function useFineRadarField() {
+    // A SELECTED FRAME is always drawn from the fine field, whatever the
+    // altitude. The frames exist only at 1 km, and a scrubber that silently
+    // stopped scrubbing when the camera climbed would be a control that lies.
+    if (_radarFrame !== null && _subDailyFrames) return true;
     return (
       Boolean(_radarFine) && cameraAltitudeM() <= SWATH_FINE_MAX_ALTITUDE_M
     );
@@ -1906,7 +2011,9 @@ export function createStormReportsLayer({
     _prospectCells = [];
     if (_showProspectSwath) {
       const fine = useFineRadarField();
-      const radarCells = fine ? fineSwathCells(_fineRadarCells) : _radarSwath;
+      const radarCells = fine
+        ? fineSwathCells(frameRadarCells())
+        : _radarSwath;
       const radarDeg = fine ? GRID_DEG_FINE : GRID_DEG;
       _prospectCells = prospectSwathCells(radarCells, _visible, {
         stepDeg: radarDeg,
@@ -1937,7 +2044,9 @@ export function createStormReportsLayer({
       // 0.25-degree field for a multi-day combine, a day outside the retention
       // window, or a camera high enough that 1 km cells are sub-pixel.
       const fine = useFineRadarField();
-      const radarCells = fine ? fineSwathCells(_fineRadarCells) : _radarSwath;
+      const radarCells = fine
+        ? fineSwathCells(frameRadarCells())
+        : _radarSwath;
       const radarDeg = fine ? GRID_DEG_FINE : GRID_DEG;
       drawSwathBand(
         'radar',
@@ -3232,6 +3341,18 @@ export function createStormReportsLayer({
           onClick: () => self().setProspectSwath(!_showProspectSwath),
         },
         {
+          id: 'storm-reports-timeline-day',
+          label: 'DAY',
+          // The whole day is the maximum over its hours, which is what the
+          // layer has always drawn. Choosing a frame is choosing to see
+          // inside that maximum.
+          title: "The whole day: the largest hail that fell on it",
+          disabled: !ready || !_subDailyFrames,
+          active: _radarFrame === null,
+          onClick: () => self().setRadarFrame(null),
+        },
+        ...frameChips(),
+        {
           id: 'storm-reports-swath-radar',
           label: 'RADAR',
           // Disabled, not hidden, with no radar wired: a chip that silently
@@ -3540,6 +3661,40 @@ export function createStormReportsLayer({
      * @param {boolean} on
      * @returns {boolean} whether the toggle moved
      */
+    /**
+     * Show one six-hour frame of the day, or the whole day.
+     *
+     * The day is a maximum over its hours and a maximum has no story in it.
+     * The frames are the day's hail split into six-hourly pieces, so the
+     * storm can be replayed: which part of the day the hail arrived, and
+     * whether it came back.
+     *
+     * A frame is a SUBSET of the day, so the day's numbers stay the summary
+     * and the frame is the detail under them.
+     *
+     * @param {number|null} frame the frame index, or null for the whole day
+     * @returns {boolean} whether it moved
+     */
+    setRadarFrame(frame) {
+      const next = frame === null || frame === undefined ? null : Number(frame);
+      if (next !== null && !Number.isInteger(next)) return false;
+      if (next !== null && (!_subDailyFrames || next >= _subDailyFrames.length)) {
+        return false;
+      }
+      if (next === _radarFrame) return false;
+      _radarFrame = next;
+      // The frame is a different set of cells, so the swath is rebuilt from
+      // them rather than recoloured.
+      if (_showRadarSwath || _showProspectSwath) {
+        rebuildRadarSwath();
+      } else {
+        render();
+        publish();
+        notifyRowControls();
+      }
+      return true;
+    },
+
     setRadarSwath(on) {
       const next = Boolean(on);
       if (next === _showRadarSwath) return false;

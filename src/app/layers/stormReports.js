@@ -3,6 +3,7 @@ import {
   loadFineRadarDay,
   loadRadarDaysForYear,
 } from '../../data/stormReports.js';
+import { loadSubDailyDay } from '../../data/subDailyRadar.js';
 import {
   eventsFor,
   getSnapshot,
@@ -44,6 +45,12 @@ export function createApplicationStormReports({ source } = {}) {
       // decoder between them would return plausible numbers for the wrong cells.
       // The layer only asks for this when the window is a single day.
       dayFor: (date, signal) => loadFineRadarDay(date, signal),
+      // The day's hail split into six-hour frames, so the storm can be
+      // replayed rather than only summarised. A SIBLING of `dayFor`, not a
+      // mode of it: the daily field is a maximum over the whole day and has no
+      // frames inside it. The layer asks for this only when the window is a
+      // single day, and a day with no shard simply has no timeline.
+      subDayFor: (date, signal) => loadSubDailyDay(date, { signal }),
     },
   });
 }
