@@ -271,6 +271,10 @@ async function buildCities() {
 
   step('reading the reports');
   const byPlaceYear = new Map();
+  // The same rows, keyed by DAY rather than by year. A market table says "this
+  // town has been hit"; a WORK LIST says "this town was hit on the ninth of
+  // June, by stones this big". The second question needs the day.
+  const byPlaceDay = new Map();
   let read = 0;
   let placed = 0;
   for (const year of REPORT_FILES) {
@@ -291,6 +295,31 @@ async function buildCities() {
       if (!geoid) continue;
       placed += 1;
       const yearKey = String(date).slice(0, 4);
+      const dayKey = `${geoid}:${date}`;
+      let day = byPlaceDay.get(dayKey);
+      if (!day) {
+        day = {
+          geoid,
+          d: String(date),
+          n: 0,
+          n1: 0,
+          n15: 0,
+          n2: 0,
+          n3: 0,
+          max: 0,
+          wind: 0,
+          wmax: 0,
+        };
+        byPlaceDay.set(dayKey, day);
+      }
+      if (hazard === 0) {
+        day.n += 1;
+        for (const band of HAIL_BANDS) if (size >= band.min) day[band.key] += 1;
+        if (size > day.max) day.max = size;
+      } else {
+        day.wind += 1;
+        if (size > day.wmax) day.wmax = size;
+      }
       const key = `${geoid}:${yearKey}`;
       let row = byPlaceYear.get(key);
       if (!row) {
@@ -341,10 +370,14 @@ async function buildCities() {
   const yearRows = [...byPlaceYear.values()].sort(
     (a, b) => a.geoid.localeCompare(b.geoid) || a.y - b.y,
   );
-  step(
-    `city rows: ${cityRows.length}; place-years: ${yearRows.length}`,
+  const dayRows = [...byPlaceDay.values()].sort(
+    (a, b) => a.geoid.localeCompare(b.geoid) || a.d.localeCompare(b.d),
   );
-  return { cities: cityRows, cityYears: yearRows };
+  step(
+    `city rows: ${cityRows.length}; place-years: ${yearRows.length}; ` +
+      `place-days: ${dayRows.length}`,
+  );
+  return { cities: cityRows, cityYears: yearRows, cityDays: dayRows };
 }
 
 function writeGzipJson(target, payload) {
@@ -415,7 +448,7 @@ async function main() {
     rows,
   };
 
-  const { cities, cityYears } = await buildCities();
+  const { cities, cityYears, cityDays } = await buildCities();
 
   fs.mkdirSync(outDir, { recursive: true });
   const target = path.join(outDir, 'counties.json.gz');
@@ -435,6 +468,7 @@ async function main() {
     },
     cities,
     cityYears,
+    cityDays,
   });
   step(`wrote ${path.relative(ROOT, cityTarget)} — ${(cityBytes / 1024).toFixed(0)} KB`);
 

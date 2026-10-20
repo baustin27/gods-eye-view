@@ -70,7 +70,34 @@ export function indexCities(payload) {
     byYear.get(row.geoid).push(row);
   }
   for (const rows of byYear.values()) rows.sort((a, b) => a.y - b.y);
-  return { cities, byYear };
+  // The STORMS: one row per place per DAY. A market table says "this town has
+  // been hit"; a work list says "this town was hit on the ninth of June, by
+  // stones this big". The second question needs the day, and 46,379
+  // place-days is small enough to ship whole.
+  const byDay = new Map();
+  for (const row of payload.cityDays || []) {
+    if (!byDay.has(row.geoid)) byDay.set(row.geoid, []);
+    byDay.get(row.geoid).push(row);
+  }
+  for (const rows of byDay.values()) {
+    rows.sort((a, b) => b.n1 - a.n1 || b.max - a.max || a.d.localeCompare(b.d));
+  }
+  return { cities, byYear, byDay };
+}
+
+/**
+ * The storms that hit a place, worst first.
+ *
+ * "Worst" is the number of severe reports, then the largest stone - so a day
+ * with one 3-inch stone in it is not ranked below a day with eight 1-inch
+ * stones, and a day with a single trace is not in the list at all.
+ *
+ * @param {object} index
+ * @param {string} geoid
+ * @returns {Array<object>}
+ */
+export function cityStorms(index, geoid) {
+  return (index.byDay.get(String(geoid)) || []).filter((row) => row.n > 0);
 }
 
 /**

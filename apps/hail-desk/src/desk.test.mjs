@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  cityStorms,
   indexCities,
   queryCities,
   queryCounties,
@@ -251,6 +252,12 @@ const cityPayload = {
     { geoid: '0820000', y: 2020, n: 20, n1: 8, n15: 3, n2: 2, n3: 1, max: 3.5, wind: 5, wmax: 70 },
     { geoid: '4055000', y: 2020, n: 30, n1: 12, n15: 5, n2: 2, n3: 0, max: 2, wind: 1, wmax: 55 },
   ],
+  cityDays: [
+    { geoid: '0820000', d: '2020-06-14', n: 12, n1: 8, n15: 3, n2: 2, n3: 1, max: 3.5, wind: 2, wmax: 70 },
+    { geoid: '0820000', d: '2020-06-15', n: 6, n1: 3, n15: 1, n2: 0, n3: 0, max: 2, wind: 1, wmax: 60 },
+    { geoid: '0820000', d: '2020-08-01', n: 2, n1: 0, n15: 0, n2: 0, n3: 0, max: 0.75, wind: 0, wmax: 0 },
+    { geoid: '4055000', d: '2020-06-15', n: 30, n1: 12, n15: 5, n2: 2, n3: 0, max: 2, wind: 1, wmax: 55 },
+  ],
 };
 
 test('a city row counts the hail that actually fell in it', () => {
@@ -341,4 +348,31 @@ test('the city search matches a name', () => {
   });
   assert.equal(out.length, 1);
   assert.equal(out[0].name, 'Oklahoma City');
+});
+
+
+test('the storms in a place are worst first, and a trace is not a storm', () => {
+  const index = indexCities(cityPayload);
+  const storms = cityStorms(index, '0820000');
+  assert.ok(storms.length, 'the place has storms');
+  // Worst means the number of severe reports, then the largest stone.
+  for (let i = 1; i < storms.length; i += 1) {
+    const before = storms[i - 1];
+    const after = storms[i];
+    assert.ok(
+      before.n1 > after.n1 ||
+        (before.n1 === after.n1 && before.max >= after.max),
+      `storm ${i} is no worse than the one before it`,
+    );
+  }
+  // A day with only a trace is not a storm.
+  assert.ok(
+    storms.every((storm) => storm.n > 0),
+    'every listed day has a hail report in it',
+  );
+});
+
+test('a place with no storms has none', () => {
+  const index = indexCities(cityPayload);
+  assert.deepEqual(cityStorms(index, 'nowhere-at-all'), []);
 });

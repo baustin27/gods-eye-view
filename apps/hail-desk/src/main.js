@@ -15,6 +15,7 @@
  */
 
 import {
+  cityStorms,
   cityYearBounds,
   indexCities,
   loadGzippedJson,
@@ -96,6 +97,7 @@ const el = {
   export: document.getElementById('export'),
   copyLink: document.getElementById('copyLink'),
   views: document.getElementById('views'),
+  detail: document.getElementById('detail'),
 };
 
 /** The columns for the current view. */
@@ -108,7 +110,14 @@ function render() {
       ? queryCities(state.cityIndex, state.filters)
       : queryCounties(state.countyRows, state.filters);
   state.rows = sortRows(rows, state.view, state.filters.sort, state.filters.dir);
-  renderTable(el.tableWrap, state.rows, columns(), state.filters, onSort);
+  renderTable(
+    el.tableWrap,
+    state.rows,
+    columns(),
+    state.filters,
+    onSort,
+    state.view === 'city' ? onCityClick : null,
+  );
   el.summary.textContent = summarise(state.rows, state.filters, state.view);
   const names = topNames(state.rows);
   el.worst.textContent = names ? `Worst first: ${names}` : '';
@@ -155,6 +164,83 @@ function onSort(key) {
     sort: key,
     dir: same && state.filters.dir === 'desc' ? 'asc' : 'desc',
   });
+}
+
+/**
+ * The storms in one place, worst first.
+ *
+ * This is the drill-down that makes the table a work list: the market view
+ * says a town was hit, and this says on which days and by how much, which is
+ * the list a canvasser actually works from.
+ */
+function onCityClick(row) {
+  const storms = cityStorms(state.cityIndex, row.id);
+  el.detail.replaceChildren();
+  el.detail.hidden = false;
+
+  const head = document.createElement('div');
+  head.className = 'detail-head';
+  const title = document.createElement('h2');
+  title.textContent = `${row.full || row.name}, ${row.st || ''}`;
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'secondary';
+  close.textContent = 'Close';
+  close.addEventListener('click', () => {
+    el.detail.hidden = true;
+    el.detail.replaceChildren();
+  });
+  head.append(title, close);
+
+  const summary = document.createElement('p');
+  summary.className = 'detail-summary';
+  const worst = storms[0];
+  summary.textContent = worst
+    ? `${storms.length} ${storms.length === 1 ? 'day' : 'days'} with hail reported in this place. ` +
+      `Worst: ${worst.d} with ${worst.n1} of an inch or more and a largest stone of ${worst.max.toFixed(2)}\". ` +
+      `${(row.units ?? 0).toLocaleString()} housing units in the place.`
+    : 'No hail reported in this place inside the selected window.';
+
+  const table = document.createElement('table');
+  table.className = 'desk-table storm-table';
+  const head2 = document.createElement('thead');
+  const hr = document.createElement('tr');
+  for (const [label, title2] of [
+    ['Date', 'The day the hail was reported.'],
+    ['≥1"', 'Reports of an inch or more that day.'],
+    ['≥1.5"', 'Reports of an inch and a half or more.'],
+    ['≥2"', 'Reports of two inches or more.'],
+    ['Max', 'The largest stone reported that day, in inches.'],
+    ['Wind', 'Wind reports that day.'],
+  ]) {
+    const cell = document.createElement('th');
+    cell.scope = 'col';
+    cell.textContent = label;
+    cell.title = title2;
+    hr.appendChild(cell);
+  }
+  head2.appendChild(hr);
+  table.appendChild(head2);
+  const body = document.createElement('tbody');
+  for (const storm of storms) {
+    const tr = document.createElement('tr');
+    for (const value of [
+      storm.d,
+      storm.n1.toLocaleString(),
+      storm.n15.toLocaleString(),
+      storm.n2.toLocaleString(),
+      `${storm.max.toFixed(2)}"`,
+      storm.wind.toLocaleString(),
+    ]) {
+      const cell = document.createElement('td');
+      cell.textContent = String(value);
+      tr.appendChild(cell);
+    }
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  el.detail.append(head, summary, table);
+  el.detail.scrollIntoView({ block: 'nearest' });
 }
 
 /** Populate the state dropdown from the states the data actually covers. */

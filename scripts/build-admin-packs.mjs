@@ -64,6 +64,15 @@ export const SOURCES = Object.freeze({
     url: 'https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_place_500k.zip',
     sha256: '27562072c8e7890cafa6b3ac7a44e5e394b34da210501b48500052bc56b8a18d',
   },
+  // Census TRACTS. A tract is about 1.5 square kilometres - a
+  // neighbourhood - and it is the finest unit the Census publishes a housing
+  // count for, which makes it the only place a "houses in the swath" number
+  // can live. At county level the answer is a fraction of a total; at tract
+  // level it is a number of doors.
+  censusTracts: {
+    url: 'https://www2.census.gov/geo/tiger/GENZ2025/shp/cb_2025_us_tract_500k.zip',
+    sha256: '19143b16d8381d349a5daea5e862235bfe1c19a418a3b98a09c4f050c1ccfde3',
+  },
 });
 
 /**
@@ -101,6 +110,20 @@ export const PARAMS = Object.freeze({
     minPartKm2: 1,
     minPartShare: 0.001,
     minHoleKm2: 1,
+  },
+  // Tracts are small, so they are simplified harder and rounded to four
+  // decimals - about eleven metres, which is finer than a house and far finer
+  // than the 1 km radar cell they will be laid under. The tolerance is scaled
+  // to the TRACT's own size, so a city-sized tract keeps its detail and a
+  // rural one does not carry a thousand vertices it does not need.
+  censusTracts: {
+    toleranceFactor: 0.0015,
+    minToleranceDeg: 0.00008,
+    maxToleranceDeg: 0.002,
+    decimals: 4,
+    minPartKm2: 0.02,
+    minPartShare: 0.02,
+    minHoleKm2: 0.02,
   },
   // City and town boundaries. Finer than the counties on purpose: a place is
   // a neighbourhood, not a region, and the whole point of having a boundary
@@ -886,6 +909,54 @@ async function buildCounties() {
 }
 
 /**
+ * The Census TRACT boundaries.
+ *
+ * The GEOID is the eleven-digit state+county+tract FIPS, which is the key the
+ * ACS housing-unit artifact is keyed by, so a tract joins to its housing count
+ * with no crosswalk.
+ */
+async function buildCensusTracts() {
+  const params = PARAMS.censusTracts;
+  const source = await fetchPinned('censusTracts');
+  const files = unzip(source.bytes);
+  const base = path.basename(
+    new URL(SOURCES.censusTracts.url).pathname,
+    '.zip',
+  );
+  const shapes = readShp(files.get(`${base}.shp`));
+  const records = readDbf(files.get(`${base}.dbf`));
+  if (shapes.length !== records.length)
+    throw new Error('census tracts: shp/dbf record counts differ');
+  const features = [];
+  records.forEach((record, index) => {
+    const unit = simplifyUnit(shpPolygons(shapes[index]), params);
+    if (!unit.polygons.length) return;
+    features.push({
+      name: record.NAME,
+      geoid: record.GEOID,
+      ...(unit.decimals !== params.decimals ? { d: unit.decimals } : {}),
+      polygons: encodeUnit(unit),
+    });
+  });
+  features.sort((a, b) => a.geoid.localeCompare(b.geoid));
+  return {
+    meta: {
+      title: 'US Census Bureau cartographic boundary tracts',
+      source: base,
+      url: SOURCES.censusTracts.url,
+      sha256: source.digest,
+      license: 'Public domain (U.S. Government work, 17 U.S.C. § 105)',
+      schema:
+        'features[]: name, geoid (11-digit state+county+tract FIPS, the key the ACS housing-unit artifact uses), d? (decimals when not meta.decimals), polygons[][ring] (first ring outer, rest holes; each ring open and encoded as integers in 10^-d degrees, first vertex absolute then [dLon, dLat] deltas)',
+      decimals: params.decimals,
+      curation: params,
+      script: 'scripts/build-admin-packs.mjs',
+    },
+    features,
+  };
+}
+
+/**
  * The Census PLACE boundaries: cities, towns, villages and CDPs.
  *
  * The GEOID is the seven-digit state+place FIPS, which is the SAME key the
@@ -969,6 +1040,12 @@ async function writePack(relative, pack, summarize = outlineSummary) {
     `${relative}: ${summarize(pack)}, ${Buffer.byteLength(text)} bytes`,
   );
 }
+
+if (!only || only === 'census-tracts')
+  await writePack(
+    'src/data/local_data/us_census_tracts/tracts.json',
+    await buildCensusTracts(),
+  );
 
 if (!only || only === 'census-places')
   await writePack(

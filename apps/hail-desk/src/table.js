@@ -276,7 +276,7 @@ export function sortRows(rows, view, sort, dir) {
  * @param {object} state
  * @param {(key: string) => void} onSort
  */
-export function renderTable(container, rows, columns, state, onSort) {
+export function renderTable(container, rows, columns, state, onSort, onRowClick) {
   container.replaceChildren();
   const table = document.createElement('table');
   table.className = 'desk-table';
@@ -308,6 +308,18 @@ export function renderTable(container, rows, columns, state, onSort) {
   const body = document.createElement('tbody');
   for (const row of rows) {
     const tr = document.createElement('tr');
+    if (onRowClick) {
+      tr.className = 'clickable';
+      tr.tabIndex = 0;
+      tr.title = 'Show the storms in this place';
+      tr.addEventListener('click', () => onRowClick(row));
+      tr.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onRowClick(row);
+        }
+      });
+    }
     for (const column of columns) {
       const cell = document.createElement('td');
       // The card layout on a phone has no header row, so the label travels

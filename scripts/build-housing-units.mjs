@@ -313,7 +313,10 @@ function loadStateCountyRings(stateFips) {
   const out = [];
   for (const feature of pack.features || []) {
     const fips = String(feature.geoid ?? '');
-    if (!fips.startsWith(stateFips)) continue;
+    // A null state means EVERY county. That is the `--state all` build, and it
+    // is not a rare path: the national build is the one that matters, and
+    // loading no counties at all left every ZCTA with a null county.
+    if (stateFips && !fips.startsWith(stateFips)) continue;
     const encoded = feature.polygons;
     if (!Array.isArray(encoded) || !encoded.length) continue;
     const featureDecimals = feature.d ?? decimals;
@@ -322,7 +325,21 @@ function loadStateCountyRings(stateFips) {
     const rings = encoded.map((polygon) =>
       polygon.map((ring) => decodeRing(ring, featureDecimals)),
     );
-    out.push({ fips, rings });
+    // The bounding box of the outer ring, for the prefilter.
+    let minLon = Infinity;
+    let minLat = Infinity;
+    let maxLon = -Infinity;
+    let maxLat = -Infinity;
+    for (const [lon, lat] of rings[0] || []) {
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
+    const bounds = Number.isFinite(minLon)
+      ? [minLon, minLat, maxLon, maxLat]
+      : null;
+    out.push({ fips, rings, bounds });
   }
   return out;
 }
@@ -332,7 +349,14 @@ function loadStateCountyRings(stateFips) {
  * @returns {string|null} the five-digit county FIPS
  */
 function countyAt(ringsByFips, lat, lon) {
-  for (const { fips, rings } of ringsByFips) {
+  for (const { fips, rings, bounds } of ringsByFips) {
+    // The bounding box first. Without it, placing 33,772 ZCTAs against 3,222
+    // counties is 108 million ray casts, and the answer is the same either way
+    // because a point outside the box cannot be inside the polygon.
+    if (bounds) {
+      if (lat < bounds[1] || lat > bounds[3]) continue;
+      if (lon < bounds[0] || lon > bounds[2]) continue;
+    }
     if (polygonsContain(rings, lat, lon)) return fips;
   }
   return null;
@@ -508,7 +532,11 @@ async function main() {
   const zctaPoints = await loadZctaPoints();
   step(`gazetteer: ${zctaPoints.size} ZCTA points`);
 
-  const ringsByFips = stateFips ? loadStateCountyRings(stateFips) : [];
+  // ALWAYS load the rings. The state filter lives inside the loader, and a
+  // null state means every county - which is the national build, the one that
+  // matters most. Skipping the load entirely left every ZCTA with a null
+  // county, and the build still reported 33,772 placed.
+  const ringsByFips = loadStateCountyRings(stateFips);
   if (stateFips) {
     step(`county rings for ${stateFips}: ${ringsByFips.length}`);
   }

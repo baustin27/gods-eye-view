@@ -7,32 +7,32 @@
   "variableMoe": "B25001_001M",
   "variablePopulation": "B01003_001E",
   "license": "Public domain (U.S. Government work, 17 U.S.C. § 105)",
-  "builtAt": "2026-10-20T00:13:44.126Z",
+  "builtAt": "2026-10-20T00:31:32.704Z",
   "noDataSentinel": -666666666,
   "artifacts": {
     "housing_units_county.json.gz": {
-      "bytes": 59773,
-      "rawBytes": 294086
+      "bytes": 59780,
+      "rawBytes": 294093
     },
     "housing_units_place.json.gz": {
-      "bytes": 579514,
-      "rawBytes": 2938092
+      "bytes": 579521,
+      "rawBytes": 2938099
     },
     "housing_units_tract.json.gz": {
-      "bytes": 22967,
-      "rawBytes": 185906
+      "bytes": 1298300,
+      "rawBytes": 11070034
     },
     "housing_units_zcta.json.gz": {
-      "bytes": 12278,
-      "rawBytes": 60251
+      "bytes": 734846,
+      "rawBytes": 3790828
     }
   },
   "verification": {
-    "checked": 64,
+    "checked": 423,
     "against": [
       "B25002_001E",
       "B25003_001E"
     ],
-    "states": "08"
+    "states": "08,20,48"
   }
 }
