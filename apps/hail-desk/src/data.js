@@ -220,7 +220,7 @@ export function indexSwaths(payload) {
     const key = `${row.k}:${row.d}`;
     let entry = byPlaceDay.get(key);
     if (!entry) {
-      entry = { tracts: 0, houses: 0, maxMm: 0 };
+      entry = { tracts: 0, houses: 0, maxMm: 0, list: [] };
       byPlaceDay.set(key, entry);
       if (!byPlace.has(row.k)) byPlace.set(row.k, new Map());
       byPlace.get(row.k).set(row.d, entry);
@@ -241,7 +241,24 @@ export function indexSwaths(payload) {
     entry.tracts += 1;
     entry.houses += row.u || 0;
     if (row.m > entry.maxMm) entry.maxMm = row.m;
+    // The tract itself, kept. The counts above are for the town; a canvasser
+    // works in a neighbourhood, and the row for each tract the radar reached
+    // is the work list.
+    entry.list.push({
+      geoid: row.g,
+      name: String(row.g || '').slice(5),
+      units: row.u || 0,
+      maxMm: row.m || 0,
+      cells: row.c || 0,
+    });
     if (firstDay === null || row.d < firstDay) firstDay = row.d;
+  }
+  // Worst first, then the most doors: the tract with the most houses under
+  // the hail is the one to work, and a tie goes to the harder hail.
+  for (const entry of byPlaceDay.values()) {
+    entry.list.sort(
+      (a, b) => b.units - a.units || b.maxMm - a.maxMm || a.geoid.localeCompare(b.geoid),
+    );
   }
   return { byPlaceDay, byPlace, firstDay };
 }

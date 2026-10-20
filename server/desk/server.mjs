@@ -76,6 +76,7 @@ const server = http.createServer(async (req, res) => {
         zip: url.searchParams.get('zip') || '',
         day: url.searchParams.get('day') || '',
         thresholdMm: url.searchParams.get('thresholdMm') || '',
+        tract: url.searchParams.get('tract') || '',
       });
       send(res, 200, JSON.stringify(payload), TYPES['.json']);
     } catch (error) {

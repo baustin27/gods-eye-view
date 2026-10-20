@@ -142,11 +142,61 @@ export function polylineLengthMetres(points) {
 }
 
 /**
- * The share of a street edge that was under the hail.
+ * The samples along a street edge.
  *
- * The edge is walked at a fixed spacing and each sample is looked up in the
- * set of cells that were over the threshold. The share is the fraction of
- * samples that landed in one of them.
+ * The edge is walked at a fixed spacing and the points are returned, so that
+ * everything asked of a street - was it under the hail, is it inside a
+ * tract - is answered from the SAME samples. Two passes over the same line
+ * with different spacings would give two slightly different answers to the
+ * same street, and the knock list would disagree with the tract list.
+ *
+ * @param {Array<number>} points flat [lon, lat, lon, lat, ...]
+ * @param {object} [options]
+ * @param {number} [options.sampleMetres] the spacing of the samples
+ * @returns {{length: number, count: number, lat: Float64Array,
+ *   lon: Float64Array}}
+ */
+export function sampleStreet(points, options = {}) {
+  const sampleMetres = options.sampleMetres || DEFAULT_SAMPLE_METRES;
+  const empty = {
+    length: 0,
+    count: 0,
+    lat: new Float64Array(0),
+    lon: new Float64Array(0),
+  };
+  if (!Array.isArray(points) || points.length < 4) return empty;
+
+  const vertexCount = Math.floor(points.length / 2);
+  const cumulative = new Float64Array(vertexCount);
+  for (let i = 1; i < vertexCount; i += 1) {
+    cumulative[i] = cumulative[i - 1] + legMetres(points, i - 1);
+  }
+  const total = cumulative[vertexCount - 1];
+  if (!(total > 0)) return empty;
+
+  const steps = Math.max(1, Math.ceil(total / sampleMetres));
+  const count = steps + 1;
+  const lat = new Float64Array(count);
+  const lon = new Float64Array(count);
+  let cursor = 0;
+  for (let k = 0; k < count; k += 1) {
+    const distance = (k / steps) * total;
+    while (cursor + 1 < vertexCount - 1 && cumulative[cursor + 1] < distance) {
+      cursor += 1;
+    }
+    const legStart = cumulative[cursor];
+    const legLength = cumulative[cursor + 1] - legStart;
+    const t = legLength > 0 ? (distance - legStart) / legLength : 0;
+    lon[k] = points[cursor * 2] + (points[cursor * 2 + 2] - points[cursor * 2]) * t;
+    lat[k] =
+      points[cursor * 2 + 1] +
+      (points[cursor * 2 + 3] - points[cursor * 2 + 1]) * t;
+  }
+  return { length: total, count, lat, lon };
+}
+
+/**
+ * The share of a street edge that was under the hail.
  *
  * Sampling rather than exact clipping is a deliberate choice. Exact clipping
  * against the cell squares would be more precise, but it is a different
@@ -164,43 +214,18 @@ export function polylineLengthMetres(points) {
  * @returns {{fraction: number, metres: number, samples: number}}
  */
 export function hailFraction(points, hitCells, options = {}) {
-  const sampleMetres = options.sampleMetres || DEFAULT_SAMPLE_METRES;
-  const empty = { fraction: 0, metres: 0, samples: 0 };
-  if (!Array.isArray(points) || points.length < 4) return empty;
-  if (!hitCells || hitCells.size === 0) return empty;
-
-  const vertexCount = Math.floor(points.length / 2);
-  const cumulative = new Float64Array(vertexCount);
-  for (let i = 1; i < vertexCount; i += 1) {
-    cumulative[i] = cumulative[i - 1] + legMetres(points, i - 1);
-  }
-  const total = cumulative[vertexCount - 1];
-  if (!(total > 0)) return empty;
-
-  const steps = Math.max(1, Math.ceil(total / sampleMetres));
+  const { length, count, lat, lon } = sampleStreet(points, options);
+  if (!count) return { fraction: 0, metres: 0, samples: 0 };
   let hits = 0;
-  let cursor = 0;
-  for (let k = 0; k <= steps; k += 1) {
-    const distance = (k / steps) * total;
-    while (cursor + 1 < vertexCount - 1 && cumulative[cursor + 1] < distance) {
-      cursor += 1;
-    }
-    const legStart = cumulative[cursor];
-    const legLength = cumulative[cursor + 1] - legStart;
-    const t = legLength > 0 ? (distance - legStart) / legLength : 0;
-    const lon =
-      points[cursor * 2] + (points[cursor * 2 + 2] - points[cursor * 2]) * t;
-    const lat =
-      points[cursor * 2 + 1] +
-      (points[cursor * 2 + 3] - points[cursor * 2 + 1]) * t;
-    const index = fineCellIndexAt(lat, lon);
+  for (let k = 0; k < count; k += 1) {
+    const index = fineCellIndexAt(lat[k], lon[k]);
     if (index >= 0 && hitCells.has(index)) hits += 1;
   }
-  const fraction = hits / (steps + 1);
+  const fraction = hits / count;
   return {
     fraction,
-    metres: fraction * total,
-    samples: steps + 1,
+    metres: fraction * length,
+    samples: count,
   };
 }
 

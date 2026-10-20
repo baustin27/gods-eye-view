@@ -35,8 +35,13 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 import { indexFineDay } from '../../src/data/stormReports.js';
-import { hailFraction, hitCellSet } from '../../src/data/hailStreet.js';
+import {
+  fineCellIndexAt,
+  hitCellSet,
+  sampleStreet,
+} from '../../src/data/hailStreet.js';
 import { countyEdges, countyStreets } from './tigerStreets.js';
+import { loadTracts, tractContains } from './tracts.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
@@ -91,49 +96,111 @@ export function dayHitCells(day, thresholdMm = HAIL_THRESHOLD_MM) {
 }
 
 /**
- * The streets of a county, with how many of their addresses were under the
- * hail on a day.
+ * The streets of a county, with what was on them.
+ *
+ * Three questions can be asked of a street list, and they are asked together:
+ *
+ *   - WAS IT UNDER THE HAIL. The day's 1 km radar field, and the share of
+ *     the street's length that lay in a cell over the threshold.
+ *   - IS IT IN THIS TRACT. The Census boundary, and the share of the street's
+ *     length inside it. A street on a tract boundary is in both of them, for
+ *     different parts of itself.
+ *   - WAS THE PART IN THE TRACT UNDER THE HAIL. The share of the street that
+ *     is in the tract AND in a hit cell. This is the number the tract
+ *     drill-down is for, and it is a product of two shares rather than a
+ *     share of a share - so it is counted directly, from the same samples,
+ *     rather than multiplied out of two separately-rounded numbers.
+ *
+ * All three come from ONE pass of samples along the street. Two passes would
+ * answer the same street two slightly different ways, and the knock list
+ * would disagree with the tract list.
  *
  * @param {string} state two-digit state FIPS
  * @param {string} county three-digit county FIPS
- * @param {string} day ISO `YYYY-MM-DD`
  * @param {object} [options]
  * @param {string} [options.zip] only this ZIP
+ * @param {string} [options.day] ISO `YYYY-MM-DD`
+ * @param {string} [options.tract] an eleven-digit tract GEOID
  * @param {number} [options.thresholdMm]
  * @returns {Promise<{streets: Array<object>, day: string, found: boolean,
- *   cells: number, maxMm: number, thresholdMm: number}>}
+ *   cells: number, maxMm: number, thresholdMm: number, tract: object|null}>}
  */
-export async function streetsUnderHail(state, county, day, options = {}) {
+export async function countyStreetList(state, county, options = {}) {
   const thresholdMm = options.thresholdMm ?? HAIL_THRESHOLD_MM;
-  const field = dayHitCells(day, thresholdMm);
+  const day = options.day ? String(options.day) : '';
+  const field = day ? dayHitCells(day, thresholdMm) : null;
   const streets = await countyEdges(state, county, options.zip);
 
-  // The two sides of an edge share one line, so the share is computed once
-  // per edge and applied to both. Keyed by the geometry array itself, which
-  // is the same object for both sides.
-  const shares = new Map();
+  const tractGeoid = String(options.tract || '').trim();
+  let tract = null;
+  let cellsCentred = 0;
+  if (tractGeoid) {
+    const tracts = await loadTracts();
+    tract = tracts.get(tractGeoid) || null;
+    if (!tract) {
+      throw new Error(`no tract ${tractGeoid}`);
+    }
+    // The hit cells whose CENTRE is inside the tract. The tract list counts a
+    // cell that only clips the tract's CORNER as reaching it - the radar
+    // cell is sampled at its centre and its four corners, so a cell on the
+    // boundary splits rather than giving all of its hail to one side - and
+    // that is a wider reach than a street's. The two numbers differ, and
+    // this is the one that says whether the hail was IN the tract or merely
+    // touched it.
+    if (field) {
+      for (const index of field.cells) {
+        const i = Math.floor(index / 6500) + 2100;
+        const j = (index % 6500) - 12500;
+        if (
+          tractContains(tract, i * 0.01 + 0.005, j * 0.01 + 0.005)
+        ) {
+          cellsCentred += 1;
+        }
+      }
+    }
+  }
+
+  // The two sides of an edge share one line, so the samples are taken once
+  // and applied to both. Keyed by the geometry array itself, which is the
+  // same object for both sides.
+  const seen = new Map();
   for (const street of streets) {
     if (!street.points || street.points.length < 4) {
-      street.underHail = 0;
       street.hailShare = 0;
+      street.underHail = 0;
+      street.tractShare = 0;
+      street.addressesInTract = 0;
+      street.underHailInTract = 0;
       continue;
     }
-    let share = shares.get(street.points);
-    if (share === undefined) {
-      const result = hailFraction(street.points, field.cells);
-      share = result.fraction;
-      shares.set(street.points, share);
+    let counts = seen.get(street.points);
+    if (!counts) {
+      counts = countStreet(street.points, field?.cells, tract);
+      seen.set(street.points, counts);
     }
-    street.hailShare = share;
+    street.hailShare = counts.hailShare;
     // ROUNDED, and the rounding is to a whole address because that is what an
     // address is. A street 12% under the hail with 41 addresses in range gets
     // 5 of them, not 4.9.
-    street.underHail = Math.round(street.addresses * share);
+    street.underHail = Math.round(street.addresses * counts.hailShare);
+    street.tractShare = counts.tractShare;
+    street.addressesInTract = Math.round(
+      street.addresses * counts.tractShare,
+    );
+    street.underHailInTract = Math.round(
+      street.addresses * counts.hailInTractShare,
+    );
+  }
+
+  // A tract drill-down keeps only the streets that touch it.
+  let kept = streets;
+  if (tract) {
+    kept = streets.filter((street) => street.tractShare > 0);
   }
 
   // Under the hail first, then the addresses in range, then the name - so the
   // list is a work order and not an alphabetical accident.
-  streets.sort(
+  kept.sort(
     (a, b) =>
       b.underHail - a.underHail ||
       b.addresses - a.addresses ||
@@ -142,12 +209,47 @@ export async function streetsUnderHail(state, county, day, options = {}) {
   );
 
   return {
-    streets,
+    streets: kept,
     day,
-    found: field.found,
-    cells: field.cells.size,
-    maxMm: field.maxMm,
+    found: field ? field.found : false,
+    cells: field ? field.cells.size : 0,
+    maxMm: field ? field.maxMm : 0,
     thresholdMm,
+    tract: tract
+      ? { geoid: tract.geoid, name: tract.name, cellsCentred }
+      : null,
+  };
+}
+
+/**
+ * The shares of one street, from one pass of samples along it.
+ *
+ * @param {Array<number>} points flat [lon, lat, lon, lat, ...]
+ * @param {Set<number>|null} hitCells
+ * @param {object|null} tract
+ * @returns {{hailShare: number, tractShare: number, hailInTractShare: number}}
+ */
+function countStreet(points, hitCells, tract) {
+  const { count, lat, lon } = sampleStreet(points);
+  if (!count) {
+    return { hailShare: 0, tractShare: 0, hailInTractShare: 0 };
+  }
+  let hail = 0;
+  let inTract = 0;
+  let hailInTract = 0;
+  for (let k = 0; k < count; k += 1) {
+    const index = fineCellIndexAt(lat[k], lon[k]);
+    const hit = index >= 0 && hitCells ? hitCells.has(index) : false;
+    if (hit) hail += 1;
+    if (!tract) continue;
+    if (!tractContains(tract, lat[k], lon[k])) continue;
+    inTract += 1;
+    if (hit) hailInTract += 1;
+  }
+  return {
+    hailShare: hail / count,
+    tractShare: inTract / count,
+    hailInTractShare: hailInTract / count,
   };
 }
 
@@ -168,25 +270,32 @@ export async function streetsPayload(query = {}) {
   const county = String(query.county || '').trim();
   const zip = String(query.zip || '').trim();
   const day = String(query.day || '').trim();
+  const tract = String(query.tract || '').trim();
   if (!/^\d{2}$/.test(state) || !/^\d{3}$/.test(county)) {
     throw new Error('state and county are required');
   }
 
   let streets;
   let hail = null;
-  if (day) {
-    const result = await streetsUnderHail(state, county, day, {
+  let tractInfo = null;
+  if (day || tract) {
+    const result = await countyStreetList(state, county, {
       zip,
+      day,
+      tract,
       thresholdMm: Number(query.thresholdMm) || HAIL_THRESHOLD_MM,
     });
     streets = result.streets;
-    hail = {
-      day: result.day,
-      found: result.found,
-      cells: result.cells,
-      maxMm: result.maxMm,
-      thresholdMm: result.thresholdMm,
-    };
+    if (day) {
+      hail = {
+        day: result.day,
+        found: result.found,
+        cells: result.cells,
+        maxMm: result.maxMm,
+        thresholdMm: result.thresholdMm,
+      };
+    }
+    tractInfo = result.tract;
   } else {
     streets = await countyStreets(state, county, zip);
   }
@@ -206,6 +315,18 @@ export async function streetsPayload(query = {}) {
     payload.hail = hail;
     payload.underHail = streets.reduce(
       (total, street) => total + (street.underHail || 0),
+      0,
+    );
+  }
+  if (tractInfo) {
+    payload.tract = tractInfo;
+    payload.cellsCentred = tractInfo.cellsCentred;
+    payload.addressesInTract = streets.reduce(
+      (total, street) => total + (street.addressesInTract || 0),
+      0,
+    );
+    payload.underHailInTract = streets.reduce(
+      (total, street) => total + (street.underHailInTract || 0),
       0,
     );
   }

@@ -311,6 +311,7 @@ export function tigerStreetsPlugin() {
             zip: url.searchParams.get('zip') || '',
             day: url.searchParams.get('day') || '',
             thresholdMm: url.searchParams.get('thresholdMm') || '',
+            tract: url.searchParams.get('tract') || '',
           });
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify(payload));

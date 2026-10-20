@@ -266,6 +266,7 @@ function onCityClick(row) {
       'The radar reached this place and nobody called it in. A day with ' +
         'houses under it and no reports is where the canvassing is.',
     ],
+    ['Tracts', 'The neighbourhoods the radar reached that day.'],
     ['Streets', 'The street list for the ZIP under the hail.'],
   ]) {
     const cell = document.createElement('th');
@@ -300,6 +301,17 @@ function onCityClick(row) {
     // comes back, and says so if the county is not the one you think.
     const streetCell = document.createElement('td');
     if (swath && swath.state && swath.county) {
+      // The neighbourhoods first, then the streets. A canvasser works in a
+      // tract, and the tract is the level the radar is meaningful at.
+      const tractButton = document.createElement('button');
+      tractButton.type = 'button';
+      tractButton.className = 'link-button';
+      tractButton.textContent = 'tracts';
+      tractButton.addEventListener('click', () =>
+        showTracts(swath.list || [], storm.d),
+      );
+      streetCell.appendChild(tractButton);
+
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'link-button';
@@ -318,6 +330,101 @@ function onCityClick(row) {
 }
 
 /**
+ * The neighbourhoods the radar reached, for one storm.
+ *
+ * A town's number says a town was hit. A canvasser works in a neighbourhood,
+ * so the tract is the row that decides the afternoon: how many houses are in
+ * it, how hard the hail was there, and a link through to the streets inside
+ * it.
+ */
+function showTracts(tracts, day) {
+  const panel = document.getElementById('tracts');
+  panel.hidden = false;
+  panel.replaceChildren();
+  const heading = document.createElement('h2');
+  heading.textContent = `Tracts under the hail on ${day}`;
+  const note = document.createElement('p');
+  note.className = 'detail-summary';
+  const houses = tracts.reduce((total, tract) => total + tract.units, 0);
+  note.textContent =
+    `${tracts.length.toLocaleString()} tracts, ` +
+    `${houses.toLocaleString()} housing units. ` +
+    'A tract the radar reached is a tract to work and every house in it is a ' +
+    'candidate: the radar is sound about where hail fell and unsound about ' +
+    'how big each stone was. The number is the Census count of HOUSING ' +
+    'UNITS, which is not the same as the addresses in the street ranges.';
+  panel.append(heading, note);
+  if (!tracts.length) {
+    panel.append(note);
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'desk-table storm-table';
+  const head = document.createElement('thead');
+  const hr = document.createElement('tr');
+  for (const [label, title2] of [
+    ['Tract', 'The census tract number.'],
+    [
+      'Houses',
+      'The housing units in this tract, from the ACS. Every one of them is ' +
+        'a candidate.',
+    ],
+    [
+      'Hail',
+      'The largest radar reading inside this tract that day, in inches.',
+    ],
+    [
+      'Cells',
+      'The number of 1 km radar cells inside this tract that were over the ' +
+        'threshold. How much of the tract the hail covered.',
+    ],
+    ['Streets', 'The streets inside this tract.'],
+  ]) {
+    const th = document.createElement('th');
+    th.scope = 'col';
+    th.textContent = label;
+    th.title = title2;
+    hr.appendChild(th);
+  }
+  head.appendChild(hr);
+  table.appendChild(head);
+  const body = document.createElement('tbody');
+  for (const tract of tracts.slice(0, 300)) {
+    const tr = document.createElement('tr');
+    for (const value of [
+      tract.name,
+      tract.units.toLocaleString(),
+      `${(tract.maxMm / 25.4).toFixed(2)}"`,
+      tract.cells.toLocaleString(),
+    ]) {
+      const td = document.createElement('td');
+      td.textContent = String(value);
+      tr.appendChild(td);
+    }
+    const streetCell = document.createElement('td');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'link-button';
+    button.textContent = 'streets';
+    button.addEventListener('click', () =>
+      showStreets(
+        tract.geoid.slice(0, 2),
+        tract.geoid.slice(2, 5),
+        day,
+        tract.geoid,
+      ),
+    );
+    streetCell.appendChild(button);
+    tr.appendChild(streetCell);
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  panel.append(table);
+  panel.scrollIntoView({ block: 'nearest' });
+}
+
+/**
  * The street list for a ZIP, from the Census TIGER files.
  *
  * It comes from a service rather than from this app's data, because the
@@ -330,19 +437,22 @@ function onCityClick(row) {
  * streets. With it the service lays the day's 1 km radar field over the
  * streets and says how many of each street's addresses were under the hail.
  */
-async function showStreets(state, county, day) {
+async function showStreets(state, county, day, tract) {
   const panel = document.getElementById('streets');
   panel.hidden = false;
   panel.replaceChildren();
   const heading = document.createElement('h2');
-  heading.textContent = `Streets in county ${state}${county}`;
+  heading.textContent = tract
+    ? `Streets in tract ${tract.slice(5)}, county ${state}${county}`
+    : `Streets in county ${state}${county}`;
   const note = document.createElement('p');
   note.className = 'detail-summary';
   note.textContent = 'Loading the Census street list for this ZIP…';
   panel.append(heading, note);
+  const query = new URLSearchParams({ state, county });
+  if (day) query.set('day', day);
+  if (tract) query.set('tract', tract);
   try {
-    const query = new URLSearchParams({ state, county });
-    if (day) query.set('day', day);
     const response = await fetch(`/api/desk/streets?${query}`);
     const payload = await response.json();
     if (!response.ok || payload.error) {
@@ -412,6 +522,41 @@ async function showStreets(state, county, day) {
         panel.append(hailNote);
       }
     }
+    // Inside a tract, the numbers are the tract's own.
+    if (payload.tract) {
+      const tractNote = document.createElement('p');
+      tractNote.className = 'detail-summary';
+      const centred = payload.cellsCentred ?? 0;
+      if (payload.underHailInTract > 0) {
+        tractNote.textContent =
+          `In tract ${payload.tract.name}: ` +
+          `${payload.underHailInTract.toLocaleString()} of ` +
+          `${payload.addressesInTract.toLocaleString()} addresses were under ` +
+          `the hail, over ${payload.count.toLocaleString()} street segments. ` +
+          'A street on a tract boundary is in both tracts, for different parts ' +
+          'of itself, so the two columns are measured against the tract: the ' +
+          'addresses on the part of the street that is inside it, and how many ' +
+          'of those were under the hail.';
+      } else {
+        // The hail reached the tract but no street inside it lies under a cell
+        // that was over the threshold. The tract list counts a cell that
+        // only clips the tract's CORNER as reaching it, so a tract can be a
+        // candidate with no street under the hail in it. Saying so is better
+        // than showing a column of zeroes and letting it look like a bug.
+        tractNote.textContent =
+          `In tract ${payload.tract.name}: no street inside it lies under a ` +
+          'cell that was over the threshold. ' +
+          (centred > 0
+            ? `${centred} of the day's hail cells are centred inside the ` +
+              'tract, so the hail fell on ground with no street on it. '
+            : 'The radar reached the tract at its edge rather than over its ' +
+              'streets, because a cell that clips a corner counts as ' +
+              'reaching it. ') +
+          'The tract is on the work list and its houses are candidates all ' +
+          'the same: work the streets nearest the hail.';
+      }
+      panel.append(tractNote);
+    }
     // The damage table first: the street list is the navigation, and this is
     // the reason to navigate. Sorted by damage, because a ZIP nobody applied
     // for help in is a ZIP to drive past.
@@ -469,6 +614,14 @@ async function showStreets(state, county, day) {
     table.className = 'desk-table storm-table';
     const head = document.createElement('thead');
     const hr = document.createElement('tr');
+    // Inside a tract the two numbers are the tract's own: the addresses on the
+    // street that are inside the tract, and how many of those were under the
+    // hail. Outside one they are the county's.
+    const hailColumns = payload.tract
+      ? ['In the tract', 'Under the hail']
+      : payload.hail
+        ? ['Under the hail', 'Share']
+        : [];
     for (const label of [
       'Street',
       'ZIP',
@@ -476,7 +629,7 @@ async function showStreets(state, county, day) {
       'To',
       'Side',
       'Addresses',
-      ...(payload.hail ? ['Under the hail', 'Share'] : []),
+      ...hailColumns,
     ]) {
       const th = document.createElement('th');
       th.scope = 'col';
@@ -495,12 +648,17 @@ async function showStreets(state, county, day) {
         street.to,
         street.side === 'L' ? 'left' : 'right',
         street.addresses.toLocaleString(),
-        ...(payload.hail
+        ...(payload.tract
           ? [
-              street.underHail.toLocaleString(),
-              `${Math.round((street.hailShare || 0) * 100)}%`,
+              street.addressesInTract.toLocaleString(),
+              street.underHailInTract.toLocaleString(),
             ]
-          : []),
+          : payload.hail
+            ? [
+                street.underHail.toLocaleString(),
+                `${Math.round((street.hailShare || 0) * 100)}%`,
+              ]
+            : []),
       ]) {
         const td = document.createElement('td');
         td.textContent = String(value);

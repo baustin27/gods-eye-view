@@ -413,6 +413,36 @@ test('a place with no radar has no swaths', () => {
   assert.equal(radarDays(index, 'nowhere', { fromYear: 1955, toYear: 2025 }).length, 0);
 });
 
+test('the tracts are kept, not just their total', () => {
+  // The roll-up is for the town; the canvasser works in a neighbourhood, so
+  // the row for each tract the radar reached has to survive the roll-up.
+  const index = indexSwaths(swathPayload);
+  const day = index.byPlaceDay.get('1100100:2024-07-17');
+  assert.equal(day.list.length, 3, 'three tracts in the list');
+  assert.deepEqual(
+    day.list.map((tract) => tract.units),
+    [4000, 3000, 2000],
+    'most houses first',
+  );
+  assert.equal(day.list[0].geoid, '11001020100');
+  assert.equal(day.list[0].name, '020100', 'the tract number');
+  assert.equal(day.list[0].maxMm, 42.5);
+  assert.equal(day.list[0].cells, 3);
+});
+
+test('the tract list does not leak across places or days', () => {
+  const index = indexSwaths(swathPayload);
+  const first = index.byPlaceDay.get('1100100:2024-07-17');
+  const second = index.byPlaceDay.get('1100100:2025-01-18');
+  assert.equal(first.list.length, 3);
+  assert.equal(second.list.length, 1);
+  assert.equal(second.list[0].units, 500);
+  assert.ok(
+    !first.list.some((tract) => tract.geoid === '11001020400'),
+    "the 2025 tract is not in the 2024 day",
+  );
+});
+
 test('the radar days respect the window', () => {
   const index = indexSwaths(swathPayload);
   const all = radarDays(index, '1100100', { fromYear: 1955, toYear: 2025 });
