@@ -1,4 +1,8 @@
-import { getKeyholeGeometry } from './celestialRing.js';
+import {
+  getKeyholeGeometry,
+  getKeyholeFadeTuning,
+  setKeyholeEnabled,
+} from './celestialRing.js';
 
 /**
  * Scope mask — the app's signature circular viewport treatment, made real.
@@ -101,7 +105,19 @@ const SCOPE_TERMINUS_SAMPLE_MS = 120;
 let _canvas = null;
 let _container = null;
 let _viewer = null;
-let _enabled = true;
+/**
+ * The porthole is OFF by default.
+ *
+ * It was the app's signature treatment - a circular keyhole in a black
+ * surround - and it was eating more than half the screen, with the map as a
+ * small circle in the middle. The map is the product. The porthole is a
+ * framing device, and the framing can be had by the operator from DISPLAY >
+ * Scope when they want it.
+ *
+ * `draw()` early-outs when this is false, so an off mask costs one clear and
+ * then nothing.
+ */
+let _enabled = false;
 let _featherRatio = SCOPE_FEATHER_RATIO_DEFAULT;
 let _resizeObserver = null;
 let _dprQuery = null;
@@ -505,6 +521,10 @@ export function setScopeMaskEnabled(enabled) {
   const next = Boolean(enabled);
   const reEnabled = next && !_enabled;
   _enabled = next;
+  // The porthole and the label fade are the same thing seen from two sides:
+  // the fade exists so that text outside the porthole does not float over the
+  // black surround, so with no porthole there is nothing to fade out of.
+  setKeyholeEnabled(next);
   if (reEnabled) {
     // The camera moved freely while the scope was off and nothing sampled it,
     // so the painted terminus can be a whole altitude band stale. Re-sync once
@@ -561,6 +581,9 @@ export function _resetScopeMaskForTest() {
   _canvas = null;
   _container = null;
   _viewer = null;
+  // The test seam restores the mask to ON, whatever the app's default is: the
+  // tests that exercise the mask expect it to be painting, and the ones that
+  // want it off say so.
   _enabled = true;
   _featherRatio = SCOPE_FEATHER_RATIO_DEFAULT;
   _terminusAlpha = SCOPE_OUTSIDE_ALPHA;

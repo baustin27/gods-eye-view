@@ -53,6 +53,37 @@ function clamp(value, min, max) {
 }
 
 /** Update the shared fade distance and outside-opacity floor. */
+/**
+ * Whether the keyhole - the porthole - is in force.
+ *
+ * The label fade exists so that text outside the porthole does not float over
+ * the black surround. With no porthole there is no surround and nothing to be
+ * "outside" of, so the fade has nothing to do and everything it dims is
+ * dimmed for no reason.
+ *
+ * A flag rather than a different default, because the default is pinned in
+ * five places across the app (the opacity slider, the share-link parse
+ * fallback, the post defaults, the detection policy anchor and the reasonable
+ * -defaults test) and those are the FIRST-RUN state of a control that still
+ * has a slider. The flag says whether the porthole is there, which is a
+ * different question from how opaque the outside is.
+ */
+let keyholeEnabled = true;
+
+/** Whether the keyhole porthole is in force. */
+export function isKeyholeEnabled() {
+  return keyholeEnabled;
+}
+
+/**
+ * Turn the keyhole on or off.
+ *
+ * @param {boolean} enabled
+ */
+export function setKeyholeEnabled(enabled) {
+  keyholeEnabled = Boolean(enabled);
+}
+
 export function setKeyholeFadeTuning({ fadeRatio, outsideOpacity } = {}) {
   if (Number.isFinite(fadeRatio)) {
     keyholeFadeRatio = clamp(fadeRatio, 0, KEYHOLE_LABEL_FEATHER_MAX_RATIO);
@@ -99,6 +130,8 @@ export function keyholeLabelAlpha(labelX, labelY, width, height) {
 
 /** Compute keyhole opacity from geometry already cached by a hot render loop. */
 export function keyholeLabelAlphaFromGeometry(labelX, labelY, geometry) {
+  // No porthole, no outside, no fade.
+  if (!keyholeEnabled) return 1;
   if (
     !geometry ||
     !(geometry.radius > 0) ||

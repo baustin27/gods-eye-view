@@ -1115,7 +1115,12 @@ try {
   // ---- PROBE 1: are the swaths on at all? ---------------------------------
   const reportedClick = await clickChip(page, 'storm-reports-swath-reported');
   await settle(page, 4);
-  const radarClick = await clickChip(page, 'storm-reports-swath-radar');
+  // RADAR is ON BY DEFAULT now, so clicking it would switch it OFF. The
+  // harness wants it ON, so it only clicks when it is not.
+  const radarBefore = await readSwathState(page);
+  const radarClick = radarBefore.radar
+    ? { found: true, disabled: false, alreadyOn: true }
+    : await clickChip(page, 'storm-reports-swath-radar');
   await settle(page);
 
   const state = await readSwathState(page);

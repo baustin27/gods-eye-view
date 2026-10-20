@@ -1135,10 +1135,16 @@ test('the swath chips are offered, and each draws only its own layer', async () 
   );
   assert.ok(reportedChip && radarChip, 'both swath chips are on the row');
   assert.equal(radarChip.disabled, false, 'radar is wired, so RADAR is live');
-  assert.equal(layer.getReportedSwath(), false, 'off until asked for');
-  assert.equal(layer.getRadarSwath(), false, 'the same for radar');
+  assert.equal(layer.getReportedSwath(), false, 'REPORTED is off until asked for');
+  // RADAR is ON BY DEFAULT, because a layer called "Hail & Wind" whose
+  // default view has no hail in it is not showing the hail.
+  assert.equal(layer.getRadarSwath(), true, 'the radar swath is on by default');
   assert.equal(swathEntities(viewer, 'reported').length, 0);
-  assert.equal(swathEntities(viewer, 'radar').length, 0);
+  assert.equal(
+    swathEntities(viewer, 'radar').length,
+    2,
+    'and the two radar cells are drawn without being asked for',
+  );
 
   assert.equal(layer.setReportedSwath(true), true);
   assert.equal(
@@ -1146,10 +1152,19 @@ test('the swath chips are offered, and each draws only its own layer', async () 
     2,
     'one rectangle per reported grid cell',
   );
-  assert.equal(swathEntities(viewer, 'radar').length, 0, 'and no radar cells');
 
   assert.equal(layer.setReportedSwath(false), true);
   assert.equal(swathEntities(viewer, 'reported').length, 0, 'REPORTED off');
+  // Switching RADAR off must actually take the polygons off the map. It did
+  // not: the cells were cleared but the entities were still in the data
+  // source, so the swath stayed on the screen with nothing to switch it back
+  // with.
+  assert.equal(layer.setRadarSwath(false), true);
+  assert.equal(
+    swathEntities(viewer, 'radar').length,
+    0,
+    'RADAR off REMOVES the polygons, not just the cells',
+  );
   assert.equal(layer.setRadarSwath(true), true);
   assert.equal(swathEntities(viewer, 'radar').length, 2, 'two radar cells');
   assert.equal(
@@ -1288,11 +1303,19 @@ test('a radar cell under an inch is in the data and off the map', async () => {
   const bands = layer
     .getRowControls()
     .legend.filter((entry) => String(entry.label).startsWith('Radar hail'));
-  assert.equal(bands.length, 3, 'three bands, all of them an inch or more');
+  assert.equal(bands.length, 5, 'five bands, all of them an inch or more');
   assert.deepEqual(
     bands.map((b) => b.label),
-    ['Radar hail 3.5"+', 'Radar hail 1.5-3.5"', 'Radar hail 1-1.5"'],
-    'the ramp starts at an inch and nowhere else',
+    [
+      'Radar hail 3.5"+',
+      'Radar hail 2.75-3.5"',
+      'Radar hail 2-2.75"',
+      'Radar hail 1.5-2"',
+      'Radar hail 1-1.5"',
+    ],
+    'the ramp starts at an inch and nowhere else, and it is the INCH CHART ' +
+      'the report pins use - 1", 1.5", 2", 2.75", 3.5" - so a pin and the ' +
+      'wash it sits in are on one scale',
   );
 });
 
@@ -1341,15 +1364,15 @@ test('the radar swath merges a window per cell, worst reading wins', async () =>
   assert.equal(cells.length, 2, 'the union of both days is two cells');
   // The repeatedly-hit cell keeps the WORST reading across the window, not the
   // first day's: 55mm from the 10th, over 30mm from the 9th. 55 lands in the
-  // 1.5-3.5" band, 28 in the 1-1.5" one. The entity id names the BAND rather
+  // 2-2.75" band, 28 in the 1-1.5" one. The entity id names the BAND rather
   // than the cell, since a band is drawn at a time, so the band is what
   // identifies the drawing here.
-  const worst = cells.find((entity) => String(entity.id).includes('1.5-3.5"'));
+  const worst = cells.find((entity) => String(entity.id).includes('2-2.75"'));
   assert.ok(worst, 'the windowed cell is drawn in its worst band');
   const material = value(worst.polygon.material);
   assert.ok(
     material.color.equals(
-      Cesium.Color.fromCssColorString('#e06020').withAlpha(material.color.alpha),
+      Cesium.Color.fromCssColorString('#c026d3').withAlpha(material.color.alpha),
     ),
     'the windowed cell is coloured by its maximum, not its first day',
   );
@@ -3648,8 +3671,10 @@ test('PROSPECT draws the radar cells no report covers', async () => {
   );
   assert.equal(
     swathEntities(viewer, 'radar').length,
-    0,
-    'and it does not paint the radar swath',
+    2,
+    'and it leaves the radar swath alone - the radar is on by default now, ' +
+      'and PROSPECT is a different view of the same day, not a replacement ' +
+      'for it',
   );
 });
 
@@ -3661,7 +3686,7 @@ test('PROSPECT and RADAR are independent views of the same day', async () => {
   const { layer, viewer } = await prospectLayer(cells, [
     REPORT(2, { lat: 35.11 }),
   ]);
-  layer.setRadarSwath(true);
+  // RADAR is on by default, so it is already showing both cells.
   assert.equal(swathEntities(viewer, 'radar').length, 2, 'radar: both cells');
   layer.setProspectSwath(true);
   assert.equal(

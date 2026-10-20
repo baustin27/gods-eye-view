@@ -299,6 +299,11 @@ function onCityClick(row) {
     // The knock list. The street service is a SEPARATE thing from this app -
     // it is a server, not a file - so the button asks for it and shows what
     // comes back, and says so if the county is not the one you think.
+    //
+    // TWO cells for TWO columns. They were one cell, so the row was a cell
+    // short: the Streets column had no cell at all and both buttons landed
+    // under the Tracts header.
+    const tractCell = document.createElement('td');
     const streetCell = document.createElement('td');
     if (swath && swath.state && swath.county) {
       // The neighbourhoods first, then the streets. A canvasser works in a
@@ -310,7 +315,7 @@ function onCityClick(row) {
       tractButton.addEventListener('click', () =>
         showTracts(swath.list || [], storm.d),
       );
-      streetCell.appendChild(tractButton);
+      tractCell.appendChild(tractButton);
 
       const button = document.createElement('button');
       button.type = 'button';
@@ -321,7 +326,7 @@ function onCityClick(row) {
       );
       streetCell.appendChild(button);
     }
-    tr.appendChild(streetCell);
+    tr.append(tractCell, streetCell);
     body.appendChild(tr);
   }
   table.appendChild(body);
@@ -436,20 +441,28 @@ function showTracts(tracts, day) {
  * back sorted by how many addresses they carry, which is a list of long
  * streets. With it the service lays the day's 1 km radar field over the
  * streets and says how many of each street's addresses were under the hail.
+ *
+ * The state parameter is `stateCode` and NOT `state`, because `state` is the
+ * module's state object and a parameter of that name shadows it for the whole
+ * function. It did, and the shadowing made `state.femaIndex` undefined - so
+ * every ZIP came back with no households, the filter that keeps only ZIPs
+ * with households kept nothing, and the whole realised-damage table could
+ * never render. The globe made the same mistake and fixed it the same way
+ * (src/layers/hailwind/index.js:1399).
  */
-async function showStreets(state, county, day, tract) {
+async function showStreets(stateCode, county, day, tract) {
   const panel = document.getElementById('streets');
   panel.hidden = false;
   panel.replaceChildren();
   const heading = document.createElement('h2');
   heading.textContent = tract
-    ? `Streets in tract ${tract.slice(5)}, county ${state}${county}`
-    : `Streets in county ${state}${county}`;
+    ? `Streets in tract ${tract.slice(5)}, county ${stateCode}${county}`
+    : `Streets in county ${stateCode}${county}`;
   const note = document.createElement('p');
   note.className = 'detail-summary';
   note.textContent = 'Loading the Census street list for this ZIP…';
   panel.append(heading, note);
-  const query = new URLSearchParams({ state, county });
+  const query = new URLSearchParams({ state: stateCode, county });
   if (day) query.set('day', day);
   if (tract) query.set('tract', tract);
   try {

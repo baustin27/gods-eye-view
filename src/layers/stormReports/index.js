@@ -245,10 +245,65 @@ const SWATH_MAX_RINGS = 3000;
  */
 const RADAR_FLOOR_MM = 25.4;
 
+/**
+ * The RADAR swath's millimetre-to-colour ramp: five stops, violet to white.
+ *
+ * WHY THIS LANE. The report PINS are green, amber, orange and red
+ * (`model.js:107,115,122`) and PROSPECT is deliberately cold - blue and cyan,
+ * because a gap in the reports must not read as worse hail
+ * (`model.js:52-60`). The old ramp was amber, orange and red, which was
+ * BYTE-IDENTICAL to three of the pin colours, so the wash and the dots lying
+ * on it were the same hue and the wash vanished into the pins. Violet through
+ * magenta to white is the only family left, and it reads as one storm with
+ * internal structure rather than as a multi-colour heat map.
+ *
+ * WHY WHITE AT THE TOP. The core is the part a canvasser drives to, and it
+ * has to be unmistakable over satellite imagery. White-hot reads as intensity
+ * without reading as FIRE, which amber-to-red did.
+ *
+ * FIVE STOPS, NOT THREE. The bands are the same inch chart the report pins
+ * use - 1", 1.5", 2", 2.75", 3.5" - so a pin and the wash it sits in are
+ * measured on one scale. Hail Recon publishes ten levels, HailCheck six, DTN
+ * contours in quarter-inch steps: everyone who draws a hail map for this
+ * audience bands it finer than we did.
+ *
+ * Each stop carries the colour of the NEXT HOTTER band, and that colour is
+ * what outlines it. Cesium's polygon outline is a fixed one-pixel hairline -
+ * `outlineWidth` does not widen it - so the edge cannot be a width trick, and
+ * a separate polyline entity would share the `storm-swath:` id prefix and
+ * break every test that finds swaths by it. The hue carries the edge.
+ */
 const RADAR_RAMP_MM = Object.freeze([
-  Object.freeze({ min: 88.9, color: '#c81e1e', label: '3.5"+' }),
-  Object.freeze({ min: 38.1, color: '#e06020', label: '1.5-3.5"' }),
-  Object.freeze({ min: RADAR_FLOOR_MM, color: '#e0a020', label: '1-1.5"' }),
+  Object.freeze({
+    min: 88.9,
+    color: '#fdf4ff',
+    outline: '#ffffff',
+    label: '3.5"+',
+  }),
+  Object.freeze({
+    min: 69.85,
+    color: '#e879f9',
+    outline: '#fdf4ff',
+    label: '2.75-3.5"',
+  }),
+  Object.freeze({
+    min: 50.8,
+    color: '#c026d3',
+    outline: '#e879f9',
+    label: '2-2.75"',
+  }),
+  Object.freeze({
+    min: 38.1,
+    color: '#9333ea',
+    outline: '#c026d3',
+    label: '1.5-2"',
+  }),
+  Object.freeze({
+    min: RADAR_FLOOR_MM,
+    color: '#6d28d9',
+    outline: '#9333ea',
+    label: '1-1.5"',
+  }),
 ]);
 
 /**
@@ -543,11 +598,22 @@ export function createStormReportsLayer({
    * summary and the frame is the detail.
    */
   let _radarFrame = null;
-  // The two swath toggles. Both exist; each paints independently, and both are
-  // off until asked for: the pins are what this layer shipped, and a swath is
-  // an added claim on top of them.
+  // The two swath toggles. REPORTED stays off until asked for: the pins are
+  // what this layer shipped, and a reported wash is an added claim on top of
+  // them.
+  //
+  // RADAR is ON BY DEFAULT, and that is a change of what the layer IS rather
+  // than a preference. A layer called "Hail & Wind" whose default view is a
+  // scatter of report pins and a choropleth of counties does not show the
+  // hail: the radar swath is the actual storm, and somebody who turns the
+  // layer on and sees no swath has learned nothing about the weather.
+  //
+  // CONDITIONALLY, though. With no radar source there is no swath to draw,
+  // and the default must not claim one: `setRadarSwath(true)` refuses without
+  // a source, and a default of `true` would put the layer in a state it
+  // cannot leave.
   let _showReportedSwath = false;
-  let _showRadarSwath = false;
+  let _showRadarSwath = Boolean(radarSource);
   let _showProspectSwath = false;
   // The unclaimed cells for the current view, kept so the legend can put the
   // actual area and report count on screen. Recomputed by `renderSwaths`,
@@ -1798,7 +1864,14 @@ export function createStormReportsLayer({
    * measured there does not transfer. `npm run qa:storm-swath` prints which
    * regime it booted; read `report.regime` before quoting any figure.
    */
-  function addSwathBand(id, hierarchy, color, alpha) {
+  function addSwathBand(
+    id,
+    hierarchy,
+    color,
+    alpha,
+    outlineColor = color,
+    outlineAlpha = SWATH_EDGE_ALPHA,
+  ) {
     return _dataSource.entities.add(
       new Cesium.Entity({
         id,
@@ -1810,9 +1883,14 @@ export function createStormReportsLayer({
           // property silently whether or not it draws anything. Whether it
           // strokes on ground-clamped geometry is still UNVERIFIED — the
           // harness reports the footprint either way.
+          //
+          // The edge is the NEXT HOTTER band's colour, not the fill's own.
+          // A band that outlined itself in its own colour has no edge at all;
+          // one that outlines in the hotter colour reads as a contour line
+          // between two intensities, which is what it is.
           outline: true,
           outlineColor:
-            Cesium.Color.fromCssColorString(color).withAlpha(SWATH_EDGE_ALPHA),
+            Cesium.Color.fromCssColorString(outlineColor).withAlpha(outlineAlpha),
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
         },
         properties: { swath: true, key: id },
@@ -1956,6 +2034,8 @@ export function createStormReportsLayer({
               hierarchy,
               group.band.color,
               swathAlphaFor(group.band.rank),
+              group.band.outline,
+              group.band.outlineAlpha,
             )
           ) {
             drawn += 1;
@@ -1981,6 +2061,8 @@ export function createStormReportsLayer({
           hierarchy,
           group.band.color,
           swathAlphaFor(group.band.rank),
+          group.band.outline,
+          group.band.outlineAlpha,
         );
         if (entity) drawn += 1;
       }
@@ -2087,6 +2169,10 @@ export function createStormReportsLayer({
           return {
             key: chosen.label,
             color: chosen.color,
+            // The edge of this band is the next hotter band's colour, so the
+            // boundary between two intensities is a line of the hotter one.
+            outline: chosen.outline,
+            outlineAlpha: SWATH_EDGE_ALPHA,
             rank: index / Math.max(ascending.length - 1, 1),
             floorMm: RADAR_CONTOUR_MM,
           };
@@ -3327,7 +3413,8 @@ export function createStormReportsLayer({
           // measured stone's band, and the caveat about a cell being 25 miles
           // wide lives with the legend.
           title:
-            'Colour each grid cell by the largest hail stone reported in it',
+            'Outline the ground the reported stones fell on, banded by the ' +
+            'size of the largest stone reported in it',
           disabled: !ready || _options.hazard !== 'hail',
           active: _showReportedSwath,
           onClick: () => self().setReportedSwath(!_showReportedSwath),
@@ -3369,7 +3456,9 @@ export function createStormReportsLayer({
           // Disabled, not hidden, with no radar wired: a chip that silently
           // does nothing is the failure mode, so it says it has no source.
           title: radarSource
-            ? 'Colour each grid cell by this day\u2019s radar hail estimate'
+            ? 'Outline the ground the radar says the hail fell on, banded by ' +
+              'the size it estimates - one inch, one and a half, two, two ' +
+              'and three quarters, three and a half and up'
             : 'No radar source is wired',
           disabled: !ready || !radarSource,
           active: _showRadarSwath,
@@ -3714,8 +3803,20 @@ export function createStormReportsLayer({
       // Turning RADAR off must not take PROSPECT's banding down with it, and
       // turning it on may be the first thing that asked for the banding at
       // all - so the band is rebuilt whenever either reader's state changed.
-      if (_showRadarSwath || _showProspectSwath) rebuildRadarSwath();
-      else _radarSwath = [];
+      if (_showRadarSwath || _showProspectSwath) {
+        rebuildRadarSwath();
+      } else {
+        // AND THE MAP IS REDRAWN. Clearing the cells is not enough: the
+        // polygons are already in the data source, and only `render()` empties
+        // it. So switching RADAR off used to leave the swath on the map with
+        // nothing to switch it back with. It was invisible because RADAR was
+        // off by default and nobody could turn it off; RADAR being on by
+        // default makes it a one-click bug.
+        _radarSwath = [];
+        render();
+        publish();
+        notifyRowControls();
+      }
       return true;
     },
 
