@@ -934,6 +934,17 @@ async function buildCensusTracts() {
     features.push({
       name: record.NAME,
       geoid: record.GEOID,
+      // THE CENSUS'S OWN LAND AREA, in square metres.
+      //
+      // The share of a tract the hail covered is a number of houses divided
+      // by an area, and the area has to be the DENOMINATOR that matches the
+      // numerator: the houses are on the land, so the land area is the right
+      // one, and the ring we simplified is not - it carries whatever water
+      // the tract has in it, and its own simplification error.
+      //
+      // The source already has it. ALAND is the Census's own land area in
+      // square metres, and it is in the same DBF we are already reading.
+      aland: Number(record.ALAND) || 0,
       ...(unit.decimals !== params.decimals ? { d: unit.decimals } : {}),
       polygons: encodeUnit(unit),
     });
@@ -947,7 +958,7 @@ async function buildCensusTracts() {
       sha256: source.digest,
       license: 'Public domain (U.S. Government work, 17 U.S.C. § 105)',
       schema:
-        'features[]: name, geoid (11-digit state+county+tract FIPS, the key the ACS housing-unit artifact uses), d? (decimals when not meta.decimals), polygons[][ring] (first ring outer, rest holes; each ring open and encoded as integers in 10^-d degrees, first vertex absolute then [dLon, dLat] deltas)',
+        'features[]: name, geoid (11-digit state+county+tract FIPS, the key the ACS housing-unit artifact uses), aland (the Census land area in square metres, the denominator for a share-of-tract), d? (decimals when not meta.decimals), polygons[][ring] (first ring outer, rest holes; each ring open and encoded as integers in 10^-d degrees, first vertex absolute then [dLon, dLat] deltas)',
       decimals: params.decimals,
       curation: params,
       script: 'scripts/build-admin-packs.mjs',

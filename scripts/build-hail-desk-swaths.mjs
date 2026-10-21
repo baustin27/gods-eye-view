@@ -20,10 +20,18 @@
  * Each radar cell is sampled at its CENTRE and its four CORNERS, so a cell on a
  * tract boundary splits instead of giving all of its hail to one side.
  *
+ * AND THE SAMPLES SAY HOW MUCH OF THE TRACT WAS UNDER THE HAIL, which is the
+ * difference between a number of houses and a claim about houses. A tract
+ * that took all five of a cell's samples took the cell; a tract that took
+ * one took a corner of it. The share of the tract the hail covered is what
+ * the samples say, over the tract's own land area.
+ *
  * The result is a work-list number, and it is labelled as one: a tract the
  * radar reached is a tract to work, and every house in it is a candidate. The
  * radar cannot say the hail fell on that particular roof, and neither can
- * anything else in public data.
+ * anything else in public data. Nor can a 1 km field say how much of a
+ * 4,000 square kilometre tract the hail covered - which is why the share
+ * exists, and why it is the number the desk leads with.
  *
  * Output:
  *   <out>/swaths.json.gz   one row per (day, tract): the city it is in, the
@@ -207,13 +215,31 @@ async function main() {
     for (const tract of hit.values()) {
       const city = tractCity.get(tract.geoid);
       if (!city) continue;
+      const tractUnits = units.get(tract.geoid) ?? 0;
       rows.push({
         g: tract.geoid,
         k: city,
         d: day,
         m: Math.round(tract.maxMm * 10) / 10,
         c: tract.cells,
-        u: units.get(tract.geoid) ?? 0,
+        // THE WHOLE TRACT'S HOUSING UNITS.
+        //
+        // This is the MARKET SIZE: how many houses are in the tract the hail
+        // reached. It is what the street-level knock list apportions along
+        // the street lengths, and it is the denominator of the share.
+        u: tractUnits,
+        // THE HOUSES THAT WERE UNDER THE HAIL.
+        //
+        // The share of the tract the hail covered, times its units. The
+        // difference between this and `u` is the difference between a
+        // number of houses and a claim about houses: a storm that clipped
+        // two and a half percent of a 1,248 square kilometre tract did not
+        // put hail over 2,805 roofs, and a canvasser sent to that tract on
+        // the strength of `u` alone would spend a day knocking doors the
+        // hail never reached.
+        h: Math.round(tractUnits * tract.share),
+        // THE SHARE ITSELF, so a reader can see how thin the claim is.
+        s: Math.round(tract.share * 1000) / 1000,
       });
     }
     if ((index + 1) % 100 === 0) {
@@ -244,11 +270,14 @@ async function main() {
       daysWithHail,
       note:
         'One row per (day, tract) the radar reached. `u` is the housing units ' +
-        'in that tract, `m` the largest radar reading in it, `c` the number of ' +
-        '1 km cells of it that were reached, and `k` the city it sits in. A ' +
-        'tract the radar reached is a tract to work and every house in it is a ' +
-        'candidate: the radar is sound about WHERE hail fell and unsound about ' +
-        'how big each stone was.',
+        'in that tract - the MARKET SIZE - `h` is the number of those units ' +
+        'under the hail, `s` is the share of the tract the hail covered, `m` ' +
+        'the largest radar reading in it, `c` the number of 1 km cells of it ' +
+        'that were reached, and `k` the city it sits in. A tract the radar ' +
+        'reached is a tract to work and every house in it is a candidate: the ' +
+        'radar is sound about WHERE hail fell and unsound about how big each ' +
+        'stone was. `h` and `s` are ESTIMATES from a 1 km field, and `u` is ' +
+        'the count of the market either way.',
     },
     rows,
   });
