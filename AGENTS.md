@@ -41,6 +41,29 @@ Reporting progress is not the job. **Finishing is the job.** A session that
 stops at the end of wave 3 of 8 has delivered less than half of what was
 asked, and the report is not a substitute.
 
+## 2a. Never abandon a task half-way
+
+**A failed tool call is an obstacle, not an ending.** A malformed call, a
+write that hit a transient error, a test that fails for a reason nobody has
+looked at yet: diagnose, fix, continue. Do not report progress and stop.
+
+**The tree is never left half-edited.** If a write fails part way, the file
+is restored from git and the change is re-applied:
+
+    git checkout -- <the file>          # restore it
+    # then re-apply the change
+
+A script that truncates a file is a script to fix before it is run again.
+**Write to a temporary file and rename it over the original** - a rename is
+atomic, so a failure leaves the original intact:
+
+    open(path + '.tmp', 'w').write(text)
+    os.replace(path + '.tmp', path)
+
+**A plan is not a deliverable.** When work has been planned, the work gets
+done. A plan file keeps track; it does not stand in for the thing it
+describes. If the plan turns out to be wrong, fix the plan and keep going.
+
 ## 3. Branches and pushes
 
 Work lands on a branch and is committed per wave, not per file. **Do not
