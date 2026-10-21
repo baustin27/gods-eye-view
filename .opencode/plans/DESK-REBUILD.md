@@ -394,6 +394,59 @@ the artifact and the gallery cannot drift.
 
 ---
 
+## 5a. What has landed
+
+Every wave below is done except the two marked open, and the registry
+(`scripts/task-registry.json`) carries the commit for each one.
+
+**Wave A — the map stops lying.** Landed. The zoom is a whole number and the
+wheel keeps a fractional target; the cursor is the anchor, and the drift of
+the point under it is **0.000 metres** (it was growing with every notch, and
+twenty-two notches out of Colorado put the map in Antarctica); the latitude
+is clamped so the map cannot stick at the pole; the Mercator stretch is in
+the fit; there is a resize listener; the pixel ratio is read once; a failed
+tile is remembered; the pick radius is the drawn radius; a drag can be
+cancelled and only the primary button drags; and the swath shares the
+viewport's projection instead of keeping a second copy of the Mercator maths.
+
+**Wave B — the storm drives the map.** Landed. The date list is the desk's
+first view, built on the union of the report days and the radar days
+(1,248 + 782, 1,477 together), with the houses under the hail joined from
+the shard that covers the day (+1). `dsort`, `ddir`, `d` and `view` are in
+the URL, separate from the market's own `sort` and `dir`. Clicking a day
+draws the shard and fits the map to the swath, clipped to the market's
+state. The recent days are chips over the map, the info line says what is on
+it, the place dots are a layer and off by default, and the frame chips
+(DAY/06Z/12Z/18Z/00Z) come from the sub-daily shards the desk had and never
+used.
+
+**Wave C — the houses.** Landed, with one caveat written down. The tract
+tile API returns the tracts that touch a tile in the street tiles' own
+format, with the housing units in the county's tract list; the desk draws
+them as a cyan choropleth under the swath with the boundaries over it; and
+the county it draws is the county the storm fell in. A day opens its tracts
+— the biggest Colorado storm opens as 165 tracts and 323,867 houses — and a
+tract opens its streets, which now say how many of the addresses were under
+the hail (25,803 of 25,803 for the first one).
+
+**Wave D — the rest of the storm features.** The **PROSPECT** scope is
+landed: the days the radar reached and nobody called in, which in Colorado
+is 114 days and 1,141,661 houses in reach with no reports at all. The
+globe's REPORTED wash, the county DAMAGE surface and the storm EVENTS are
+**globe** features and were not ported to the desk: the desk's equivalent of
+the REPORTED wash is the "—" in the report columns, and the EVENTS are a
+list, not a map. The ISOLATE control is **open** — a person looking at a
+storm cannot yet drop everything else and keep only that storm.
+
+**Wave E — the finish.** The scale bar, the zoom readout and the keyboard
+are landed. One shared mark style for the bands, the globe, the artifact and
+the gallery is **open** — the bands come from one function
+(`src/data/stormArtwork.js`) and are drawn by one painter, but the globe's
+and the desk's ramps are not yet the same constants in one place. The phone
+was never checked, which is a known gap and not a surprise.
+
+---
+
 ## 6. Two decisions I will make unless you say otherwise
 
 1. **The date list is built on REPORT days**, with the houses under the hail
