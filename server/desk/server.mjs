@@ -63,16 +63,34 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/desk/')) {
     const result = await runDeskApi(url);
     if (result) {
+      // WHERE THE ANSWER CAME FROM: `memory` when the county's index was
+      // already in memory, `index` when this request built it.
+      if (result.cache) res.setHeader('x-gev-cache', result.cache);
       if (result.bytes) {
         res.setHeader('content-type', result.contentType);
         res.setHeader('x-gev-tile-count', String(result.count ?? 0));
+        res.setHeader('cache-control', 'public, max-age=3600');
         res.statusCode = result.status;
-        res.end(Buffer.from(result.bytes));
+        // A 204 CARRIES NO BODY, so the empty tile's header bytes are not
+        // sent with it.
+        res.end(result.status === 204 ? undefined : Buffer.from(result.bytes));
         return;
       }
       send(res, result.status, JSON.stringify(result.body), TYPES['.json']);
       return;
     }
+    // AN API PATH THAT MATCHED NOTHING IS A 404, and not the desk's index
+    // page. The SPA fallback answers any unmatched path with a 200 and an
+    // HTML shell, and a client that asked for a tile and got a web page
+    // would decode it as an empty tile and draw nothing - a silent failure
+    // that reads as "there are no streets here".
+    send(
+      res,
+      404,
+      JSON.stringify({ error: 'no such desk route' }),
+      TYPES['.json'],
+    );
+    return;
   }
 
   // A static file, with the SPA fallback the desk's own routing needs.

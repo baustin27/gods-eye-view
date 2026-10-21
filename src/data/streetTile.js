@@ -22,6 +22,21 @@
  * The format is PURE and lives here rather than in the server, because the
  * server writes it and the browser reads it, and a format with two copies
  * is two formats that will drift.
+ *
+ * AND THE CENSUS TRACTS ARE IN IT TOO. The desk's map draws the streets of
+ * a county and the tract boundaries over them, and a tract boundary is a
+ * RING - a closed polyline - in the same tile-local units. So the tracts are
+ * written in this format and not in a second one: a feature is a polyline
+ * with an index, and the index means "this street" in a street tile and
+ * "this tract" in a tract tile. The client tells them apart by the route
+ * that served them, and a client that decodes the wrong one gets rings
+ * where it wanted streets - which it draws as lines.
+ *
+ * A tract's rings are emitted in order, one tract after another, and the
+ * rings of one tract share an index. A client fills a tract's rings
+ * together with the even-odd rule, and a hole is punched by that rule
+ * rather than by a flag: the Census does not say which ring is a hole, and
+ * the rule does not need to be told.
  */
 
 /** Magic at the head of a tile: ASCII `GEVS`. */
@@ -32,6 +47,15 @@ export const GEVS_VERSION = 1;
 
 /** The header length, in bytes. */
 export const GEVS_HEADER_BYTES = 32;
+
+/**
+ * The fixed part of one street record, in bytes.
+ *
+ * The point count, the edge index and the first point. Everything after it
+ * is a varint delta, and its length depends on the geometry - so the size of
+ * a record is not a constant, only its floor is.
+ */
+export const GEVS_RECORD_BYTES = 14;
 
 /**
  * The tile's extent, in units across.
@@ -145,12 +169,13 @@ export function encodeStreetTile(tile) {
   const geometry = [];
   for (const line of lines) {
     const feature = [];
-    const featureView = new DataView(new ArrayBuffer(14));
+    const featureView = new DataView(new ArrayBuffer(GEVS_RECORD_BYTES));
     featureView.setUint16(0, line.points.length, true);
     featureView.setUint32(2, line.edgeIndex ?? GEVS_NO_EDGE, true);
     featureView.setInt32(6, Math.round(line.points[0][0]), true);
     featureView.setInt32(10, Math.round(line.points[0][1]), true);
-    for (let i = 0; i < 14; i += 1) feature.push(featureView.getUint8(i));
+    for (let i = 0; i < GEVS_RECORD_BYTES; i += 1)
+      feature.push(featureView.getUint8(i));
     let x = Math.round(line.points[0][0]);
     let y = Math.round(line.points[0][1]);
     for (let i = 1; i < line.points.length; i += 1) {
@@ -209,7 +234,7 @@ export function decodeStreetTile(bytes) {
   const lines = [];
   let at = GEVS_HEADER_BYTES;
   for (let n = 0; n < featureCount; n += 1) {
-    if (at + 14 > bytes.length) return empty;
+    if (at + GEVS_RECORD_BYTES > bytes.length) return empty;
     const pointCount = view.getUint16(at, true);
     at += 2;
     const edgeIndex = view.getUint32(at, true);

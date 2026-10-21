@@ -467,15 +467,135 @@ button.secondary {
   cursor: grabbing;
 }
 
+/*
+ * The caption sits at the BOTTOM, because the top-left of the map belongs to
+ * the recent-day chips, and a chip row under a caption is two things
+ * fighting for the same corner.
+ */
 .map-caption {
   position: absolute;
   left: 8px;
-  top: 8px;
+  bottom: 8px;
   margin: 0;
   padding: 4px 8px;
   border-radius: 4px;
   background: rgba(10, 14, 19, 0.82);
   color: var(--ink-dim);
+  font: 11px/1.3 var(--mono);
+  pointer-events: none;
+}
+
+/*
+ * THE RECENT DAYS, as chips over the map.
+ *
+ * The globe's pattern: the open leads are the recent storms, and the ones
+ * before them are claims. The same twelve chips are there every time, so a
+ * person learns where to look, and a chip is one click.
+ */
+.day-chips {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: calc(100% - 110px);
+}
+
+.day-chip {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(10, 14, 19, 0.86);
+  color: var(--ink-dim);
+  font: 10px/1.2 var(--mono);
+  cursor: pointer;
+}
+
+.day-chip:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
+.day-chip.active {
+  color: #fff;
+  background: rgba(109, 40, 217, 0.9);
+  border-color: #c026d3;
+}
+
+/*
+ * THE FRAME CHIPS: the whole day, or the six-hour windows inside it.
+ */
+.frame-chips {
+  position: absolute;
+  left: 8px;
+  top: 34px;
+  display: flex;
+  gap: 4px;
+}
+
+.frame-chip {
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(10, 14, 19, 0.86);
+  color: var(--ink-dim);
+  font: 10px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.frame-chip:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
+.frame-chip.active {
+  color: #fff;
+  background: rgba(61, 214, 200, 0.24);
+  border-color: var(--accent);
+}
+
+/*
+ * THE PLACES, as a layer.
+ *
+ * A toggle, not a rule: off in the storm view, where the swath is the map,
+ * and on in the market views, where a market of towns IS a set of dots. A
+ * person can have it either way.
+ */
+.map-toggle {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(10, 14, 19, 0.86);
+  color: var(--ink-dim);
+  font: 10px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.map-toggle.active {
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/*
+ * THE INFO LINE: what is on the map, in one line, with the day convention
+ * in it. A person looking at a map of a storm has to know which clock the
+ * day is on before they can believe any of it.
+ */
+.map-info {
+  position: absolute;
+  left: 8px;
+  bottom: 28px;
+  margin: 0;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(10, 14, 19, 0.86);
+  color: var(--ink);
   font: 11px/1.3 var(--mono);
   pointer-events: none;
 }

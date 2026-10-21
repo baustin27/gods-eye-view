@@ -241,11 +241,20 @@ function enumOption(
   });
 }
 
-function integerOption(key, token, defaultValue) {
+function integerOption(key, token, defaultValue, { absentValue } = {}) {
   return Object.freeze({
     key,
     token,
     defaultValue,
+    // The value that means "this option was not in the link". It defaults to
+    // the option's own default, which is right UNTIL the default is also a
+    // legal value: the desk's `toYear` default is 2025 and 2025 is a year a
+    // person can ask for, so a link that said "to 2025" was written as "no
+    // toYear at all" and read back as the desk's default - which, once the
+    // desk's default moved to 2026, meant a person asking for the year 2025
+    // got 2026. The absent value has to be a number the option can never
+    // hold, and an integer option can never hold zero.
+    ...(absentValue === undefined ? {} : { absentValue }),
     normalize: (value) => {
       if (typeof value === 'number' && Number.isInteger(value) && value > 0)
         return value;
@@ -507,9 +516,48 @@ const OPTION_GROUPS = Object.freeze({
   // codec has integer options only, and 1.75 must survive a round trip.
   'hail-desk': Object.freeze([
     integerOption('fromYear', 'f', 1955),
-    integerOption('toYear', 't', 2025),
+    // 0 is not a year, so it can be the absent value and the year 2025 can
+    // still be asked for by name.
+    integerOption('toYear', 't', 2025, { absentValue: 0 }),
     stringOption('state', 's', ''),
     integerOption('minHailTenths', 'm', 10),
+    // THE DAY, so a storm can be linked to. The desk could not link a storm
+    // before this: its codec had the market's year window, its state and its
+    // search, and nothing that said WHICH STORM.
+    stringOption('d', 'y', ''),
+    // WHICH VIEW the link opens on. The desk has three, and a link that
+    // carried a storm's day but opened on the market table would show a
+    // person a list of towns and no storm.
+    stringOption('view', 'v', 'storm'),
+    // The storm list's sort, SEPARATE from the market table's `sort` and
+    // `dir`. One sort key meaning two different things in two different
+    // tables is a link that reads back as the wrong list.
+    enumOption(
+      'dsort',
+      'D',
+      'date',
+      [
+        'date',
+        'houses',
+        'reports',
+        'severe',
+        'largest',
+        'places',
+        'radarPlaces',
+        'tracts',
+      ],
+      {
+        date: 't',
+        houses: 'h',
+        reports: 'r',
+        severe: 's',
+        largest: 'l',
+        places: 'p',
+        radarPlaces: 'c',
+        tracts: 'x',
+      },
+    ),
+    enumOption('ddir', 'E', 'desc', ['asc', 'desc'], { asc: 'a', desc: 'd' }),
     enumOption(
       'sort',
       'o',

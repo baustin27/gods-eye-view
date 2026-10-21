@@ -365,6 +365,103 @@
         "server/desk/server.mjs"
       ],
       "gate": "the swath of the day on the map, drawn with the same bands as the artifact"
+    },
+    {
+      "id": "D1.1",
+      "title": "the storm-date list: the union of the report days and the radar days, with the houses under the hail, the reports, the >=1in count, the largest stone and the places",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/storms.js",
+        "apps/hail-desk/src/storms.test.mjs",
+        "apps/hail-desk/src/table.js",
+        "apps/hail-desk/src/main.js"
+      ],
+      "gate": "the list has every column, every column sorts both ways, and the measured counts hold: 1248 report days, 782 radar days, 1477 in the union"
+    },
+    {
+      "id": "D1.2",
+      "title": "the storm list's sort and the selected day live in the URL, beside the market's own sort and dir",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "src/data/layerState.js",
+        "apps/hail-desk/src/state.js",
+        "apps/hail-desk/src/main.js"
+      ],
+      "gate": "a link carries the day, the storm list's sort and the market's sort, and each reads back as itself"
+    },
+    {
+      "id": "D1.3",
+      "title": "clicking a day draws the radar shard that COVERS it and fits the map to the swath, clipped to the market's state",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/src/map/map.js"
+      ],
+      "gate": "the swath of the day is on the map and the map is framed on the part of it that fell in the state"
+    },
+    {
+      "id": "D1.4",
+      "title": "the recent days are chips over the map, and the info line says what is on it",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/index.html",
+        "apps/hail-desk/styles.css"
+      ],
+      "gate": "twelve chips of the most recent storm days, and a line that names the day, the reports, the largest stone, the houses and the radar day"
+    },
+    {
+      "id": "D1.5",
+      "title": "the place dots are a layer, off by default in the storm view, where the swath is the map",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/index.html",
+        "apps/hail-desk/styles.css"
+      ],
+      "gate": "a toggle on the map, off when the storm view opens"
+    },
+    {
+      "id": "D1.6",
+      "title": "the frame chips: the day, or the six-hour windows inside it, from the sub-daily shards the desk had and never used",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/map/swath.js",
+        "apps/hail-desk/src/main.js",
+        "server/providers/deskApi.js"
+      ],
+      "gate": "DAY/06Z/12Z/18Z/00Z, and the frame changes what the map draws"
+    },
+    {
+      "id": "D1.7",
+      "title": "the desk's tract tile API, with the housing units of each tract",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "server/providers/deskTracts.js",
+        "server/providers/deskApi.js",
+        "src/data/streetTile.js"
+      ],
+      "gate": "a tract tile over a known county decodes, and Denver's tract counts sum to its own ACS figure of 352,593"
+    },
+    {
+      "id": "D1.8",
+      "title": "the map stops lying about where it is: the zoom is a whole number, and the cursor is the anchor",
+      "status": "done",
+      "commit": "a03f652f",
+      "files": [
+        "apps/hail-desk/src/map/viewport.js",
+        "apps/hail-desk/src/map/map.js",
+        "apps/hail-desk/src/map/basemap.js",
+        "apps/hail-desk/src/map/swath.js"
+      ],
+      "gate": "the drift of the point under the cursor is 0.000 metres, and every tile request is at a whole zoom"
     }
   ]
 }

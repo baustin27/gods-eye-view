@@ -11,6 +11,85 @@
  * is a model.
  */
 
+/**
+ * The columns a STORM DAY row has.
+ *
+ * The storm list is the desk's work list: the days a storm happened, and how
+ * many roofs were standing under it. Every column sorts both ways.
+ *
+ * A column the day has nothing for says so with a dash, not a zero. A zero
+ * claims the radar reached nothing and there were no houses, which is a
+ * CLAIM; a dash says the radar did not reach here, which is the truth - and
+ * the difference is the difference between "there were no houses" and "we do
+ * not know", which on a hail map is the difference between a market and a
+ * blank.
+ */
+export const STORM_COLUMNS = Object.freeze([
+  {
+    key: 'date',
+    label: 'Date',
+    align: 'left',
+    get: (row) => row.date,
+    title:
+      'The day the hail was REPORTED. The radar day that covers it is the ' +
+      'next one, because MRMS names a file for the window ENDING at its ' +
+      'timestamp.',
+  },
+  {
+    key: 'houses',
+    label: 'Houses in reach',
+    align: 'right',
+    get: (row) => row.houses,
+    format: (value) => value.toLocaleString(),
+    title:
+      'The housing units in the census tracts the 1 km radar field reached ' +
+      'that day. This is a FOOTPRINT: the houses standing under the hail, ' +
+      'not the houses a stone landed on. The radar says where hail fell and ' +
+      'is unsound about how big each stone was.',
+  },
+  {
+    key: 'reports',
+    label: 'Reports',
+    align: 'right',
+    get: (row) => (row.kind === 'radar' ? null : row.reports),
+    format: (value) => value.toLocaleString(),
+    title:
+      'The hail reports filed from inside a city or town boundary that day. ' +
+      'A dash means the day is on the radar spine only: the radar reached ' +
+      'the market and nobody called the hail in, which is the lead list.',
+  },
+  {
+    key: 'severe',
+    label: '≥1"',
+    align: 'right',
+    get: (row) => (row.kind === 'radar' ? null : row.severe),
+    format: (value) => value.toLocaleString(),
+    title:
+      'The reports of an inch or more. An inch is cosmetic damage; an inch ' +
+      'and a half is a repair.',
+  },
+  {
+    key: 'largest',
+    label: 'Largest',
+    align: 'right',
+    get: (row) => row.largest,
+    format: (value) => `${value.toFixed(2)}"`,
+    title:
+      'The largest stone, in inches: the radar reading where the radar ' +
+      'reached, and the largest stone the reports named where it did not.',
+  },
+  {
+    key: 'places',
+    label: 'Places',
+    align: 'right',
+    get: (row) => (row.kind === 'radar' ? null : row.places),
+    format: (value) => value.toLocaleString(),
+    title:
+      'The number of towns that filed a report that day. The broadest days ' +
+      'are the ones that hit a whole region rather than one town.',
+  },
+]);
+
 /** The columns a CITY row has. */
 export const CITY_COLUMNS = Object.freeze([
   {
@@ -383,7 +462,7 @@ function buildRow(row, columns, state, onSort, onRowClick) {
     const value = column.get(row);
     cell.textContent =
       value === null || value === undefined
-        ? '-'
+        ? '\u2014'
         : column.format
           ? column.format(value, row)
           : String(value);

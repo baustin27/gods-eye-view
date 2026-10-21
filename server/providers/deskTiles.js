@@ -50,7 +50,9 @@ const indexes = new Map();
  *
  * @param {string} state two-digit state FIPS
  * @param {string} county three-digit county FIPS
- * @returns {Promise<{key: string, lines: Array<object>}>}
+ * @returns {Promise<{key: string, lines: Array<object>, built: boolean}>}
+ *   `built` says whether THIS call parsed the county - false means the index
+ *   was already in memory, which is what the cache header reports.
  */
 export async function countyIndex(state, county) {
   // The key is the archive's mtime and size, and finding those is a STAT -
@@ -66,7 +68,7 @@ export async function countyIndex(state, county) {
   }
   const key = `${state}${county}:${stat?.mtimeMs ?? 0}:${stat?.size ?? 0}`;
   const cached = indexes.get(key);
-  if (cached) return cached;
+  if (cached) return { ...cached, built: false };
 
   const { rows, shapes } = await countyEdgeRecords(state, county);
 
@@ -111,7 +113,7 @@ export async function countyIndex(state, county) {
     if (existing.startsWith(`${state}${county}:`)) indexes.delete(existing);
   }
   indexes.set(key, built);
-  return built;
+  return { ...built, built: true };
 }
 
 /**
@@ -165,7 +167,7 @@ function clipSegment(p0, p1, minX, minY, maxX, maxY) {
  * @param {number} z the zoom
  * @param {number} x the tile column
  * @param {number} y the tile row
- * @returns {Promise<{bytes: Uint8Array, count: number}>}
+ * @returns {Promise<{bytes: Uint8Array, count: number, cache: string}>}
  */
 export async function streetTile(state, county, z, x, y) {
   const index = await countyIndex(state, county);
@@ -220,7 +222,13 @@ export async function streetTile(state, county, z, x, y) {
     southLat: bounds.south,
     lines,
   });
-  return { bytes, count: lines.length };
+  return {
+    bytes,
+    count: lines.length,
+    // WHERE THE ANSWER CAME FROM: the county's index was already in memory,
+    // or this request built it. The tile route sends this as `X-Gev-Cache`.
+    cache: index.built ? 'index' : 'memory',
+  };
 }
 
 /**

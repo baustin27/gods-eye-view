@@ -18,6 +18,8 @@
  */
 
 import { indexFineDay } from '../../../../src/data/stormReports.js';
+import { indexSubDailyDay } from '../../../../src/data/subDailyRadar.js';
+import { inflateBytesUint8Array } from '../../../../src/data/stormReports.inflateHelper.js';
 import { artworkBands } from '../../../../src/data/stormArtwork.js';
 
 /**
@@ -27,6 +29,9 @@ import { artworkBands } from '../../../../src/data/stormArtwork.js';
  * the days are kept.
  */
 const fields = new Map();
+
+/** The frames, kept the same way the days are: a person moves between them. */
+const frameBands = new Map();
 
 /**
  * Load one day's field and its bands.
@@ -65,6 +70,49 @@ export async function loadSwathBands(day, { fetchImpl = globalThis.fetch } = {})
 }
 
 /**
+ * The bands of ONE FRAME of a day, from the sub-daily shard.
+ *
+ * The desk drew a whole day as if a storm were eighteen hours of weather.
+ * It was not: a storm is an hour of weather, and the sub-daily shards say
+ * which hour. The frames of the shard that covers a day are the six-hourly
+ * windows ending at 06Z, 12Z, 18Z and 00Z.
+ *
+ * @param {string} day the shard's day
+ * @param {number} frame the frame index, 0 to 3
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl]
+ * @returns {Promise<Array<object>>} the bands, or [] for a day with no shard
+ */
+export async function loadFrameBands(
+  day,
+  frame,
+  { fetchImpl = globalThis.fetch } = {},
+) {
+  const key = `${day}:${frame}`;
+  if (frameBands.has(key)) return frameBands.get(key);
+  const pending = (async () => {
+    try {
+      const response = await fetchImpl(`/api/desk/subdaily/${day}.bin.gz`);
+      if (!response.ok) return [];
+      // The shared inflate helper, which looks at the magic before it
+      // inflates: a server that answers a `.gz` with `Content-Encoding:
+      // gzip` has already decompressed the body, and inflating it again
+      // fails in a way that reads as an absent shard rather than a broken
+      // one.
+      const bytes = await inflateBytesUint8Array(
+        new Uint8Array(await response.arrayBuffer()),
+      );
+      const { frames } = indexSubDailyDay(bytes);
+      return artworkBands(frames[frame] || []);
+    } catch {
+      return [];
+    }
+  })();
+  frameBands.set(key, pending);
+  return pending;
+}
+
+/**
  * The swath painter.
  */
 export function createSwathPainter() {
@@ -88,19 +136,22 @@ export function createSwathPainter() {
     // the Mercator maths, in a file whose import sat at the BOTTOM, and two
     // copies of a projection is two sets of answers - the same thing
     // tileMath.js warns about.
+    // The viewport's projection returns a POINT, not a pair of numbers, so
+    // it is read as a point here. Reading it as a pair is the kind of
+    // mistake that draws nothing at all and says nothing about why.
     const project = (point) => projectPoint(point.lon, point.lat, viewport);
     for (const band of bands) {
       ctx.beginPath();
       const outer = band.outer;
       for (let i = 0; i < outer.length; i += 1) {
-        const [x, y] = project(outer[i]);
+        const { x, y } = project(outer[i]);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
       ctx.closePath();
       for (const hole of band.holes || []) {
         for (let i = 0; i < hole.length; i += 1) {
-          const [x, y] = project(hole[i]);
+          const { x, y } = project(hole[i]);
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }

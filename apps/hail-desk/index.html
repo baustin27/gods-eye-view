@@ -24,7 +24,8 @@
 
     <main>
       <div class="views" id="views" role="group" aria-label="View">
-        <button type="button" data-view="city" class="active" aria-pressed="true">CITIES</button>
+        <button type="button" data-view="storm" class="active" aria-pressed="true">STORM DAYS</button>
+        <button type="button" data-view="city" aria-pressed="false">CITIES</button>
         <button type="button" data-view="county" aria-pressed="false">COUNTIES</button>
       </div>
 
@@ -95,6 +96,39 @@
       -->
       <section class="map-pane" id="mapPane" aria-label="Map of the filtered market">
         <canvas id="mapCanvas" role="img" aria-label="The filtered places on a map"></canvas>
+        <!--
+          THE RECENT DAYS, as chips over the map. The globe's pattern: the
+          open leads are the recent storms, and the ones before them are
+          claims. A chip is one click, and the same twelve are there every
+          time, so a person learns where to look.
+        -->
+        <div class="day-chips" id="dayChips" role="group" aria-label="Recent storm days"></div>
+        <!--
+          THE FRAME CHIPS: the whole day, or the six-hour windows inside it.
+          A storm is an hour of weather, and a map that says "here is where the
+          hail fell on Tuesday" is a claim about eighteen hours of it.
+        -->
+        <div class="frame-chips" id="frameChips" role="group" aria-label="Frames of the day"></div>
+        <!--
+          THE PLACES, as a layer. Off in the storm view, where the swath is
+          the map, and on in the market views, where a market of towns IS a
+          set of dots. A person can turn it on either way.
+        -->
+        <button
+          type="button"
+          id="dotsToggle"
+          class="map-toggle"
+          aria-pressed="false"
+          title="Show the places as dots on the map"
+        >
+          PLACES
+        </button>
+        <!--
+          THE INFO LINE. What is on the map, in one line, with the day
+          convention in it - because a person looking at a map of a storm has
+          to know which clock the day is on before they can believe any of it.
+        -->
+        <p class="map-info" id="mapInfo" role="status" aria-live="polite"></p>
         <p class="map-caption" id="mapCaption"></p>
       </section>
 

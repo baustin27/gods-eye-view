@@ -35,7 +35,11 @@ const OWNER_TOKEN = '8';
 /** The desk's defaults, matching the registered option specs. */
 export const DEFAULT_FILTERS = Object.freeze({
   fromYear: 1955,
-  toYear: 2025,
+  // The data runs to 2026 - the reports to 2026-10-13 and the radar to
+  // 2026-10-15 - and the desk used to stop at 2025, which hid the whole of
+  // the current year from the window that is supposed to show the recent
+  // storms.
+  toYear: 2026,
   // COLORADO IS THE STATE. The desk opens on our market, not on the whole
   // country, because a national list is a list nobody works through and the
   // state is where the work is. The chips carry the other forty-nine.
@@ -44,6 +48,16 @@ export const DEFAULT_FILTERS = Object.freeze({
   sort: 'score',
   dir: 'desc',
   q: '',
+  // THE DAY, and the storm list's own sort. The market table sorts by
+  // `sort`/`dir` and the storm list by `dsort`/`ddir`, because the two tables
+  // have different columns and one key that meant two things would make every
+  // link read back as the wrong list.
+  d: '',
+  dsort: 'date',
+  ddir: 'desc',
+  // Which view the desk opens on. The storm list is the centre, so this is
+  // the default, and a link that names a market view says so.
+  view: 'storm',
 });
 
 /**

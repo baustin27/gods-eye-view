@@ -144,6 +144,29 @@ Status: Open (limits)
 
 ---
 
+### The desk's tract layer: simplified boundaries, and a count that is sometimes absent
+Status: Open (by design)
+
+Context:
+- The tract outlines the desk draws come from the Census cartographic boundary
+  file at 500k (`cb_2025_us_tract_500k`), which the Census SIMPLIFIES. A ring on
+  the map can be tens of metres from the true boundary of the tract, so a
+  property line drawn from it is a line the Census drew, not a survey.
+- The housing-unit count is the ACS 5-year B25001 estimate, and the artifact
+  covers 52 states, DC and Puerto Rico. Arizona's tracts and the four US
+  territories (60, 66, 69, 78) have no count, and 141 tracts across the
+  territories and New York have no row. The desk reports that as NO ESTIMATE
+  (`units: null`) and never as zero: a zero is a number, and an absence is not.
+- The count is a SAMPLE estimate and carries a margin of error. The margin
+  travels with it in the tract list (`moe`), and a number without its margin is
+  a claim the data does not support.
+
+Validation target:
+- `server/providers/deskTracts.js`
+- `src/data/local_data/housing_units/README.md`
+
+---
+
 ## Closed / Intentional (for clarity)
 
 ### Proxy SSRF and error-surface hardening gaps

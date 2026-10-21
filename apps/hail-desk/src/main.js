@@ -31,14 +31,17 @@ import { DEFAULT_FILTERS, filtersFromHash, hashFromFilters } from './state.js';
 import {
   CITY_COLUMNS,
   COUNTY_COLUMNS,
+  STORM_COLUMNS,
   rankedList,
   renderTable,
   sortRows,
   summarise,
 } from './table.js';
+import { buildStormDays, sortStormDays } from './storms.js';
 import { csvFilename, downloadCsv, toCsv } from './csv.js';
 import { createMapPane } from './map/map.js';
-import { loadSwathBands } from './map/swath.js';
+import { loadFrameBands, loadSwathBands } from './map/swath.js';
+import { subDailyFrameTimes } from '../../../src/data/subDailyRadar.js';
 
 const CITY_DATA_URL = `${import.meta.env.BASE_URL}data/cities.json.gz`;
 const COUNTY_DATA_URL = `${import.meta.env.BASE_URL}data/counties.json.gz`;
@@ -47,16 +50,36 @@ const FEMA_DATA_URL = `${import.meta.env.BASE_URL}data/fema_damage.json.gz`;
 
 /** The state of the app. Filters live in the URL, so the URL is the state. */
 const state = {
-  view: 'city',
+  // THE STORM LIST IS THE DESK'S CENTRE. A person opens the desk to find the
+  // day, not the town: the town is somewhere inside the storm, and the
+  // storm is what the map can actually draw.
+  view: 'storm',
   filters: { ...DEFAULT_FILTERS },
   rows: [],
   cityIndex: null,
   countyRows: [],
   swathIndex: null,
   femaIndex: null,
+  // The raw artifacts, kept for the storm list. The indexes above throw the
+  // day rows away into maps keyed by place, and the storm list needs them
+  // the other way round: by day.
+  cityPayload: null,
+  swathPayload: null,
+  // The storm days for the state in the filters.
+  stormRows: [],
   // The day whose swath the map is showing. It is set when a place is opened -
   // to its biggest storm - and when a storm day is picked.
   mapDay: null,
+  mapBands: [],
+  // Whether the place dots are drawn. Null means "the view decides": on for
+  // the market views, off for the storm view, where the swath is the map.
+  dots: null,
+  // The day the map is showing, and the row it came from.
+  shownDay: null,
+  selectedDay: null,
+  // Which SIX-HOUR frame of the day is shown: null is the whole day, and
+  // 0 to 3 are the windows ending at 06Z, 12Z, 18Z and 00Z.
+  frame: null,
 };
 
 const CSV_COLUMNS = {
@@ -72,6 +95,15 @@ const CSV_COLUMNS = {
     { label: 'Housing units', get: (row) => row.units ?? '' },
     { label: 'Housing units MOE', get: (row) => row.umoe ?? '' },
     { label: 'Population', get: (row) => row.pop ?? '' },
+  ],
+  storm: [
+    { label: 'Date', get: (row) => row.date },
+    { label: 'Houses in reach', get: (row) => row.houses ?? '' },
+    { label: 'Reports', get: (row) => row.reports || '' },
+    { label: 'Reports >= 1 in', get: (row) => row.severe || '' },
+    { label: 'Largest stone (in)', get: (row) => row.largest?.toFixed(2) ?? '' },
+    { label: 'Places', get: (row) => row.places || '' },
+    { label: 'Radar day', get: (row) => row.radarDay },
   ],
   county: [
     { label: 'County', get: (row) => row.name },
@@ -109,6 +141,10 @@ const el = {
   mapPane: document.getElementById('mapPane'),
   mapCanvas: document.getElementById('mapCanvas'),
   mapCaption: document.getElementById('mapCaption'),
+  mapInfo: document.getElementById('mapInfo'),
+  dayChips: document.getElementById('dayChips'),
+  frameChips: document.getElementById('frameChips'),
+  dotsToggle: document.getElementById('dotsToggle'),
   tableWrap: document.getElementById('tableWrap'),
   loading: document.getElementById('loading'),
   source: document.getElementById('source'),
@@ -127,6 +163,24 @@ const columns = () => (state.view === 'city' ? CITY_COLUMNS : COUNTY_COLUMNS);
 
 /** Repaint from the current filters. */
 function render() {
+  if (state.view === 'storm') renderStormView();
+  else renderMarketView();
+  el.export.disabled =
+    state.view === 'storm' ? state.stormRows.length === 0 : state.rows.length === 0;
+  el.views.querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.view === state.view);
+    button.setAttribute(
+      'aria-pressed',
+      button.dataset.view === state.view ? 'true' : 'false',
+    );
+  });
+  el.dotsToggle.setAttribute('aria-pressed', String(dotsOn()));
+  el.dotsToggle.classList.toggle('active', dotsOn());
+  drawMap();
+}
+
+/** The market views: the places, and the counties. */
+function renderMarketView() {
   const rows =
     state.view === 'city'
       ? queryCities(state.cityIndex, state.filters)
@@ -141,22 +195,330 @@ function render() {
     state.view === 'city' ? onCityClick : null,
   );
   el.summary.textContent = summarise(state.rows, state.filters, state.view);
+  el.ranked.hidden = false;
   renderRankedList();
   rankStateChips(state.rows);
+}
+
+/**
+ * THE STORM LIST: the desk's work list.
+ *
+ * The market table answers "which towns are worth the afternoon". This
+ * answers the question a canvasser actually works from - "on which DAYS, and
+ * how many roofs were standing under the hail" - and the two spines it is
+ * built on are the report days and the radar days, so a storm nobody called
+ * in is on the list too.
+ */
+function renderStormView() {
+  const rows = sortStormDays(
+    stormDays(),
+    state.filters.dsort,
+    state.filters.ddir,
+  );
+  state.stormRows = rows;
+  renderTable(
+    el.tableWrap,
+    rows,
+    STORM_COLUMNS,
+    { sort: state.filters.dsort, dir: state.filters.ddir },
+    onStormSort,
+    onStormDayClick,
+  );
+  el.summary.textContent = stormSummary(rows);
+  // The ranked list is the market's list of towns; in the storm view the
+  // list beside the map is the list of DAYS, and the days are the table.
+  el.ranked.hidden = true;
+  renderDayChips();
+  // The selected day. A link that carries a day opens on that day; a day
+  // that the window has moved out of shows nothing, rather than showing the
+  // wrong storm.
+  const selected = rows.find((row) => row.date === state.filters.d) || null;
+  const dayChanged = state.selectedDay && selected && state.selectedDay.date !== selected.date;
+  state.selectedDay = selected;
+  if (dayChanged) state.frame = null;
+  if (selected) {
+    void showStormDay(selected);
+  } else if (state.shownDay) {
+    // The selected day is gone - the window moved, or the state changed -
+    // so the map stops showing a storm that is not in the list any more.
+    state.shownDay = null;
+    state.mapBands = [];
+    state.mapDay = null;
+    state.frame = null;
+  }
+  renderMapInfo(selected);
+  renderFrameChips(selected);
+}
+
+/**
+ * The storm days for the state in the filters, in the year window.
+ *
+ * The list is built once per state and kept: it is 46,379 place-days and
+ * 35,018 swath rows, and a person switching filters should not pay for it
+ * again.
+ */
+let stormDayCache = { key: '', rows: [] };
+
+function stormDays() {
+  const key = state.filters.state || '';
+  if (stormDayCache.key !== key) {
+    stormDayCache = {
+      key,
+      rows: buildStormDays({
+        cities: state.cityPayload,
+        swaths: state.swathPayload,
+        state: key,
+      }),
+    };
+  }
+  const { fromYear, toYear } = state.filters;
+  return stormDayCache.rows.filter((row) => {
+    // The YEAR, not the whole date: '2025-01-18' <= '2025' is FALSE as
+    // strings, so comparing the whole date against a bare year silently
+    // drops the last year of every window.
+    const year = row.date.slice(0, 4);
+    if (fromYear && year < String(fromYear)) return false;
+    if (toYear && year > String(toYear)) return false;
+    return true;
+  });
+}
+
+/** The one line that says what the list holds. */
+function stormSummary(rows) {
+  if (!rows.length) return 'No storm days match these filters.';
+  const withRadar = rows.filter((row) => row.houses !== null).length;
+  const houses = rows.reduce((total, row) => total + (row.houses || 0), 0);
+  const reports = rows.reduce((total, row) => total + (row.reports || 0), 0);
+  return (
+    `${rows.length.toLocaleString()} storm days · ` +
+    `${withRadar.toLocaleString()} with the radar reaching them · ` +
+    `${houses.toLocaleString()} houses in reach · ` +
+    `${reports.toLocaleString()} reports filed`
+  );
+}
+
+/** Sort the storm list, and toggle the direction when it is already sorted. */
+function onStormSort(key) {
+  const same = state.filters.dsort === key;
+  applyFilters({
+    dsort: key,
+    ddir: same && state.filters.ddir === 'desc' ? 'asc' : 'desc',
+  });
+}
+
+/**
+ * Pick a day.
+ *
+ * The day goes into the URL, so a storm can be linked to, and the map draws
+ * the radar shard that COVERS the day - the one named the day after, because
+ * MRMS names a file for the window ENDING at its timestamp.
+ */
+function onStormDayClick(row) {
+  applyFilters({ d: row.date });
+}
+
+/**
+ * Draw the storm, and fit the map to it.
+ *
+ * A frame of the day is the same storm six hours at a time. The whole day is
+ * the default, because that is what a person wants when they are looking for
+ * a storm, and the frames are there because a person who wants to know WHERE
+ * it was at four in the afternoon needs to say so.
+ */
+async function showStormDay(row) {
+  const frame = state.frame ?? null;
+  const key = `${row.date}:${frame === null ? 'day' : frame}`;
+  if (state.shownDay === key && state.mapBands.length) return;
+  state.shownDay = key;
+  state.mapDay = row.radarDay;
+  state.mapBands =
+    frame === null
+      ? await loadSwathBands(row.radarDay)
+      : await loadFrameBands(row.radarDay, frame);
+  fitToSwath(state.mapBands);
   drawMap();
-  el.export.disabled = state.rows.length === 0;
-  el.drillBack.addEventListener('click', () => popDrill());
-  el.drillClose.addEventListener('click', () => {
-    drillStack.length = 0;
-    renderDrill();
-  });
-  el.views.querySelectorAll('button').forEach((button) => {
-    button.classList.toggle('active', button.dataset.view === state.view);
-    button.setAttribute(
-      'aria-pressed',
-      button.dataset.view === state.view ? 'true' : 'false',
-    );
-  });
+  renderMapInfo(row);
+  renderFrameChips(row);
+}
+
+/**
+ * The frame chips: the whole day, and the six-hour windows inside it.
+ *
+ * The desk had the sub-daily shards and never used them, and a map that says
+ * "here is where the hail fell on Tuesday" is a claim about eighteen hours of
+ * weather. A storm is an hour of weather.
+ */
+function renderFrameChips(row) {
+  el.frameChips.replaceChildren();
+  if (!row) return;
+  const times = subDailyFrameTimes(row.radarDay);
+  const frames = [
+    { key: null, label: 'DAY', title: 'the whole day, every frame together' },
+    { key: 0, label: '06Z', title: `the six hours ending ${times[0]}` },
+    { key: 1, label: '12Z', title: `the six hours ending ${times[1]}` },
+    { key: 2, label: '18Z', title: `the six hours ending ${times[2]}` },
+    { key: 3, label: '00Z', title: `the six hours ending ${times[3]}` },
+  ];
+  for (const frame of frames) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'frame-chip';
+    if ((state.frame ?? null) === frame.key) button.classList.add('active');
+    button.textContent = frame.label;
+    button.title = frame.title;
+    button.addEventListener('click', () => {
+      state.frame = frame.key;
+      void showStormDay(row);
+    });
+    el.frameChips.appendChild(button);
+  }
+}
+
+/**
+ * Fit the map to the SWATH, not to the places.
+ *
+ * A storm that fell over open country has no towns in it and is still worth
+ * looking at, and the map is the swath now.
+ */
+function fitToSwath(bands) {
+  if (!bands || !bands.length) return;
+  let west = Infinity;
+  let south = Infinity;
+  let east = -Infinity;
+  let north = -Infinity;
+  for (const band of bands) {
+    for (const ring of [band.outer, ...(band.holes || [])]) {
+      if (!ring || !ring.length) continue;
+      for (const point of ring) {
+        // The ring points are {lat, lon} objects, the same shape the swath
+        // painter projects.
+        const lon = point?.lon;
+        const lat = point?.lat;
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+        if (lon < west) west = lon;
+        if (lon > east) east = lon;
+        if (lat < south) south = lat;
+        if (lat > north) north = lat;
+      }
+    }
+  }
+  if (!Number.isFinite(west)) return;
+  // THE STATE, clipped in.
+  //
+  // The radar field is NATIONAL, so the swath of a big outbreak runs from
+  // the Gulf to the Dakotas - and fitting the map to all of it when the desk
+  // is about Colorado leaves the Colorado storm a purple smudge in the
+  // middle of the country. The map is fitted to the part of the storm that
+  // fell in the market, and to the market itself when the storm was bigger
+  // than it.
+  const box = stateBox();
+  if (box) {
+    west = Math.max(west, box.west);
+    east = Math.min(east, box.east);
+    south = Math.max(south, box.south);
+    north = Math.min(north, box.north);
+  }
+  if (east <= west || north <= south) return;
+  // A little air around the storm, so the edge of the hail is not exactly on
+  // the edge of the frame.
+  const padLon = Math.max(0.05, (east - west) * 0.08);
+  const padLat = Math.max(0.05, (north - south) * 0.08);
+  createTheMap().fitBounds(
+    west - padLon,
+    south - padLat,
+    east + padLon,
+    north + padLat,
+  );
+}
+
+/**
+ * The box around the state in the filters.
+ *
+ * The counties carry their centroids, so this is a box around the counties
+ * rather than the state outline - close enough to frame a storm in, and it
+ * is the same data the map already has.
+ */
+function stateBox() {
+  // The codec lower-cases every string option, so the state arrives as 'co'
+  // and the counties carry 'CO'. Comparing them as they are finds nothing,
+  // and a box of nothing is a box of everywhere.
+  const code = String(state.filters.state || '').toUpperCase();
+  if (!code) return null;
+  const rows = state.countyRows.filter((row) => row.st === code);
+  if (!rows.length) return null;
+  let west = Infinity;
+  let south = Infinity;
+  let east = -Infinity;
+  let north = -Infinity;
+  for (const row of rows) {
+    if (!Number.isFinite(row.lat) || !Number.isFinite(row.lon)) continue;
+    if (row.lon < west) west = row.lon;
+    if (row.lon > east) east = row.lon;
+    if (row.lat < south) south = row.lat;
+    if (row.lat > north) north = row.lat;
+  }
+  if (!Number.isFinite(west)) return null;
+  return { west, south, east, north };
+}
+
+/**
+ * The recent storm days, as chips over the map.
+ *
+ * The globe's pattern: the open leads are the recent storms, and the ones
+ * before them are claims. A chip is one click, and the chips are the same
+ * twelve every time, so a person learns where to look.
+ */
+function renderDayChips() {
+  el.dayChips.replaceChildren();
+  const days = [...stormDays()].reverse().slice(0, 12);
+  for (const row of days) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'day-chip';
+    if (row.date === state.filters.d) button.classList.add('active');
+    button.textContent = row.date.slice(5);
+    button.title =
+      row.houses !== null
+        ? `${row.date} - ${row.houses.toLocaleString()} houses in reach` +
+          (row.reports ? `, ${row.reports} reports` : ', nobody called it in')
+        : `${row.date} - reports only, the radar did not reach here`;
+    button.addEventListener('click', () => applyFilters({ d: row.date }));
+    el.dayChips.appendChild(button);
+  }
+}
+
+/**
+ * The line under the map that says what is on it.
+ *
+ * It says the day, the reports, the largest stone, the houses in reach, and
+ * the day convention - because a person looking at a map of a storm needs to
+ * know which clock the day is on before they can believe any of it.
+ */
+function renderMapInfo(row) {
+  if (!row) {
+    el.mapInfo.textContent = '';
+    return;
+  }
+  const parts = [row.date];
+  parts.push(row.reports ? `${row.reports} reports` : 'no reports filed');
+  if (row.largest !== null && row.largest !== undefined) {
+    parts.push(`largest ${row.largest.toFixed(2)}"`);
+  }
+  parts.push(
+    row.houses !== null && row.houses !== undefined
+      ? `${row.houses.toLocaleString()} houses in reach`
+      : 'the 1 km radar did not reach here',
+  );
+  if (row.radarDay && row.radarDay !== row.date) {
+    parts.push(`radar day ${row.radarDay}`);
+  }
+  el.mapInfo.textContent = parts.join(' · ');
+}
+
+/** Whether the place dots are drawn. */
+function dotsOn() {
+  if (state.dots !== null) return state.dots;
+  return state.view !== 'storm';
 }
 
 /** Write the filters into the URL, then repaint. */
@@ -211,7 +573,10 @@ function createTheMap() {
   if (mapPane) return mapPane;
   mapPane = createMapPane({
     canvas: el.mapCanvas,
-    places: () => state.rows,
+    // The place dots are a LAYER now, and the storm view leaves them off: the
+    // map is the swath, and a dot for every place in a market of thousands is
+    // not a map of anything.
+    places: () => (dotsOn() ? state.rows : []),
     // The worst severe count in the market, so the dots are sized by RANK and
     // do not all resize every time the list is filtered.
     worstSevere: () =>
@@ -261,6 +626,22 @@ function drawMap() {
     mapFittedState = wanted;
   }
   pane.draw();
+  if (state.view === 'storm') {
+    // The storm view's map is a storm, and the caption says so. "No places to
+    // show" was true and useless: the places are in the list, and the map is
+    // the hail.
+    // The caption is SHORT in the storm view: the map's own attribution runs
+    // along the bottom, and a caption long enough to reach it turns two
+    // pieces of text into one unreadable line.
+    el.mapCaption.textContent = 'drag to pan - wheel to zoom';
+    const tagline = document.getElementById('tagline');
+    if (tagline) tagline.textContent = 'Storm days';
+    return;
+  }
+  const tagline = document.getElementById('tagline');
+  if (tagline) {
+    tagline.textContent = state.view === 'city' ? 'Market view' : 'Counties';
+  }
   const codes = new Set(
     state.rows.map((row) => String(row.st || '')).filter(Boolean),
   );
@@ -1165,6 +1546,10 @@ async function main() {
     state.countyRows = countiesPayload.rows || [];
     state.swathIndex = indexSwaths(swathPayload);
     state.femaIndex = indexFema(femaPayload);
+    // The raw artifacts, for the storm list. The indexes above keep the day
+    // rows keyed by place; the storm list needs them keyed by day.
+    state.cityPayload = citiesPayload;
+    state.swathPayload = swathPayload;
 
     const cityBounds = cityYearBounds(state.cityIndex);
     const countyBounds = yearBounds(state.countyRows);
@@ -1190,6 +1575,12 @@ async function main() {
     );
     if (state.filters.fromYear > state.filters.toYear) {
       state.filters.fromYear = state.filters.toYear;
+    }
+    // The view, from the link. A link that names a market view opens on it.
+    if (['storm', 'city', 'county'].includes(state.filters.view)) {
+      state.view = state.filters.view;
+    } else {
+      state.filters.view = state.view;
     }
 
     fillStates(state.cityIndex.cities, 'st');
@@ -1245,20 +1636,36 @@ async function main() {
   el.views.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-view]');
     if (!button) return;
-    state.view = button.dataset.view;
+    const view = button.dataset.view;
+    if (view === state.view) return;
+    state.view = view;
     // The sort key is per-view, so switching views resets it to that view's
-    // best column rather than leaving a column that does not exist.
-    const first = columns()[0];
-    state.filters.sort =
-      state.view === 'city' ? 'severe' : 'score';
-    state.filters.dir = 'desc';
-    void first;
-    syncControls();
-    render();
+    // best column rather than leaving a column that does not exist. The
+    // storm list's default is the storm IN TIME, newest first, which is the
+    // globe's order and the order a canvasser works in.
+    const next =
+      view === 'storm'
+        ? { dsort: 'date', ddir: 'desc' }
+        : { sort: view === 'city' ? 'severe' : 'score', dir: 'desc' };
+    applyFilters({ view, ...next });
+  });
+  // The drill panel's buttons. These used to be wired inside every render,
+  // so after a hundred renders the Back button fired a hundred times.
+  el.drillBack.addEventListener('click', () => popDrill());
+  el.drillClose.addEventListener('click', () => {
+    drillStack.length = 0;
+    renderDrill();
+  });
+  el.dotsToggle.addEventListener('click', () => {
+    state.dots = !dotsOn();
+    el.dotsToggle.setAttribute('aria-pressed', String(dotsOn()));
+    el.dotsToggle.classList.toggle('active', dotsOn());
+    drawMap();
   });
   el.export.addEventListener('click', () => {
+    const rows = state.view === 'storm' ? state.stormRows : state.rows;
     downloadCsv(
-      toCsv(state.rows, CSV_COLUMNS[state.view]),
+      toCsv(rows, CSV_COLUMNS[state.view]),
       csvFilename(state.filters),
     );
   });

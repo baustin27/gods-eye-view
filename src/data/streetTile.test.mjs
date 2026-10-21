@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   GEVS_HEADER_BYTES,
   GEVS_MAGIC,
+  GEVS_RECORD_BYTES,
   decodeStreetTile,
   encodeStreetTile,
   readVarint,
@@ -96,6 +97,22 @@ test('a small delta costs a small number of bytes', () => {
   });
   const perPoint = (tile.length - GEVS_HEADER_BYTES) / 100;
   assert.ok(perPoint < 3, `a point costs ${perPoint} bytes, not twenty`);
+});
+
+test('a record is its fixed part and then its deltas', () => {
+  // Two points, one step: the record's fourteen bytes and one byte a
+  // coordinate, and nothing else.
+  const tile = encodeStreetTile({
+    zoom: 16,
+    westLon: 0,
+    southLat: 0,
+    lines: [{ edgeIndex: 1, points: [[0, 0], [1, 1]] }],
+  });
+  assert.equal(
+    tile.length,
+    GEVS_HEADER_BYTES + GEVS_RECORD_BYTES + 2,
+    'a header, a record and two one-byte deltas',
+  );
 });
 
 test('zigzag and its inverse are inverses', () => {

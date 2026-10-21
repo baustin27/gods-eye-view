@@ -283,6 +283,35 @@ export function createMapPane(options) {
   }
   void draw();
 
+  /**
+   * Fit the map to a box of degrees.
+   *
+   * The HEIGHT has to account for the Mercator stretch. A degree of latitude
+   * is 1/cos(lat) times as many pixels as a degree of longitude - 1.28x at
+   * Colorado - so fitting on the latitude alone can be a whole level too tight
+   * and the places overflow the frame.
+   *
+   * @param {number} west
+   * @param {number} south
+   * @param {number} east
+   * @param {number} north
+   */
+  function fitBounds(west, south, east, north) {
+    if (![west, south, east, north].every(Number.isFinite)) return;
+    if (east <= west || north <= south) return;
+    const centre = { lon: (west + east) / 2, lat: (south + north) / 2 };
+    const lonSpan = Math.max(0.01, east - west);
+    const latSpan = Math.max(0.01, north - south);
+    const stretch = Math.max(0.2, Math.cos((centre.lat * Math.PI) / 180));
+    const byWidth = Math.log2((360 * (viewport.width || 800)) / (256 * lonSpan));
+    const byHeight = Math.log2(
+      (360 * (viewport.height || 600) * stretch) / (256 * latSpan * 1.3),
+    );
+    const zoom = clampZoom(Math.floor(Math.min(byWidth, byHeight)));
+    viewport = { ...viewport, centre, zoom };
+    zoomTarget = zoom;
+  }
+
   return {
     get viewport() {
       return viewport;
@@ -324,24 +353,21 @@ export function createMapPane(options) {
         if (row.lat < south) south = row.lat;
         if (row.lat > north) north = row.lat;
       }
-      const centre = { lon: (west + east) / 2, lat: (south + north) / 2 };
-      const lonSpan = Math.max(0.01, east - west);
-      const latSpan = Math.max(0.01, north - south);
-      // The HEIGHT has to account for the Mercator stretch. A degree of
-      // latitude is 1/cos(lat) times as many pixels as a degree of longitude
-      // - 1.28x at Colorado - so fitting on the latitude alone can be a whole
-      // level too tight and the places overflow the frame.
-      const stretch = Math.max(0.2, Math.cos((centre.lat * Math.PI) / 180));
-      const byWidth = Math.log2(
-        (360 * (viewport.width || 800)) / (256 * lonSpan),
-      );
-      const byHeight = Math.log2(
-        (360 * (viewport.height || 600) * stretch) / (256 * latSpan * 1.3),
-      );
-      const zoom = clampZoom(Math.floor(Math.min(byWidth, byHeight)));
-      viewport = { ...viewport, centre, zoom };
-      zoomTarget = zoom;
+      fitBounds(west, south, east, north);
     },
+    /**
+     * Fit the map to a box, in degrees.
+     *
+     * The storm view needs this: the map is fitted to the SWATH, not to the
+     * places, because the swath is the map now - a storm that fell over open
+     * country has no places in it and is still worth looking at.
+     *
+     * @param {number} west
+     * @param {number} south
+     * @param {number} east
+     * @param {number} north
+     */
+    fitBounds,
     /** Move the map to a place. */
     goTo(lon, lat, zoom) {
       viewport = {

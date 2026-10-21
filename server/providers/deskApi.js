@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 import { streetsPayload } from './hailStreets.js';
 import { streetTile } from './deskTiles.js';
+import { countyTractIndex, tractListBody, tractTile } from './deskTracts.js';
 
 const REPO = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -64,17 +65,52 @@ export const DESK_ROUTES = {
  * `/api/desk/tiles/{state}/{county}/{z}/{x}/{y}` - and the response is BINARY,
  * not JSON, because a tile is a tile. The handler below returns the bytes and
  * the route says so.
+ *
+ * BOTH TILE ROUTES SEND `X-Gev-Cache`, which says where the answer came from:
+ * `memory` when the county's index was already in memory, and `index` when
+ * this request built it. The word `disk` is for a tile that was read back
+ * from a disk cache, and the desk's tiles have no disk cache.
  */
 const STREET_TILE_PATH =
   /^\/api\/desk\/tiles\/(\d{2})\/(\d{3})\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/;
+
+/**
+ * The census tract routes.
+ *
+ * `/api/desk/tracts/{state}/{county}/{z}/{x}/{y}` - the tracts that touch the
+ * tile, as a binary tile in the SAME format the street tiles use: a feature
+ * is a closed ring, and its index is the tract's index in the county's list.
+ *
+ * `/api/desk/tracts/{state}/{county}/index` - the county's tract LIST, in the
+ * order the tiles index into. It is fetched ONCE per county and cached by the
+ * client, because a tile carries an index into this list and not the list
+ * itself: a GEOID is eleven digits and a name on top of it, and a county has
+ * hundreds of tracts, and a tile at every zoom of every pan would pay for
+ * all of it again and again. The list also carries the housing-unit count,
+ * which is a property of the tract and not of the ring.
+ *
+ * The two paths cannot be confused: the tile's last three segments are
+ * numbers and this one's are not.
+ */
+const TRACT_TILE_PATH =
+  /^\/api\/desk\/tracts\/(\d{2})\/(\d{3})\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/;
+const TRACT_INDEX_PATH = /^\/api\/desk\/tracts\/(\d{2})\/(\d{3})\/index$/;
+
+/**
+ * How long a tile may be cached by the browser.
+ *
+ * A tile is cut from a county's data, and the data does not move under the
+ * browser in a minute.
+ */
+const TILE_CACHE_CONTROL = 'public, max-age=3600';
 
 /**
  * Run the desk's API for one request.
  *
  * @param {URL} url the parsed request URL
  * @returns {Promise<{status: number, body: object}|{status: number,
- *   bytes: Uint8Array, contentType: string}|null>} null when the path is not
- *   one of the desk's
+ *   bytes: Uint8Array, contentType: string, count: number, cache: string}|null>}
+ *   null when the path is not one of the desk's
  */
 export async function runDeskApi(url) {
   // The day's fine 1 km field, so the desk's map can draw the swath.
@@ -102,11 +138,42 @@ export async function runDeskApi(url) {
     };
   }
 
+  // The day's SUB-DAILY field, so the desk can show a storm six hours at a
+  // time instead of a day at a time.
+  //
+  // The desk already had these shards and never used them: they are built,
+  // committed and served by the globe, and the desk's map drew a whole day at
+  // a time as if a storm were one thing that happened over eighteen hours.
+  // It was not. A storm is a thing that happened over an hour, and a map
+  // that says "this is where the hail fell on Tuesday" is a claim about
+  // eighteen hours of weather.
+  const subDaily = /^\/api\/desk\/subdaily\/(\d{4}-\d{2}-\d{2})\.bin\.gz$/.exec(
+    url.pathname,
+  );
+  if (subDaily) {
+    const file = path.join(
+      STORM_DIR,
+      `storm_radar_hail_sub_${subDaily[1]}.bin.gz`,
+    );
+    if (!fs.existsSync(file)) {
+      return {
+        status: 404,
+        body: { error: `no sub-daily field for ${subDaily[1]}` },
+      };
+    }
+    return {
+      status: 200,
+      bytes: new Uint8Array(fs.readFileSync(file)),
+      contentType: 'application/gzip',
+      count: 1,
+    };
+  }
+
   const tileMatch = STREET_TILE_PATH.exec(url.pathname);
   if (tileMatch) {
     const [, state, county, z, x, y] = tileMatch;
     try {
-      const { bytes, count } = await streetTile(
+      const { bytes, count, cache } = await streetTile(
         state,
         county,
         Number(z),
@@ -122,6 +189,7 @@ export async function runDeskApi(url) {
         bytes,
         contentType: 'application/vnd.gev.street-tile',
         count,
+        cache,
       };
     } catch (error) {
       return {
@@ -130,6 +198,53 @@ export async function runDeskApi(url) {
       };
     }
   }
+
+  const tractTileMatch = TRACT_TILE_PATH.exec(url.pathname);
+  if (tractTileMatch) {
+    const [, state, county, z, x, y] = tractTileMatch;
+    try {
+      const { bytes, count, cache } = await tractTile(
+        state,
+        county,
+        Number(z),
+        Number(x),
+        Number(y),
+      );
+      return {
+        // The same rule as the street tile: an empty tile is a 204 with no
+        // body, and a header-only tile is a perfectly good answer.
+        status: count ? 200 : 204,
+        bytes,
+        contentType: 'application/vnd.gev.tract-tile',
+        count,
+        cache,
+      };
+    } catch (error) {
+      return {
+        status: 404,
+        body: { error: error?.message || 'the tract tile could not be built' },
+      };
+    }
+  }
+
+  const tractIndexMatch = TRACT_INDEX_PATH.exec(url.pathname);
+  if (tractIndexMatch) {
+    const [, state, county] = tractIndexMatch;
+    try {
+      const index = await countyTractIndex(state, county);
+      return {
+        status: 200,
+        body: tractListBody(state, county, index),
+        cache: index.built ? 'index' : 'memory',
+      };
+    } catch (error) {
+      return {
+        status: 404,
+        body: { error: error?.message || 'the tract list could not be built' },
+      };
+    }
+  }
+
   const handler = DESK_ROUTES[url.pathname];
   if (!handler) return null;
   try {
@@ -155,12 +270,30 @@ export function deskApiPlugin() {
       server.middlewares.use(async (req, res, next) => {
         if (!req.url?.startsWith('/api/desk/')) return next();
         const result = await runDeskApi(new URL(req.url, 'http://localhost'));
-        if (!result) return next();
+        // An API path that matched nothing is a 404, in dev as in production.
+        // The dev server's own fallback would answer with its index page, and
+        // a client that asked for a tile and got a web page would draw
+        // nothing and say nothing about why.
+        if (!result) {
+          res.statusCode = 404;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ error: 'no such desk route' }));
+          return;
+        }
+        // WHERE THE ANSWER CAME FROM: `memory` when the county's index was
+        // already in memory, `index` when this request built it.
+        if (result.cache) res.setHeader('x-gev-cache', result.cache);
         if (result.bytes) {
           res.setHeader('content-type', result.contentType);
           res.setHeader('x-gev-tile-count', String(result.count ?? 0));
+          res.setHeader('cache-control', TILE_CACHE_CONTROL);
           res.statusCode = result.status;
-          res.end(Buffer.from(result.bytes));
+          // A 204 CARRIES NO BODY. The tile's header bytes are not sent with
+          // it: a 204 that answers with bytes is a 200 that lies about its
+          // status, and some clients will read the body anyway.
+          res.end(
+            result.status === 204 ? undefined : Buffer.from(result.bytes),
+          );
           return;
         }
         res.setHeader('content-type', 'application/json');
