@@ -225,6 +225,7 @@ function renderStormView() {
     { sort: state.filters.dsort, dir: state.filters.ddir },
     onStormSort,
     onStormDayClick,
+    (row) => row.date === state.filters.d,
   );
   el.summary.textContent = stormSummary(rows);
   // The scope chips are the storm list's own filter, so they are only
@@ -1708,6 +1709,24 @@ async function main() {
     fillStates(state.cityIndex.cities, 'st');
     syncControls();
     render();
+    // OPEN ON A STORM.
+    //
+    // The desk's whole argument is that the storm is the map, and a desk
+    // that opens on a list of dates and an empty map of the state is making
+    // that argument badly. The day it opens on is the most recent one the
+    // radar actually reached - a day with reports and no radar reach has no
+    // storm to draw, and opening on it would show the same empty map.
+    //
+    // The day goes into the URL, so the link a person copies carries the
+    // storm they were looking at.
+    if (state.view === 'storm' && !state.filters.d) {
+      // The list comes out in DATE ORDER, oldest first, so the newest day
+      // with a radar reach is the LAST one and not the first.
+      const withRadar = stormDays().filter((row) => row.houses !== null);
+      if (withRadar.length) {
+        applyFilters({ d: withRadar[withRadar.length - 1].date });
+      }
+    }
 
     createTheMap();
   drawMap();

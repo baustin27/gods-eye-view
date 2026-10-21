@@ -786,6 +786,16 @@ button.secondary {
   cursor: pointer;
 }
 
+/*
+ * The selected row, marked as such. A person looking at a list and a map
+ * has to know which row the map is showing, and a table that does not say so
+ * makes them read the map's caption to find out.
+ */
+.desk-table tbody tr.selected td {
+  background: rgba(109, 40, 217, 0.18);
+  color: var(--ink);
+}
+
 .desk-table tbody tr.clickable:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;

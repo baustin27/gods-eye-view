@@ -533,6 +533,18 @@
         "apps/hail-desk/index.html"
       ],
       "gate": "a round number of metres between 60 and 140 pixels, the zoom beside it, and the arrow keys pan and the plus and minus zoom"
+    },
+    {
+      "id": "D2.3",
+      "title": "the desk opens on a storm: the most recent day the radar reached, in the URL, with the row marked in the list",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/src/table.js",
+        "apps/hail-desk/styles.css"
+      ],
+      "gate": "the desk opens with a storm on the map, the day in the link, and the row marked in the list"
     }
   ]
 }

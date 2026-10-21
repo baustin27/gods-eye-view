@@ -431,7 +431,9 @@ function fillWindow(live) {
   const fragment = document.createDocumentFragment();
   if (first > 0) fragment.appendChild(spacerRow(first * ROW_HEIGHT, columns.length));
   for (const row of rows.slice(first, last)) {
-    fragment.appendChild(buildRow(row, columns, state, onSort, onRowClick));
+    fragment.appendChild(
+      buildRow(row, columns, state, onSort, onRowClick, live.rowClass),
+    );
   }
   if (last < total) {
     fragment.appendChild(spacerRow((total - last) * ROW_HEIGHT, columns.length));
@@ -442,10 +444,16 @@ function fillWindow(live) {
 /**
  * One table row.
  */
-function buildRow(row, columns, state, onSort, onRowClick) {
+function buildRow(row, columns, state, onSort, onRowClick, rowClass) {
   const tr = document.createElement('tr');
+  // The selected row, marked as such. A person looking at a list and a map
+  // has to know which row the map is showing, and a table that does not say
+  // so makes them read the map's caption to find out.
+  if (rowClass?.(row)) tr.classList.add('selected');
   if (onRowClick) {
-    tr.className = 'clickable';
+    // classList, not className: className REPLACES the whole list, and it
+    // was wiping the 'selected' class off the row it was marking.
+    tr.classList.add('clickable');
     tr.tabIndex = 0;
     tr.title = 'Show the storms in this place';
     tr.addEventListener('click', () => onRowClick(row));
@@ -480,7 +488,15 @@ function buildRow(row, columns, state, onSort, onRowClick) {
  * every keystroke of the search box. The CSV export is unaffected: it reads
  * `state.rows`, never the DOM.
  */
-export function renderTable(container, rows, columns, state, onSort, onRowClick) {
+export function renderTable(
+  container,
+  rows,
+  columns,
+  state,
+  onSort,
+  onRowClick,
+  rowClass,
+) {
   const same =
     _live &&
     _live.container === container &&
@@ -526,6 +542,7 @@ export function renderTable(container, rows, columns, state, onSort, onRowClick)
       state,
       onSort,
       onRowClick,
+      rowClass,
     };
     // One scroll listener for the life of the table. The body is refilled
     // from the scroll position, so the list is a window and not a copy.
@@ -555,6 +572,7 @@ export function renderTable(container, rows, columns, state, onSort, onRowClick)
     _live.state = state;
     _live.onSort = onSort;
     _live.onRowClick = onRowClick;
+    _live.rowClass = rowClass;
     if (changed) container.scrollTop = 0;
   }
   fillWindow(_live);
