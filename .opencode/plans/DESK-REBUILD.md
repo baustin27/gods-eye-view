@@ -439,11 +439,14 @@ list, not a map. The ISOLATE control is **open** — a person looking at a
 storm cannot yet drop everything else and keep only that storm.
 
 **Wave E — the finish.** The scale bar, the zoom readout and the keyboard
-are landed. One shared mark style for the bands, the globe, the artifact and
-the gallery is **open** — the bands come from one function
-(`src/data/stormArtwork.js`) and are drawn by one painter, but the globe's
-and the desk's ramps are not yet the same constants in one place. The phone
-was never checked, which is a known gap and not a surprise.
+are landed. The **one shared mark style** is landed: the ramp is in
+`src/data/stormRamp.js` — the thresholds, the colours, the labels and the
+colour of each band's own edge — and the globe, the desk, the per-storm
+artifact and the gallery all read it, with a test that says the artifact's
+bands ARE the shared ramp rather than a copy of it. The desk also draws the
+band edges now, which it did not: its bands were flat fills with no
+boundaries. The phone was never checked, which is a known gap and not a
+surprise.
 
 ---
 

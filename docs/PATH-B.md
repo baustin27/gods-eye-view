@@ -173,6 +173,25 @@ place→storm-day drill-down · `b3bc673a` houses under the hail + PROSPECT ·
 `257e668a` the street knock list + the desk server · `5ab48e5f` FEMA realised
 damage by ZIP.
 
+### The desk rebuild, landed after that table was written
+
+The desk was rebuilt around one idea: **the storm is the map**. The storm-day
+list is now the desk's first view, the place dots are a layer that is off by
+default, and a day is a link.
+
+| commit | what |
+|---|---|
+| `a03f652f` | the map stops lying: the zoom is a whole number, the cursor is the anchor (0.000 m of drift), the latitude is clamped, the failed tiles are remembered |
+| `921f2929` | the storm-day list, the union of the report days and the radar days; `d`, `dsort`, `ddir` and `view` in the URL; the recent days as chips; the frame chips; the dots as an optional layer |
+| `97bb4647` | the houses: the tract choropleth under the swath, the county the storm fell in, and the FIPS the tile routes wanted |
+| `4a1fe5b4` | a day opens its tracts, and a tract opens its streets with the addresses under the hail |
+| `39d97ed0` | the lead list (the PROSPECT scope), the scale bar, the zoom readout, the keyboard |
+| `ac63fcab` | the desk opens on a storm, with the row marked in the list |
+| `4010570a` | one ramp for the globe, the desk, the artifact and the gallery |
+
+`npm test` → **7,356 pass, 0 fail**. `npm run check:tasks` → 49 tasks, 0
+open.
+
 ### Known open items
 
 - `swaths.json.gz` was **not** rebuilt for the tract list — the desk reuses
@@ -184,6 +203,14 @@ damage by ZIP.
   the tract row itself.
 - The globe's storm layers were confirmed working on a clean boot of the
   production build (`:4173`): OFF → ON, all five storm assets 200, no errors.
+- The **ISOLATE** control (the globe's "show me only this storm") has not
+  been ported to the desk. The desk's equivalent - the storm list's own
+  filters and the selected day - covers most of it, but not all of it.
+- The **phone layout** has never been checked. The desk is a desktop product
+  and it says so, and nobody has looked at it on a small screen.
+- The desk's map draws **one county's** streets and tracts, and the 500k
+  cartographic boundary file DROPS the small urban tracts, so a rural county
+  draws almost no houses. Both are in `docs/KNOWN-ISSUES.md`.
 
 ---
 
