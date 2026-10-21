@@ -86,6 +86,7 @@ safe for PRs warranting isolation. For runtime changes, record local results for
 | Check | Command or evidence |
 | --- | --- |
 | Setup, formatting, boundaries | `npm run doctor -- --json`; `npm run format:check`; `npm run check:boundaries` |
+| The registered work | `npm run check:tasks` — fails on any task in `scripts/task-registry.json` that is not `done`, and on any task that is `done` but points at a file that is not there |
 | Tests and production build | `npm test`; `npm run build` |
 | Tracking regression | Candidate dev server at `localhost:4173`, then `npm run test:track` with compatible Chromium |
 | Built app | Stop the dev server, run `npm run preview`, and inspect the built candidate |

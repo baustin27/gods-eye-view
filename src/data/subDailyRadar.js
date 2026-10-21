@@ -113,7 +113,11 @@ export function encodeSubDaily(frames) {
   ordered.forEach(([index, row], n) => {
     const at = SUB_DAILY_HEADER_BYTES + n * SUB_DAILY_RECORD_BYTES;
     view.setUint32(at, index, true);
-    view.setUint16(at + 4, Math.round(row.maxMm * RADAR_PER_DAY_MM_SCALE), true);
+    view.setUint16(
+      at + 4,
+      Math.round(row.maxMm * RADAR_PER_DAY_MM_SCALE),
+      true,
+    );
     view.setUint16(at + 6, row.mask, true);
   });
   return buffer;
@@ -213,11 +217,17 @@ export async function loadSubDailyDay(day, options = {}) {
     const response = await fetchImpl(url, { signal: options.signal });
     if (!response.ok) {
       if (response.status === 404) {
-        const empty = { frameCount: 0, frames: [], times: subDailyFrameTimes(key) };
+        const empty = {
+          frameCount: 0,
+          frames: [],
+          times: subDailyFrameTimes(key),
+        };
         shardCache.set(key, empty);
         return empty;
       }
-      throw new Error(`sub-daily radar: HTTP ${response.status} for ${url.href}`);
+      throw new Error(
+        `sub-daily radar: HTTP ${response.status} for ${url.href}`,
+      );
     }
     // The shared inflate helper, and not a bare `DecompressionStream`. A server
     // that answers a `.gz` with `Content-Encoding: gzip` has ALREADY
@@ -230,7 +240,11 @@ export async function loadSubDailyDay(day, options = {}) {
     );
   } catch (error) {
     if (error?.message?.includes('404')) {
-      const empty = { frameCount: 0, frames: [], times: subDailyFrameTimes(key) };
+      const empty = {
+        frameCount: 0,
+        frames: [],
+        times: subDailyFrameTimes(key),
+      };
       shardCache.set(key, empty);
       return empty;
     }

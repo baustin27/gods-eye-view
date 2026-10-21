@@ -229,7 +229,9 @@ export async function countyEdges(state, county, zip) {
     const row = rows[index];
     const name = row.FULLNAME;
     if (!name) continue;
-    const points = shapes.records.length ? edgePoints(shapes.records[index]) : [];
+    const points = shapes.records.length
+      ? edgePoints(shapes.records[index])
+      : [];
     for (const side of ['L', 'R']) {
       const from = row[`${side}FROMADD`];
       const to = row[`${side}TOADD`];

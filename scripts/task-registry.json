@@ -1,0 +1,223 @@
+{
+  "version": 1,
+  "note": "The registered work for this repository. `npm run check:tasks` fails on any task that is not done, and on any task that claims to be done but points at a file that is not there. See AGENTS.md.",
+  "tasks": [
+    {
+      "id": "B0.1",
+      "title": "the showStreets parameter shadows the module state object, so the realised-damage table can never render",
+      "status": "done",
+      "commit": "0971421a",
+      "files": ["apps/hail-desk/src/main.js"],
+      "gate": "the realised-damage table renders real numbers"
+    },
+    {
+      "id": "B0.2",
+      "title": "setRadarSwath(false) clears the cells but never re-renders, so the polygons stay on the map",
+      "status": "done",
+      "commit": "da8efbc1",
+      "files": ["src/layers/stormReports/index.js"],
+      "gate": "switching RADAR off removes the polygons"
+    },
+    {
+      "id": "B0.3",
+      "title": "the storm table has ten headers and nine cells, so the Streets column has no cell",
+      "status": "done",
+      "commit": "da8efbc1",
+      "files": ["apps/hail-desk/src/main.js"],
+      "gate": "ten headers and ten cells"
+    },
+    {
+      "id": "B1.1",
+      "title": "the radar swath is on by default, conditionally on a radar source",
+      "status": "done",
+      "commit": "da8efbc1",
+      "files": ["src/layers/stormReports/index.js"],
+      "gate": "a layer with no radar source still reads the swath as off"
+    },
+    {
+      "id": "B1.2",
+      "title": "the swath ramp is five stops of violet to white, off the report pins' colours",
+      "status": "done",
+      "commit": "da8efbc1",
+      "files": ["src/layers/stormReports/index.js"],
+      "gate": "the wash and the pins are no longer the same hue"
+    },
+    {
+      "id": "B1.3",
+      "title": "each band is outlined in the next hotter band's colour",
+      "status": "done",
+      "commit": "da8efbc1",
+      "files": ["src/layers/stormReports/index.js"],
+      "gate": "a band has an edge that is not its own fill"
+    },
+    {
+      "id": "B1.4",
+      "title": "the swath bands do not tile: each is contoured at the product floor, so a shared boundary is interpolated twice",
+      "status": "open",
+      "files": ["src/layers/stormReports/index.js"],
+      "gate": "the boundary between two bands is one interpolated line, not two"
+    },
+    {
+      "id": "B1.5",
+      "title": "the third LOD tier: a 0.05 degree band between the 1 km field and the 0.25 degree one",
+      "status": "open",
+      "files": ["src/layers/stormReports/index.js", "src/layers/stormReports/model.js"],
+      "gate": "the swath reads as a storm shape at every altitude"
+    },
+    {
+      "id": "B1.6",
+      "title": "the REPORTED swath is a staircase, because it is contoured per band rather than over the union",
+      "status": "open",
+      "files": ["src/layers/stormReports/index.js"],
+      "gate": "the reported wash is a smooth envelope, not a staircase"
+    },
+    {
+      "id": "B1.7",
+      "title": "the swath chip titles describe a per-cell fill that no longer exists",
+      "status": "done",
+      "commit": "da8efbc1",
+      "files": ["src/layers/stormReports/index.js"],
+      "gate": "the titles describe what is drawn"
+    },
+    {
+      "id": "B1.8",
+      "title": "the QA harness clicks the RADAR chip, which would switch it off now that it is on by default",
+      "status": "done",
+      "commit": "da8efbc1",
+      "files": ["scripts/qa-storm-swath.mjs"],
+      "gate": "the harness passes with the swath on by default"
+    },
+    {
+      "id": "B1.9",
+      "title": "the celestial ring must hug the globe rather than the porthole",
+      "status": "open",
+      "files": ["src/celestialRing.js"],
+      "gate": "the ring is around the globe at every viewport size"
+    },
+    {
+      "id": "B1.10",
+      "title": "the stylesheet still carries the scope mask and the cockpit clip-path",
+      "status": "open",
+      "files": ["src/ui/styles/foundation.css"],
+      "gate": "nothing in the stylesheet assumes a porthole"
+    },
+    {
+      "id": "B1.11",
+      "title": "the HUD becomes one telemetry strip, because the Cyber sonar and the cockpit layout depend on it",
+      "status": "open",
+      "files": ["src/hud.js", "src/ui/styles/overlays.css"],
+      "gate": "the map is not covered by a HUD"
+    },
+    {
+      "id": "B1.12",
+      "title": "the rails collapse around the HUD's corner readouts, which are going away",
+      "status": "open",
+      "files": ["src/ui/panelChrome.js", "src/ui/panelLayoutController.js", "src/ui/leftPanelRail.js", "src/ui/rightPanelRail.js"],
+      "gate": "the panels do not collapse when the HUD is not there"
+    },
+    {
+      "id": "B2.1",
+      "title": "the gallery page, at the app root so it is not shipped",
+      "status": "done",
+      "commit": "cf88f3e2",
+      "files": ["apps/hail-desk/gallery.html"],
+      "gate": "the gallery runs in dev and is not in the build"
+    },
+    {
+      "id": "B2.2",
+      "title": "the gallery ranks storms by radar coverage rather than by report count",
+      "status": "done",
+      "commit": "cf88f3e2",
+      "files": ["apps/hail-desk/gallery.html"],
+      "gate": "the five biggest swaths, not the five biggest report counts"
+    },
+    {
+      "id": "B3.1",
+      "title": "the table is a window onto the rows rather than a copy of them",
+      "status": "done",
+      "commit": "ae95bb58",
+      "files": ["apps/hail-desk/src/table.js", "apps/hail-desk/styles.css"],
+      "gate": "6,496 rows render 47 live rows, and the scrollbar is honest"
+    },
+    {
+      "id": "B3.2",
+      "title": "the desk's layout is a grid of rail, map and list, and the three drill-down sections become one panel with a back stack",
+      "status": "open",
+      "files": ["apps/hail-desk/index.html", "apps/hail-desk/src/main.js", "apps/hail-desk/styles.css"],
+      "gate": "the drill-down replaces rather than stacks, and the desk is three panes"
+    },
+    {
+      "id": "B3.3",
+      "title": "the control rail, porting the globe's toggle rows, chips and ranked list",
+      "status": "open",
+      "files": ["apps/hail-desk/src/rail.js", "apps/hail-desk/index.html", "apps/hail-desk/styles.css"],
+      "gate": "the desk's controls are the globe's controls"
+    },
+    {
+      "id": "B3.4",
+      "title": "the ranked list of the places worth the afternoon",
+      "status": "done",
+      "commit": "0971421a",
+      "files": ["apps/hail-desk/src/table.js", "apps/hail-desk/src/main.js", "apps/hail-desk/styles.css"],
+      "gate": "the list is a control and not a caption"
+    },
+    {
+      "id": "B3.5",
+      "title": "every sort header is a control, not a header that changes the URL and does not move the table",
+      "status": "done",
+      "commit": "ae95bb58",
+      "files": ["apps/hail-desk/src/table.js"],
+      "gate": "every visible header sorts"
+    },
+    {
+      "id": "B3.6",
+      "title": "every sort key round-trips through a link, and the shared encoder cannot write undefined",
+      "status": "done",
+      "commit": "ae95bb58",
+      "files": ["src/data/layerState.js", "apps/hail-desk/src/state.js"],
+      "gate": "a city link reads back sorted the way it was written"
+    },
+    {
+      "id": "B3.7",
+      "title": "the city and county rows carry a centroid, so the map has something to plot",
+      "status": "open",
+      "files": ["scripts/build-hail-desk-data.mjs"],
+      "gate": "every place and county has a lat and a lon"
+    },
+    {
+      "id": "B4.1",
+      "title": "the GEVS street tile format, and the shared tile projection",
+      "status": "open",
+      "files": ["server/providers/deskTiles.js", "src/layers/streetLevel/tileMath.js"],
+      "gate": "a county's streets round-trip through a tile"
+    },
+    {
+      "id": "B4.2",
+      "title": "the street tile route, served from a parse-once index over the raw EDGES records",
+      "status": "open",
+      "files": ["server/providers/deskTiles.js", "server/desk/server.mjs", "server/providers/tigerStreets.js"],
+      "gate": "a tile at z16 carries the county's streets, with no holes"
+    },
+    {
+      "id": "B4.3",
+      "title": "the desk's 2D canvas map pane, with the swath rings from the shared model",
+      "status": "open",
+      "files": ["apps/hail-desk/src/map/viewport.js", "apps/hail-desk/src/map/basemap.js", "apps/hail-desk/src/map/streets.js", "apps/hail-desk/src/map/vectors.js", "apps/hail-desk/src/map/swath.js", "apps/hail-desk/src/map/map.js"],
+      "gate": "the desk draws a map of the filtered market"
+    },
+    {
+      "id": "B4.4",
+      "title": "the dev server and the built server answer from one handler module",
+      "status": "open",
+      "files": ["server/providers/deskApi.js", "apps/hail-desk/vite.config.js"],
+      "gate": "the dev server has the desk's API, and it is the same code"
+    },
+    {
+      "id": "B5.1",
+      "title": "the per-storm artifact: the gallery's renderer, made static",
+      "status": "open",
+      "files": ["scripts/build-hail-desk-storm-artifact.mjs", "server/desk/server.mjs"],
+      "gate": "one storm renders to a shareable image with its sources on it"
+    }
+  ]
+}

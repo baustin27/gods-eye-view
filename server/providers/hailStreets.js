@@ -69,19 +69,14 @@ export const HAIL_THRESHOLD_MM = 25.4;
  * @returns {{cells: Set<number>, found: boolean, total: number, maxMm: number}}
  */
 export function dayHitCells(day, thresholdMm = HAIL_THRESHOLD_MM) {
-  const file = path.join(
-    STORM_DIR,
-    `storm_radar_hail_fine_${day}.bin.gz`,
-  );
+  const file = path.join(STORM_DIR, `storm_radar_hail_fine_${day}.bin.gz`);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day))) {
     throw new Error(`bad day: ${day}`);
   }
   if (!fs.existsSync(file)) {
     return { cells: new Set(), found: false, total: 0, maxMm: 0 };
   }
-  const bytes = new Uint8Array(
-    zlib.gunzipSync(fs.readFileSync(file)),
-  );
+  const bytes = new Uint8Array(zlib.gunzipSync(fs.readFileSync(file)));
   const { cells } = indexFineDay(bytes);
   let maxMm = 0;
   for (const cell of cells) {
@@ -151,9 +146,7 @@ export async function countyStreetList(state, county, options = {}) {
       for (const index of field.cells) {
         const i = Math.floor(index / 6500) + 2100;
         const j = (index % 6500) - 12500;
-        if (
-          tractContains(tract, i * 0.01 + 0.005, j * 0.01 + 0.005)
-        ) {
+        if (tractContains(tract, i * 0.01 + 0.005, j * 0.01 + 0.005)) {
           cellsCentred += 1;
         }
       }
@@ -184,9 +177,7 @@ export async function countyStreetList(state, county, options = {}) {
     // 5 of them, not 4.9.
     street.underHail = Math.round(street.addresses * counts.hailShare);
     street.tractShare = counts.tractShare;
-    street.addressesInTract = Math.round(
-      street.addresses * counts.tractShare,
-    );
+    street.addressesInTract = Math.round(street.addresses * counts.tractShare);
     street.underHailInTract = Math.round(
       street.addresses * counts.hailInTractShare,
     );

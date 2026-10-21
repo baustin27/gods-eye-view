@@ -10,6 +10,22 @@ For the roadmap and open backlog, see the repository issue tracker.
 
 ## Open
 
+### The registered work is open
+Status: Open (work in progress)
+
+Context: the outstanding work for this repository is in
+`scripts/task-registry.json`, and `npm run check:tasks` fails on any task
+that is not `done`. The point of the file rather than a paragraph is that an
+incomplete piece of work must be visible in a place a machine reads, so
+that "stopped halfway" is a failed check rather than something nobody
+notices.
+
+Next iteration candidates: drain the registry. The waves are in
+`.opencode/plans/PATH-B-REGISTRY.md` and the rules are in `AGENTS.md`.
+
+---
+
+
 ### Street traffic can be slow/uneven when panning across dense city blocks
 Status: Open (partially mitigated)
 

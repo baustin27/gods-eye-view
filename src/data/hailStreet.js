@@ -104,8 +104,10 @@ export function fineCellIndexAt(lat, lon) {
   ) {
     return -1;
   }
-  return (i - RADAR_FINE_GRID.rowBase) * RADAR_FINE_GRID.columns +
-    (j - RADAR_FINE_GRID.colBase);
+  return (
+    (i - RADAR_FINE_GRID.rowBase) * RADAR_FINE_GRID.columns +
+    (j - RADAR_FINE_GRID.colBase)
+  );
 }
 
 /**
@@ -187,7 +189,8 @@ export function sampleStreet(points, options = {}) {
     const legStart = cumulative[cursor];
     const legLength = cumulative[cursor + 1] - legStart;
     const t = legLength > 0 ? (distance - legStart) / legLength : 0;
-    lon[k] = points[cursor * 2] + (points[cursor * 2 + 2] - points[cursor * 2]) * t;
+    lon[k] =
+      points[cursor * 2] + (points[cursor * 2 + 2] - points[cursor * 2]) * t;
     lat[k] =
       points[cursor * 2 + 1] +
       (points[cursor * 2 + 3] - points[cursor * 2 + 1]) * t;

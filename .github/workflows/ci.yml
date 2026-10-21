@@ -49,6 +49,14 @@ jobs:
       - name: Check package boundaries
         run: npm run check:boundaries
 
+      - name: Check the task registry
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            npm run check:tasks
+          else
+            npm run check:tasks -- --allow-open
+          fi
+
       - name: Check published layer-token allocations
         if: github.event_name == 'pull_request'
         run: npm run layer-token:check -- --base-ref origin/main

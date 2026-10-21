@@ -1207,7 +1207,10 @@ export function createStormReportsLayer({
       _subDailyFrames = framesFailed ? null : frames;
       // A frame that no longer exists must not survive the day changing
       // under it.
-      if (_radarFrame !== null && (!_subDailyFrames || _radarFrame >= _subDailyFrames.length)) {
+      if (
+        _radarFrame !== null &&
+        (!_subDailyFrames || _radarFrame >= _subDailyFrames.length)
+      ) {
         _radarFrame = null;
       }
       // Banded whenever EITHER swath is on, not only for RADAR. Gating this on
@@ -1890,7 +1893,9 @@ export function createStormReportsLayer({
           // between two intensities, which is what it is.
           outline: true,
           outlineColor:
-            Cesium.Color.fromCssColorString(outlineColor).withAlpha(outlineAlpha),
+            Cesium.Color.fromCssColorString(outlineColor).withAlpha(
+              outlineAlpha,
+            ),
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
         },
         properties: { swath: true, key: id },
@@ -2104,9 +2109,7 @@ export function createStormReportsLayer({
     _prospectCells = [];
     if (_showProspectSwath) {
       const fine = useFineRadarField();
-      const radarCells = fine
-        ? fineSwathCells(frameRadarCells())
-        : _radarSwath;
+      const radarCells = fine ? fineSwathCells(frameRadarCells()) : _radarSwath;
       const radarDeg = fine ? GRID_DEG_FINE : GRID_DEG;
       _prospectCells = prospectSwathCells(radarCells, _visible, {
         stepDeg: radarDeg,
@@ -2137,9 +2140,7 @@ export function createStormReportsLayer({
       // 0.25-degree field for a multi-day combine, a day outside the retention
       // window, or a camera high enough that 1 km cells are sub-pixel.
       const fine = useFineRadarField();
-      const radarCells = fine
-        ? fineSwathCells(frameRadarCells())
-        : _radarSwath;
+      const radarCells = fine ? fineSwathCells(frameRadarCells()) : _radarSwath;
       const radarDeg = fine ? GRID_DEG_FINE : GRID_DEG;
       drawSwathBand(
         'radar',
@@ -3444,7 +3445,7 @@ export function createStormReportsLayer({
           // The whole day is the maximum over its hours, which is what the
           // layer has always drawn. Choosing a frame is choosing to see
           // inside that maximum.
-          title: "The whole day: the largest hail that fell on it",
+          title: 'The whole day: the largest hail that fell on it',
           disabled: !ready || !_subDailyFrames,
           active: _radarFrame === null,
           onClick: () => self().setRadarFrame(null),
@@ -3778,7 +3779,10 @@ export function createStormReportsLayer({
     setRadarFrame(frame) {
       const next = frame === null || frame === undefined ? null : Number(frame);
       if (next !== null && !Number.isInteger(next)) return false;
-      if (next !== null && (!_subDailyFrames || next >= _subDailyFrames.length)) {
+      if (
+        next !== null &&
+        (!_subDailyFrames || next >= _subDailyFrames.length)
+      ) {
         return false;
       }
       if (next === _radarFrame) return false;
