@@ -121,35 +121,65 @@
             body += `<rect x="${(x - (GRID * sx) / 2).toFixed(1)}" y="${(y - (GRID * sy) / 2).toFixed(1)}" width="${(GRID * sx + 0.7).toFixed(1)}" height="${(GRID * sy + 0.7).toFixed(1)}" fill="${band.color}" fill-opacity="0.8"/>`;
           }
         } else {
-          // B and C: the contour filled, the hottest band on top, each band
-          // outlined in the next hotter colour.
+          // B and C: the ANNULAR bands - the whole field contoured once per
+          // level, and each band the region BETWEEN two levels, so the bands
+          // share ONE interpolated line instead of each having its own.
+          //
+          // This is the change that removed a four hundred metre gap between
+          // two bands, and it is what the product now draws.
           const field = peaked(cells);
-          for (const band of [...RAMP].reverse()) {
-            const rings = contourRings(field, band.min, GRID);
-            const d = rings
-              .map((ring) => {
-                const outer = ring.outer
-                  .map((p, i) => {
-                    const [x, y] = project(p.lat, p.lon);
-                    return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
-                  })
-                  .join('') + 'Z';
-                const holes = (ring.holes || [])
-                  .map((hole) =>
-                    hole
-                      .map((p, i) => {
-                        const [x, y] = project(p.lat, p.lon);
-                        return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
-                      })
-                      .join('') + 'Z',
-                  )
-                  .join('');
-                return outer + holes;
-              })
-              .join('');
-            body += `<path d="${d}" fill="${band.color}" fill-opacity="0.85" fill-rule="evenodd"/>`;
-            if (treatment === 'contour-edge') {
-              body += `<path d="${d}" fill="none" stroke="${band.outline}" stroke-width="1.4" fill-rule="evenodd"/>`;
+          const EPSILON = 0.01;
+          const ascending = [...RAMP].sort((a, b) => a.min - b.min);
+          const contours = ascending.map((band) =>
+            contourRings(field, band.min - EPSILON, GRID),
+          );
+          const counts = new Array(ascending.length).fill(0);
+          for (const cell of field) {
+            for (let k = 0; k < ascending.length; k += 1) {
+              const next = k + 1 < ascending.length ? ascending[k + 1].min : Infinity;
+              if (cell.v >= ascending[k].min && cell.v < next) {
+                counts[k] += 1;
+                break;
+              }
+            }
+          }
+          const inRing = (point, ring) => {
+            let inside = false;
+            for (let at = 0, prev = ring.length - 1; at < ring.length; prev = at, at += 1) {
+              const y0 = ring[prev].lat, x0 = ring[prev].lon;
+              const y1 = ring[at].lat, x1 = ring[at].lon;
+              if (y0 > point.lat !== y1 > point.lat) {
+                const cross = ((x1 - x0) * (point.lat - y0)) / (y1 - y0) + x0;
+                if (point.lon < cross) inside = !inside;
+              }
+            }
+            return inside;
+          };
+          const toPath = (outer, holes) => {
+            const path = (ring) =>
+              ring.map((p, i) => {
+                const [x, y] = project(p.lat, p.lon);
+                return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+              }).join('') + 'Z';
+            return path(outer) + holes.map(path).join('');
+          };
+          for (let k = 0; k < ascending.length; k += 1) {
+            if (!counts[k]) continue;
+            const band = ascending[k];
+            const hotter = contours[k + 1] || [];
+            for (const ring of contours[k]) {
+              const holes = [...(ring.holes || [])];
+              for (const hotterRing of hotter) {
+                if (hotterRing.outer && hotterRing.outer.length &&
+                    inRing(hotterRing.outer[0], ring.outer)) {
+                  holes.push(hotterRing.outer);
+                }
+              }
+              const d = toPath(ring.outer, holes);
+              body += `<path d="${d}" fill="${band.color}" fill-opacity="0.85" fill-rule="evenodd"/>`;
+              if (treatment === 'contour-edge') {
+                body += `<path d="${d}" fill="none" stroke="${band.outline}" stroke-width="1.4" fill-rule="evenodd"/>`;
+              }
             }
           }
         }

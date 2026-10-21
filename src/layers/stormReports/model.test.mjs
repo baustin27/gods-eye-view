@@ -38,6 +38,7 @@ import {
   stormTimeRange,
   windBand,
   worstFirst,
+  downsampleMaxCells,
 } from './model.js';
 
 const report = (over = {}) => ({
@@ -773,4 +774,28 @@ test('ringsToDegrees multiplies by the grid step and adds no offset', () => {
   const lats = degrees.outer.map((p) => p.lat);
   assert.equal(Math.min(...lats), 136 * GRID_DEG, 'the south edge, exactly');
   assert.equal(Math.max(...lats), 137 * GRID_DEG, 'and the north edge');
+});
+
+test('pooling the fine field keeps the MAXIMUM, and the field is maxMm', () => {
+  // A cell's value is the biggest hail that fell in it, so the biggest hail
+  // in five cells is the biggest hail in the cell they become. Averaging
+  // would answer a different question and would dissolve the cores.
+  const cells = [
+    { i: 0, j: 0, maxMm: 30 },
+    { i: 1, j: 0, maxMm: 60 },
+    { i: 4, j: 4, maxMm: 45 },
+    { i: 5, j: 0, maxMm: 20 },
+  ];
+  const pooled = downsampleMaxCells(cells, 5);
+  assert.equal(pooled.length, 2, 'four cells become two 5x5 cells');
+  const first = pooled.find((cell) => cell.i === 0 && cell.j === 0);
+  assert.equal(first.maxMm, 60, 'the maximum of the first group');
+  // The field name matters: the fine path reads `maxMm`, and a pooled cell
+  // that carried `peakMm` would arrive as a reading of zero and the mid tier
+  // would draw nothing at all.
+  assert.equal(first.peakMm, undefined);
+  // And the negative side floors correctly: the cell -1 spans [-0.01, 0) and
+  // the cell -5 spans [-0.05, -0.04).
+  const negative = downsampleMaxCells([{ i: -1, j: 0, maxMm: 10 }], 5);
+  assert.equal(negative[0].i, -1, 'a negative cell floors into its own group');
 });

@@ -1142,15 +1142,20 @@ test('the swath chips are offered, and each draws only its own layer', async () 
   assert.equal(swathEntities(viewer, 'reported').length, 0);
   assert.equal(
     swathEntities(viewer, 'radar').length,
-    2,
-    'and the two radar cells are drawn without being asked for',
+    3,
+    'and the two radar cells are drawn without being asked for. THREE, not ' +
+      'two: the swath is drawn as one contour per band, and a cell reading ' +
+      '2.36 inches genuinely has a fringe between the 1.5 inch contour and ' +
+      'the 2 inch one as well as a core above it. The old per-cell drawing ' +
+      'gave one square for the whole cell and threw the fringe away.',
   );
 
   assert.equal(layer.setReportedSwath(true), true);
   assert.equal(
     swathEntities(viewer, 'reported').length,
-    2,
-    'one rectangle per reported grid cell',
+    3,
+    'one contour per band per reported cell - the 2 inch cell has a fringe ' +
+      'between the 1.5 and 2 inch contours and a core above 2 inches',
   );
 
   assert.equal(layer.setReportedSwath(false), true);
@@ -1166,7 +1171,12 @@ test('the swath chips are offered, and each draws only its own layer', async () 
     'RADAR off REMOVES the polygons, not just the cells',
   );
   assert.equal(layer.setRadarSwath(true), true);
-  assert.equal(swathEntities(viewer, 'radar').length, 2, 'two radar cells');
+  assert.equal(
+    swathEntities(viewer, 'radar').length,
+    3,
+    'two radar cells, drawn as three polygons - the hotter cell has a ' +
+      'fringe and a core',
+  );
   assert.equal(
     swathEntities(viewer, 'reported').length,
     0,
@@ -1361,7 +1371,12 @@ test('the radar swath merges a window per cell, worst reading wins', async () =>
     const found = swathEntities(viewer, 'radar');
     return found.length >= 2 ? found : null;
   });
-  assert.equal(cells.length, 2, 'the union of both days is two cells');
+  assert.equal(
+    cells.length,
+    3,
+    'the union of both days is two cells, drawn as three polygons: one ' +
+      'fringe and one core for the hotter cell',
+  );
   // The repeatedly-hit cell keeps the WORST reading across the window, not the
   // first day's: 55mm from the 10th, over 30mm from the 9th. 55 lands in the
   // 2-2.75" band, 28 in the 1-1.5" one. The entity id names the BAND rather
@@ -1437,14 +1452,28 @@ test('stronger bands paint more opaque, and every swath gets an edge', async () 
   await layer.update();
   layer.setReportedSwath(true);
   const entities = swathEntities(viewer, 'reported');
-  assert.equal(entities.length, 2, 'two bands, two rings');
+  assert.equal(
+    entities.length,
+    3,
+    'two bands, three rings - the hotter cell has a fringe and a core',
+  );
   const alphas = entities.map(
     (entity) => value(entity.polygon.material).color.alpha,
   );
-  assert.notEqual(
-    alphas[0],
-    alphas[1],
-    `two bands must not share an alpha: ${JSON.stringify(alphas)}`,
+  // Two entities can be the SAME band - a fringe and a core are one band
+  // drawn twice - and those must share an alpha. What must not happen is two
+  // DIFFERENT bands sharing one, because then the boundary between them is
+  // invisible.
+  const byBand = new Map();
+  for (const entity of entities) {
+    const band = String(entity.id).split(':')[2];
+    byBand.set(band, value(entity.polygon.material).color.alpha);
+  }
+  const bandAlphas = [...byBand.values()];
+  assert.equal(
+    new Set(bandAlphas).size,
+    bandAlphas.length,
+    `two bands must not share an alpha: ${JSON.stringify(bandAlphas)}`,
   );
   const strongest = Math.max(...alphas);
   const weakest = Math.min(...alphas);
@@ -3224,18 +3253,33 @@ test('the fine field is drawn close up and dropped above the LOD altitude', asyn
   // the two tiers apart, and the two are a factor of 25 apart, so the bands
   // below are wide enough to absorb the interpolation and still cannot be
   // confused with each other.
+  // The three tiers, measured off one cell of 45 mm at each: the contour of a
+  // 1 km cell is about 0.4 km across, of a 5 km cell about 2 km, and of a
+  // 0.25 degree cell about 11 km.
   setCameraHeight(viewer, 3_000);
   const fine = finestRadarSpanDeg(viewer);
   assert.ok(
-    fine > 0 && fine < 0.02,
+    fine > 0 && fine < 0.01,
     `close up it is the 1km field, got a span of ${fine} degrees`,
   );
 
-  setCameraHeight(viewer, 40_000);
+  // There are THREE tiers now: the 1 km field to 60 km, a 5 km MID field
+  // built by pooling the 1 km one, to 600 km, and the published 0.25 degree
+  // field above that. The mid tier exists because a 0.25 degree cell is 27.8
+  // km, and at the altitudes where a person decides "did this hit my county"
+  // the storm read as a grid of squares.
+  setCameraHeight(viewer, 200_000);
+  const mid = finestRadarSpanDeg(viewer);
+  assert.ok(
+    mid > 0.01 && mid < 0.05,
+    `at 200 km it is the 5 km field, got a span of ${mid} degrees`,
+  );
+
+  setCameraHeight(viewer, 800_000);
   const coarse = finestRadarSpanDeg(viewer);
   assert.ok(
-    coarse > 0.1,
-    `from altitude it is the 0.25-degree field, got a span of ${coarse} degrees`,
+    coarse > 0.05,
+    `from far above it is the 0.25-degree field, got a span of ${coarse} degrees`,
   );
 });
 
@@ -3254,13 +3298,13 @@ test('a zoom that crosses the LOD boundary redraws the wash', async () => {
   // Same reasoning as above: tier identification, not exact step size.
   setCameraHeight(viewer, 3_000);
   assert.ok(
-    finestRadarSpanDeg(viewer) < 0.02,
+    finestRadarSpanDeg(viewer) < 0.01,
     `starts fine, got ${finestRadarSpanDeg(viewer)}`,
   );
 
-  setCameraHeight(viewer, 25_000);
+  setCameraHeight(viewer, 800_000);
   assert.ok(
-    finestRadarSpanDeg(viewer) > 0.1,
+    finestRadarSpanDeg(viewer) > 0.05,
     `and became coarse on the zoom-out alone, got ${finestRadarSpanDeg(viewer)}`,
   );
 });
@@ -3286,7 +3330,7 @@ test('the alpha ceiling eases off with altitude, monotonically', async () => {
   };
   setCameraHeight(viewer, 3_000);
   const near = topBandAlpha();
-  setCameraHeight(viewer, 60_000);
+  setCameraHeight(viewer, 500_000);
   const far = topBandAlpha();
   assert.ok(far < near, `lighter at altitude (${far} < ${near})`);
   assert.ok(far > 0, 'and never invisible — it is a wash, not a fade-out');
@@ -3671,10 +3715,10 @@ test('PROSPECT draws the radar cells no report covers', async () => {
   );
   assert.equal(
     swathEntities(viewer, 'radar').length,
-    2,
+    3,
     'and it leaves the radar swath alone - the radar is on by default now, ' +
       'and PROSPECT is a different view of the same day, not a replacement ' +
-      'for it',
+      'for it. Three polygons: the hotter cell has a fringe and a core',
   );
 });
 
@@ -3687,7 +3731,11 @@ test('PROSPECT and RADAR are independent views of the same day', async () => {
     REPORT(2, { lat: 35.11 }),
   ]);
   // RADAR is on by default, so it is already showing both cells.
-  assert.equal(swathEntities(viewer, 'radar').length, 2, 'radar: both cells');
+  assert.equal(
+    swathEntities(viewer, 'radar').length,
+    3,
+    'radar: both cells, as a fringe and a core',
+  );
   layer.setProspectSwath(true);
   assert.equal(
     swathEntities(viewer, 'prospect').length,
@@ -3696,7 +3744,7 @@ test('PROSPECT and RADAR are independent views of the same day', async () => {
   );
   assert.equal(
     swathEntities(viewer, 'radar').length,
-    2,
+    3,
     'turning prospect on does not disturb radar',
   );
   layer.setProspectSwath(false);
@@ -3705,7 +3753,11 @@ test('PROSPECT and RADAR are independent views of the same day', async () => {
     0,
     'and turning it off clears only its own',
   );
-  assert.equal(swathEntities(viewer, 'radar').length, 2, 'radar survives');
+  assert.equal(
+    swathEntities(viewer, 'radar').length,
+    3,
+    'radar survives',
+  );
 });
 
 test('PROSPECT reports whether it moved, and refuses when it cannot be true', async () => {

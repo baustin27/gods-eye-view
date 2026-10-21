@@ -21,6 +21,8 @@
 
 import {
   GRID_DEG_FINE,
+  GRID_DEG_MID,
+  downsampleMaxCells,
   HAIL_BANDS,
   gridCellRings,
   hailBand,
@@ -201,10 +203,27 @@ const SWATH_ALPHA_MAX_FAR = 0.52;
  * One constant, and deliberately so: a display choice, not a data one. Set it
  * very high and the fine field is used everywhere, flat wash and all.
  */
-const SWATH_FINE_MAX_ALTITUDE_M = 12_000;
+const SWATH_FINE_MAX_ALTITUDE_M = 60_000;
+
+/**
+ * The altitude at which the 1 km field stops being drawn.
+ *
+ * It was 12 km, which is the height at which a 1 km cell is about the size of
+ * a block - and below that the 1 km field is worth every polygon it costs.
+ * But it also meant that from 12 km to 600 km the wash was drawn from the
+ * 0.25 degree field, and a 0.25 degree cell is 27.8 km. At 100 km of
+ * altitude that is a quarter of the frame, so the storm read as a grid of
+ * squares - and the altitudes where a person decides "did this hit my
+ * county" are exactly the ones in that gap.
+ *
+ * So there are THREE tiers now: the 1 km field to 60 km, a 5 km MID field
+ * built by pooling the 1 km one, to 600 km, and the 0.25 degree field above
+ * that.
+ */
+const SWATH_MID_MAX_ALTITUDE_M = 600_000;
 
 /** Altitude at which the alpha ceiling is fully eased off, metres. */
-const SWATH_ALPHA_FAR_ALTITUDE_M = 60_000;
+const SWATH_ALPHA_FAR_ALTITUDE_M = 600_000;
 
 /** Opacity of a band's hard edge, against the fill it outlines. */
 const SWATH_EDGE_ALPHA = 0.95;
@@ -1752,7 +1771,7 @@ export function createStormReportsLayer({
         ' km from a report of 1" or more'
       );
     }
-    const stepDeg = useFineRadarField() ? GRID_DEG_FINE : GRID_DEG;
+    const stepDeg = radarCellsForTier().deg;
     const area = gridAreaKm2(_prospectCells, stepDeg);
     const claims = _visible.filter(
       (r) => r.hazard === 'hail' && r.size >= 1,
@@ -1942,21 +1961,59 @@ export function createStormReportsLayer({
     const altitude = cameraAltitudeM();
     if (!altitude || altitude <= SWATH_FINE_MAX_ALTITUDE_M)
       return SWATH_ALPHA_MAX;
+    // The far anchor is the MID tier's ceiling, not the old 60 km one: the
+    // alpha has to ease off across the whole range the wash is drawn at
+    // altitude, and the range is now 60 km to 600 km.
     const span = SWATH_ALPHA_FAR_ALTITUDE_M - SWATH_FINE_MAX_ALTITUDE_M;
     const t =
       span > 0 ? Math.min((altitude - SWATH_FINE_MAX_ALTITUDE_M) / span, 1) : 1;
     return SWATH_ALPHA_MAX + (SWATH_ALPHA_MAX_FAR - SWATH_ALPHA_MAX) * t;
   }
 
+  /**
+   * Which grid the wash is drawn from: 'fine', 'mid' or 'coarse'.
+   *
+   * 'fine' is the 1 km field, 'mid' is the same field pooled into 5 km cells,
+   * and 'coarse' is the published 0.25 degree field.
+   *
+   * A SELECTED FRAME is always drawn from the fine field, whatever the
+   * altitude. The frames exist only at 1 km, and a scrubber that silently
+   * stopped scrubbing when the camera climbed would be a control that lies.
+   */
+  function radarTier() {
+    if (_radarFrame !== null && _subDailyFrames) return 'fine';
+    if (!_radarFine) return 'coarse';
+    const altitude = cameraAltitudeM();
+    if (altitude <= SWATH_FINE_MAX_ALTITUDE_M) return 'fine';
+    if (altitude <= SWATH_MID_MAX_ALTITUDE_M) return 'mid';
+    return 'coarse';
+  }
+
   /** Whether the camera is close enough for the fine 1km field to be worth drawing. */
   function useFineRadarField() {
-    // A SELECTED FRAME is always drawn from the fine field, whatever the
-    // altitude. The frames exist only at 1 km, and a scrubber that silently
-    // stopped scrubbing when the camera climbed would be a control that lies.
-    if (_radarFrame !== null && _subDailyFrames) return true;
-    return (
-      Boolean(_radarFine) && cameraAltitudeM() <= SWATH_FINE_MAX_ALTITUDE_M
-    );
+    return radarTier() === 'fine';
+  }
+
+  /**
+   * The radar cells and the grid step for the current tier.
+   *
+   * The MID tier is the 1 km field pooled into 5 km cells - the same hail at a
+   * size that reads from a hundred kilometres up. It exists ONLY for a single
+   * day: a multi-day window is drawn from the published 0.25 degree field, and
+   * there is no 5 km version of that to pool.
+   *
+   * @returns {{cells: Array<object>, deg: number}}
+   */
+  function radarCellsForTier() {
+    const tier = radarTier();
+    if (tier === 'fine') {
+      return { cells: fineSwathCells(frameRadarCells()), deg: GRID_DEG_FINE };
+    }
+    if (tier === 'mid') {
+      const pooled = downsampleMaxCells(frameRadarCells(), 5);
+      return { cells: fineSwathCells(pooled), deg: GRID_DEG_MID };
+    }
+    return { cells: _radarSwath, deg: GRID_DEG };
   }
 
   /**
@@ -1967,7 +2024,7 @@ export function createStormReportsLayer({
    * changed. A move that ends in the same tier does nothing.
    */
   function onCameraSettled() {
-    const tier = useFineRadarField() ? 'fine' : 'coarse';
+    const tier = radarTier();
     if (tier === _lodTier) return;
     _lodTier = tier;
     // `render()`, never `renderSwaths()`. The swath ids are derived from the
@@ -1990,6 +2047,169 @@ export function createStormReportsLayer({
    * @param {Array<object>} cells cells carrying `i`, `j` and a band.
    * @param {(cell: object) => {key: string, color: string, rank: number}|null} bandFor
    */
+  /**
+   * A ring's bounding box, for a cheap rejection before a point-in-ring test.
+   *
+   * @param {Array<{lat: number, lon: number}>} ring
+   * @returns {{west: number, south: number, east: number, north: number}}
+   */
+  function ringBounds(ring) {
+    let west = Infinity;
+    let south = Infinity;
+    let east = -Infinity;
+    let north = -Infinity;
+    for (const point of ring) {
+      if (point.lon < west) west = point.lon;
+      if (point.lon > east) east = point.lon;
+      if (point.lat < south) south = point.lat;
+      if (point.lat > north) north = point.lat;
+    }
+    return { west, south, east, north };
+  }
+
+  /**
+   * Whether a point is inside a ring, in degrees.
+   *
+   * The same ray cast the model uses in grid space, in the degrees the
+   * contours come back in. A ring here is a list of `{lat, lon}`.
+   *
+   * @param {{lat: number, lon: number}} point
+   * @param {Array<{lat: number, lon: number}>} ring
+   * @returns {boolean}
+   */
+  function pointInRingDegrees(point, ring) {
+    let inside = false;
+    for (
+      let at = 0, prev = ring.length - 1;
+      at < ring.length;
+      prev = at, at += 1
+    ) {
+      const y0 = ring[prev].lat;
+      const x0 = ring[prev].lon;
+      const y1 = ring[at].lat;
+      const x1 = ring[at].lon;
+      if (y0 > point.lat !== y1 > point.lat) {
+        const cross = ((x1 - x0) * (point.lat - y0)) / (y1 - y0) + x0;
+        if (point.lon < cross) inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /**
+   * Draw a swath as a set of ANNULAR bands.
+   *
+   * WHY ANNULAR AND NOT ONE BAND AT A TIME. Every band used to be contoured
+   * on its OWN cells, at the product floor. So the boundary between two bands
+   * was interpolated twice - once for each band - at a different sub-cell
+   * position, and the two edges sat up to four tenths of a cell apart. Four
+   * tenths of a kilometre is four hundred metres of gap between two bands
+   * that should share a line, filled with whatever was behind them.
+   *
+   * Here the WHOLE field is contoured once per level, and each band is the
+   * region BETWEEN two levels: the lower level's ring, with the hotter level's
+   * shape as a hole. The two bands then share ONE interpolated line - the
+   * hotter level's contour - and they tile exactly.
+   *
+   * The cost is that a hot core is drawn once per level below it, as the hole
+   * in each of them. It is hidden under the hotter band, so it costs a polygon
+   * and not pixels.
+   *
+   * @param {string} kind 'reported' | 'radar' | 'prospect'
+   * @param {Array<{i: number, j: number, v: number}>} cells the whole field
+   * @param {Array<{key: string, color: string, rank: number, floor: number,
+   *   outline?: string, outlineAlpha?: number}>} levels, ascending by floor
+   * @param {number} deg the grid step, in degrees
+   * @returns {number} how many entities were drawn
+   */
+  function drawSwathLevels(kind, cells, levels, deg) {
+    const ordered = [...levels].sort((a, b) => a.floor - b.floor);
+    // A cell that sits EXACTLY on a level must not disappear.
+    //
+    // A contour AT a cell's value passes through that cell's centre, so the
+    // cell contributes no area and its ring is dropped as degenerate. Without
+    // this, every cell reading exactly 25.4 mm - exactly the product floor -
+    // would vanish from the map. The epsilon is a hundredth of a unit, which
+    // is four hundred times smaller than the gap between two bands.
+    const EPSILON = 0.01;
+    const contours = ordered.map((level) =>
+      contourRings(cells, level.floor - EPSILON, deg),
+    );
+    // A level with no cells in it is SKIPPED, and this is not an
+    // optimisation. The band at a level is the region BETWEEN that level and
+    // the next one up - the fringe, not the whole storm - so a level with no
+    // cells in its range has an empty fringe, and drawing it would put a
+    // polygon on the map that is nothing but the hole for the next band.
+    //
+    // It is also what keeps the entity count honest: a pair of 1.77 inch
+    // cells is ONE polygon, not two, because the 1 inch level has no cells in
+    // its range and is skipped rather than drawn as an empty ring.
+    const counts = new Array(ordered.length).fill(0);
+    for (const cell of cells) {
+      const value = Number(cell?.v);
+      if (!Number.isFinite(value)) continue;
+      for (let k = 0; k < ordered.length; k += 1) {
+        const floor = ordered[k].floor;
+        const next = k + 1 < ordered.length ? ordered[k + 1].floor : Infinity;
+        if (value >= floor && value < next) {
+          counts[k] += 1;
+          break;
+        }
+      }
+    }
+    let drawn = 0;
+    for (let k = 0; k < ordered.length; k += 1) {
+      const level = ordered[k];
+      if (!counts[k]) continue;
+      const hotter = contours[k + 1] || [];
+      for (let index = 0; index < contours[k].length; index += 1) {
+        const ringSet = contours[k][index];
+        const outerBounds = ringBounds(ringSet.outer);
+        // The band's own pockets - the regions below THIS level - stay empty.
+        const holes = [...(ringSet.holes || [])];
+        // And the hotter level's shape is a hole in this one, so the two
+        // bands share a line instead of each having its own.
+        for (const hotterRing of hotter) {
+          if (!hotterRing.outer?.length) continue;
+          const point = hotterRing.outer[0];
+          if (
+            point.lon < outerBounds.west ||
+            point.lon > outerBounds.east ||
+            point.lat < outerBounds.south ||
+            point.lat > outerBounds.north
+          ) {
+            continue;
+          }
+          if (pointInRingDegrees(point, ringSet.outer)) {
+            holes.push(hotterRing.outer);
+          }
+        }
+        const hierarchy = polygonHierarchyFor({ outer: ringSet.outer, holes });
+        if (!hierarchy) continue;
+        // The cap is applied across the whole draw, so what is bounded is the
+        // entity count that actually reaches the scene.
+        if (drawn >= SWATH_MAX_RINGS) {
+          _swathCapped = true;
+          console.warn(
+            `[Storm Reports] swath capped at ${SWATH_MAX_RINGS} polygons; ` +
+              `further ${kind}/${level.key} ring(s) dropped`,
+          );
+          return drawn;
+        }
+        const entity = addSwathBand(
+          `storm-swath:${kind}:${level.key}:${index}`,
+          hierarchy,
+          level.color,
+          swathAlphaFor(level.rank),
+          level.outline,
+          level.outlineAlpha,
+        );
+        if (entity) drawn += 1;
+      }
+    }
+    return drawn;
+  }
+
   function drawSwathBand(kind, cells, bandFor, deg, { contour = false } = {}) {
     const byBand = new Map();
     for (const cell of cells) {
@@ -2086,34 +2306,52 @@ export function createStormReportsLayer({
    */
   function renderSwaths() {
     if (!_dataSource) return;
-    _lodTier = useFineRadarField() ? 'fine' : 'coarse';
+    const tier = radarTier();
+    _lodTier = tier;
     if (_showReportedSwath && _options.hazard === 'hail') {
-      const hailBands = HAIL_BANDS;
-      drawSwathBand(
+      // The REPORTED swath is a wash of the ground the measured stones fell
+      // on, and it is drawn the same way the radar swath is: the whole field
+      // contoured once per level, with each band the region between two
+      // levels. It used to be a STAIRCASE - the presence of a cell, traced -
+      // because the cells carry inches and the contour level is millimetres.
+      // The units were never the blocker; the blocker was contouring each
+      // band on its own cells, and the same blocker is what left a four
+      // hundred metre gap between two bands on the radar swath.
+      //
+      // The levels are the inch chart, in inches, and the cells carry inches.
+      const reportedLevels = HAIL_BANDS.filter(
+        (band) => band.min >= HAIL_FLOOR_IN,
+      );
+      drawSwathLevels(
         'reported',
-        reportedSwathCells(_visible, { hailFloor: 0 }),
-        (cell) => {
-          const band = cell.band;
-          if (!band) return null;
+        reportedSwathCells(_visible, { hailFloor: 0 }).map((cell) => ({
+          i: cell.i,
+          j: cell.j,
+          v: cell.peak,
+        })),
+        reportedLevels.map((band, index, all) => ({
+          key: band.id,
+          color: band.color,
           // Rank by position in the inch scale, worst last.
-          const index = hailBands.findIndex((b) => b.id === band.id);
-          return {
-            key: band.id,
-            color: band.color,
-            rank: index < 0 ? 0 : index / Math.max(hailBands.length - 1, 1),
-          };
-        },
+          rank: index / Math.max(all.length - 1, 1),
+          floor: band.min,
+        })),
         GRID_DEG,
       );
     }
     _prospectCells = [];
     if (_showProspectSwath) {
-      const fine = useFineRadarField();
-      const radarCells = fine ? fineSwathCells(frameRadarCells()) : _radarSwath;
-      const radarDeg = fine ? GRID_DEG_FINE : GRID_DEG;
+      const tierCells = radarCellsForTier();
+      const radarCells = tierCells.cells;
+      const radarDeg = tierCells.deg;
       _prospectCells = prospectSwathCells(radarCells, _visible, {
         stepDeg: radarDeg,
       });
+      // PROSPECT is a DIFFERENCE - the radar cells no report covers - so it
+      // is drawn from its own cells, and its levels are its own bands. It is
+      // not a stack of thresholds over one field, so it keeps its per-cell
+      // shape; only the REPORTED and RADAR washes, which ARE thresholds over
+      // one field, are annular.
       drawSwathBand(
         'prospect',
         _prospectCells,
@@ -2139,48 +2377,54 @@ export function createStormReportsLayer({
       // the fine 1 km field for a single day seen from close up, the published
       // 0.25-degree field for a multi-day combine, a day outside the retention
       // window, or a camera high enough that 1 km cells are sub-pixel.
-      const fine = useFineRadarField();
-      const radarCells = fine ? fineSwathCells(frameRadarCells()) : _radarSwath;
-      const radarDeg = fine ? GRID_DEG_FINE : GRID_DEG;
-      drawSwathBand(
+      const tierCells = radarCellsForTier();
+      const radarCells = tierCells.cells;
+      const radarDeg = tierCells.deg;
+      // The RADAR swath is the one that had a seam. It is a stack of
+      // THRESHOLDS over one continuous field - a millimetre reading is not on
+      // the inch chart, so the ramp lives here - and it is drawn as one
+      // contour per level with each band the region between two levels, so
+      // the bands share ONE interpolated line.
+      //
+      // The levels are the ramp's own floors, ASCENDING: the ramp is declared
+      // worst-first, and taking the first match against ascending thresholds
+      // is a trap - 'under 10 mm' has a floor of 0, so it matches everything
+      // and a 55 mm core gets banded, and painted, as the weakest hail on the
+      // map. A test caught that once.
+      drawSwathLevels(
         'radar',
-        radarCells,
-        (cell) => {
-          if (cell.implausible) {
-            return { key: 'artefact', color: RADAR_IMPLAUSIBLE_COLOR, rank: 0 };
-          }
-          // Walk the ramp ASCENDING and keep the LAST band whose floor the reading
-          // clears. Taking the FIRST match against ascending thresholds is a
-          // trap: 'under 10 mm' has a floor of 0, so it matches everything and a
-          // 55 mm core gets banded — and painted — as the weakest hail on the
-          // map. (A test caught this; the ramp is declared worst-first, so
-          // reversing it and keeping the first match silently inverts it.)
-          // NULL under the product floor, not the weakest band. See
-          // `radarColorFor`: a sub-inch cell painted in the 1-1.5" colour is a
-          // claim about a size nobody inferred from anything.
-          let chosen = null;
-          for (const step of ascending) {
-            if (cell.peakMm >= step.min) chosen = step;
-          }
-          // `drawSwathBand` skips a null band, which is what we want here: the
-          // cell is real and still on disk, it is just under the line this
-          // product draws. Dropping it is not a claim that no hail fell.
-          if (!chosen) return null;
-          const index = ascending.indexOf(chosen);
-          return {
-            key: chosen.label,
-            color: chosen.color,
-            // The edge of this band is the next hotter band's colour, so the
-            // boundary between two intensities is a line of the hotter one.
-            outline: chosen.outline,
-            outlineAlpha: SWATH_EDGE_ALPHA,
-            rank: index / Math.max(ascending.length - 1, 1),
-            floorMm: RADAR_CONTOUR_MM,
-          };
-        },
+        radarCells.map((cell) => ({ i: cell.i, j: cell.j, v: cell.peakMm })),
+        ascending.map((step, index, all) => ({
+          key: step.label,
+          color: step.color,
+          // The edge of this band is the next hotter band's colour, so the
+          // boundary between two intensities is a line of the hotter one.
+          outline: step.outline,
+          outlineAlpha: SWATH_EDGE_ALPHA,
+          rank: index / Math.max(all.length - 1, 1),
+          floor: step.min,
+        })),
         radarDeg,
-        { contour: true },
       );
+      // The implausible readings - at or above 100 mm, which is 0.22% of cell
+      // days - are drawn on top in grey: present, but not ranked. They are
+      // inside the hottest band, so they are not a separate level.
+      const artefacts = radarCells.filter((cell) => cell.implausible);
+      if (artefacts.length) {
+        drawSwathLevels(
+          'radar-artefact',
+          artefacts.map((cell) => ({ i: cell.i, j: cell.j, v: cell.peakMm })),
+          [
+            {
+              key: 'artefact',
+              color: RADAR_IMPLAUSIBLE_COLOR,
+              rank: 0,
+              floor: 100,
+            },
+          ],
+          radarDeg,
+        );
+      }
     }
   }
 

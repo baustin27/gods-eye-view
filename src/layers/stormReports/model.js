@@ -26,6 +26,17 @@ import {
 export const GRID_DEG_FINE = 0.01;
 
 /**
+ * The MID grid step, in degrees.
+ *
+ * Between the 1 km field and the 0.25 degree one. The 0.25 degree cell is
+ * 27.8 km, and at the altitudes where a person decides "did this storm hit
+ * my county" it is a quarter of the frame - so the storm reads as a grid of
+ * squares rather than as a storm. A 5 km cell is a twelfth of that, and it is
+ * built by pooling the 1 km field, so it is the same hail, coarsened.
+ */
+export const GRID_DEG_MID = 0.05;
+
+/**
  * The inch thresholds the prospecting view starts from.
  *
  * One inch is 25.4 mm exactly. NOT 25: `RADAR_RAMP_MM` bands at 25 because it
@@ -1311,6 +1322,46 @@ function radarCellsFor(radarDays, date) {
  *   bounds: {west: number, south: number, east: number, north: number}}>}
  *   Worst first.
  */
+/**
+ * Pool a set of fine cells into a coarser grid, keeping the MAXIMUM.
+ *
+ * MAXIMUM and not the mean, and the reason is the field's own meaning: a
+ * cell's value is the biggest hail that fell in it, so the biggest hail in
+ * five cells is the biggest hail in the cell they become. Averaging would
+ * answer a different question - how much hail fell on average - and would
+ * dissolve the cores the bands are drawn from.
+ *
+ * The pooling is by `floor(i / factor)`, which is correct for negative
+ * indices too: the fine cell `-1` spans [-0.01, 0) and the cell `-5` spans
+ * [-0.05, -0.04), and a floor puts each of them where it belongs.
+ *
+ * @param {Array<{i: number, j: number, maxMm?: number, peakMm?: number}>} cells
+ * @param {number} [factor] how many fine cells to a side
+ * @returns {Array<{key: string, i: number, j: number, maxMm: number}>}
+ */
+export function downsampleMaxCells(cells, factor = 5) {
+  const out = new Map();
+  for (const cell of cells || []) {
+    const i = Number(cell?.i);
+    const j = Number(cell?.j);
+    const mm = Number(cell?.maxMm ?? cell?.peakMm);
+    if (!Number.isInteger(i) || !Number.isInteger(j) || !Number.isFinite(mm)) {
+      continue;
+    }
+    const row = Math.floor(i / factor);
+    const column = Math.floor(j / factor);
+    const key = `${row}:${column}`;
+    const held = out.get(key);
+    // The field is `maxMm`, because that is what the fine path reads: a
+    // pooled cell that carried `peakMm` would arrive as a reading of zero and
+    // the mid tier would draw nothing at all.
+    if (!held || mm > held.maxMm) {
+      out.set(key, { key, i: row, j: column, maxMm: mm });
+    }
+  }
+  return [...out.values()];
+}
+
 export function radarSwathCells(
   radarDays,
   { date = null, implausibleMm = RADAR_IMPLAUSIBLE_MM } = {},
