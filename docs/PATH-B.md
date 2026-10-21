@@ -106,6 +106,24 @@ HailTrace.
 
 This is a long build that can run unattended while the rest is done.
 
+### 3.0 What has since been BUILT (the registry is the record)
+
+- **The completion guard** — `scripts/task-registry.json`, `scripts/check-task-completion.mjs`,
+  `src/tooling/taskCompletion.test.mjs`, a tracked `AGENTS.md`, and a CI step.
+- **The swath** — on by default, five stops of violet to magenta to white,
+  outlined in the next hotter band, the bands TILE (one interpolated line
+  between two bands, not two), and a third LOD tier between the 1 km field
+  and the 0.25 degree one.
+- **The globe's chrome** — the porthole is off, the HUD is a telemetry strip,
+  the ring hugs the globe, and the map is full-bleed.
+- **The desk** — one drill-down panel with a stack behind it, a state picker
+  that is a chip row (with a MORE chip for the rest), the table windowed
+  rather than copied, every sort header a control, and the places carrying
+  their centres.
+- **The desk's MAP** — a canvas, Web Mercator, Esri's imagery, and the
+  county's own streets from a new tile API, in the `GEVS` format.
+- **The per-storm artifact** — one storm as a picture, with its sources on it.
+
 ### 3.4 The workflow layer
 
 Mark a street, "already knocked", assign to a rep, note, team sharing. This is
