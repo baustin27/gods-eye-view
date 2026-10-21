@@ -256,8 +256,16 @@ export function indexSwaths(payload) {
       }
       dayEntry.houses += row.u || 0;
       dayEntry.tracts += 1;
-      const county = String(row.g || '').slice(2, 5);
-      if (county) {
+      // The county is keyed by its WHOLE FIPS - the state and the county -
+      // because the radar field is national and a key of three digits cannot
+      // say which state it is in. A key of three digits is how the map ended
+      // up asking the tile service for a Colorado county that does not
+      // exist: "181" is a county in New York, and the storm's biggest county
+      // was there, while the state on the other half of the path was
+      // Colorado - which is a county that does not exist, and a map with no
+      // streets in it and nothing to say about why.
+      const county = String(row.g || '').slice(0, 5);
+      if (county.length === 5) {
         dayEntry.counties.set(
           county,
           (dayEntry.counties.get(county) || 0) + (row.u || 0),

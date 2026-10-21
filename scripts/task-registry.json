@@ -559,6 +559,27 @@
         "apps/hail-desk/src/map/swath.js"
       ],
       "gate": "a test that says the artifact's bands ARE the shared ramp, and the desk draws the same edges the globe does"
+    },
+    {
+      "id": "D2.5",
+      "title": "the county the map draws is the county the storm fell in, IN THE STATE",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/data.js",
+        "apps/hail-desk/src/main.js"
+      ],
+      "gate": "the tile route is asked for a Colorado county and not a New York one with a Colorado state on the other half of the path"
+    },
+    {
+      "id": "D2.6",
+      "title": "one download per county: the map asks for a dozen tiles of a county at once and they were fighting over one temp file",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "server/providers/tigerStreets.js"
+      ],
+      "gate": "a county that is not on the disk yet is downloaded once, and every tile of it comes back without a 404"
     }
   ]
 }

@@ -702,13 +702,18 @@ function createTheMap() {
       if (dayEntry && dayEntry.counties.size) {
         let best = null;
         let bestHouses = -1;
-        for (const [county, houses] of dayEntry.counties) {
+        for (const [fips, houses] of dayEntry.counties) {
+          // The county has to be IN THE STATE. The radar field is national,
+          // so the day's counties are the whole country's, and the biggest
+          // of them was in New York while the state on the other half of
+          // the path was Colorado.
+          if (stateFips && !fips.startsWith(stateFips)) continue;
           if (houses > bestHouses) {
-            best = county;
+            best = fips;
             bestHouses = houses;
           }
         }
-        if (best) return { state: stateFips, county: best };
+        if (best) return { state: best.slice(0, 2), county: best.slice(2) };
       }
       // The biggest county in the state, which is the one a map of the state
       // is mostly about.

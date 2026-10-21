@@ -38,6 +38,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
 
 /** Where the downloaded county files live. */
+/**
+ * The downloads in flight, by file name.
+ *
+ * One download per county, and the other requests for the same county wait
+ * for it.
+ */
+const downloads = new Map();
+
 const CACHE_DIR = process.env.GEV_TIGER_CACHE
   ? path.resolve(process.env.GEV_TIGER_CACHE)
   : path.join(REPO, '.gev-cache', 'tiger');
@@ -100,14 +108,40 @@ export async function countyEdgesPath(state, county) {
   if (stat && Date.now() - stat.mtimeMs < CACHE_TTL_MS) return file;
   await fs.promises.mkdir(CACHE_DIR, { recursive: true });
   const url = `https://www2.census.gov/geo/tiger/TIGER${TIGER_YEAR}/EDGES/${name}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`TIGER EDGES ${response.status} for ${name}`);
+  // THE DOWNLOAD IS SHARED, and the map asks for a dozen tiles of a county
+  // at once, so a dozen requests arrive for a county that is not on the disk
+  // yet.
+  //
+  // They used to write to ONE temp file and rename it, and the second
+  // request's rename found the temp file gone - so the tile came back a 404
+  // while the file was being downloaded perfectly well, and the map drew a
+  // county with no streets in it and said nothing about why.
+  //
+  // So: one download per county, and the others WAIT for it.
+  const existing = downloads.get(name);
+  if (existing) {
+    await existing;
+    return file;
   }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  const temp = `${file}.tmp`;
-  await fs.promises.writeFile(temp, bytes);
-  await fs.promises.rename(temp, file);
+  const promise = (async () => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`TIGER EDGES ${response.status} for ${name}`);
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    // A temp name of its own, so two downloads can never fight over one
+    // file, and the rename is atomic, so a failure leaves the cache as it
+    // was.
+    const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(temp, bytes);
+    await fs.promises.rename(temp, file);
+  })();
+  downloads.set(name, promise);
+  try {
+    await promise;
+  } finally {
+    downloads.delete(name);
+  }
   return file;
 }
 
