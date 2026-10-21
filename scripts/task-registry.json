@@ -191,13 +191,14 @@
     {
       "id": "B3.2",
       "title": "the desk's layout is a grid of rail, map and list, and the three drill-down sections become one panel with a back stack",
-      "status": "open",
+      "status": "done",
       "files": [
         "apps/hail-desk/index.html",
         "apps/hail-desk/src/main.js",
         "apps/hail-desk/styles.css"
       ],
-      "gate": "the drill-down replaces rather than stacks, and the desk is three panes"
+      "gate": "the drill-down replaces rather than stacks, and the desk is three panes",
+      "commit": "7e2f4a10"
     },
     {
       "id": "B3.3",
@@ -246,11 +247,12 @@
     {
       "id": "B3.7",
       "title": "the city and county rows carry a centroid, so the map has something to plot",
-      "status": "open",
+      "status": "done",
       "files": [
         "scripts/build-hail-desk-data.mjs"
       ],
-      "gate": "every place and county has a lat and a lon"
+      "gate": "every place and county has a lat and a lon",
+      "commit": "7e2f4a10"
     },
     {
       "id": "B4.1",

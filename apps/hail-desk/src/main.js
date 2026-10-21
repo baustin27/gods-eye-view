@@ -106,6 +106,10 @@ const el = {
   copyLink: document.getElementById('copyLink'),
   views: document.getElementById('views'),
   detail: document.getElementById('detail'),
+  drillBody: document.getElementById('drillBody'),
+  drillTitle: document.getElementById('drillTitle'),
+  drillBack: document.getElementById('drillBack'),
+  drillClose: document.getElementById('drillClose'),
 };
 
 /** The columns for the current view. */
@@ -129,6 +133,11 @@ function render() {
   el.summary.textContent = summarise(state.rows, state.filters, state.view);
   renderRankedList();
   el.export.disabled = state.rows.length === 0;
+  el.drillBack.addEventListener('click', () => popDrill());
+  el.drillClose.addEventListener('click', () => {
+    drillStack.length = 0;
+    renderDrill();
+  });
   el.views.querySelectorAll('button').forEach((button) => {
     button.classList.toggle('active', button.dataset.view === state.view);
     button.setAttribute(
@@ -178,6 +187,11 @@ function renderRankedList() {
 
 function applyFilters(next) {
   state.filters = { ...state.filters, ...next };
+  // The drill-down is about a particular place in a particular list. Change the
+  // list and it is about nothing, so the stack is emptied rather than left
+  // pointing at a row that may not be there any more.
+  drillStack.length = 0;
+  renderDrill();
   const hash = hashFromFilters(state.filters);
   if (window.location.hash !== hash) {
     window.history.replaceState(null, '', hash);
@@ -217,6 +231,51 @@ function onSort(key) {
  * says a town was hit, and this says on which days and by how much, which is
  * the list a canvasser actually works from.
  */
+/**
+ * The drill-down stack.
+ *
+ * The desk had THREE panels - the storms, the tracts, the streets - as
+ * siblings in the flow, and all three could be open at once. The page grew
+ * downwards and the thing you were reading was always below the fold, which
+ * is what "hard to control" felt like.
+ *
+ * There is ONE panel now and a stack behind it. A drill-down REPLACES what
+ * was there, and the Back button walks back up - the same shape as the
+ * globe's panels, where one thing is on screen at a time.
+ */
+const drillStack = [];
+
+/**
+ * Put a view on the drill panel, or take it off.
+ *
+ * @param {{title: string, render: (panel: HTMLElement) => void}|null} view
+ */
+function pushDrill(view) {
+  drillStack.push(view);
+  renderDrill();
+}
+
+/** Step back up the stack. */
+function popDrill() {
+  drillStack.pop();
+  renderDrill();
+}
+
+/** Draw the top of the stack, and nothing else. */
+function renderDrill() {
+  const top = drillStack[drillStack.length - 1];
+  el.drillBody.replaceChildren();
+  if (!top) {
+    el.detail.hidden = true;
+    return;
+  }
+  el.detail.hidden = false;
+  el.drillTitle.textContent = top.title;
+  el.drillBack.hidden = drillStack.length < 2;
+  top.render(el.drillBody);
+  el.detail.scrollIntoView({ block: 'nearest' });
+}
+
 function onCityClick(row) {
   const reported = cityStorms(state.cityIndex, row.id, state.filters);
   const radar = radarDays(state.swathIndex, row.id, state.filters);
@@ -236,23 +295,9 @@ function onCityClick(row) {
       b.max - a.max ||
       a.d.localeCompare(b.d),
   );
-  el.detail.replaceChildren();
-  el.detail.hidden = false;
-
-  const head = document.createElement('div');
-  head.className = 'detail-head';
-  const title = document.createElement('h2');
-  title.textContent = `${row.full || row.name}, ${row.st || ''}`;
-  const close = document.createElement('button');
-  close.type = 'button';
-  close.className = 'secondary';
-  close.textContent = 'Close';
-  close.addEventListener('click', () => {
-    el.detail.hidden = true;
-    el.detail.replaceChildren();
-  });
-  head.append(title, close);
-
+  pushDrill({
+    title: `${row.full || row.name}, ${row.st || ''}`,
+    render: (panel) => {
   const summary = document.createElement('p');
   summary.className = 'detail-summary';
   const worst = storms[0];
@@ -366,8 +411,9 @@ function onCityClick(row) {
     body.appendChild(tr);
   }
   table.appendChild(body);
-  el.detail.append(head, summary, table);
-  el.detail.scrollIntoView({ block: 'nearest' });
+  panel.append(summary, table);
+    },
+  });
 }
 
 /**
@@ -379,11 +425,9 @@ function onCityClick(row) {
  * it.
  */
 function showTracts(tracts, day) {
-  const panel = document.getElementById('tracts');
-  panel.hidden = false;
-  panel.replaceChildren();
-  const heading = document.createElement('h2');
-  heading.textContent = `Tracts under the hail on ${day}`;
+  pushDrill({
+    title: `Tracts under the hail on ${day}`,
+    render: (panel) => {
   const note = document.createElement('p');
   note.className = 'detail-summary';
   const houses = tracts.reduce((total, tract) => total + tract.units, 0);
@@ -394,9 +438,8 @@ function showTracts(tracts, day) {
     'candidate: the radar is sound about where hail fell and unsound about ' +
     'how big each stone was. The number is the Census count of HOUSING ' +
     'UNITS, which is not the same as the addresses in the street ranges.';
-  panel.append(heading, note);
+  panel.append(note);
   if (!tracts.length) {
-    panel.append(note);
     return;
   }
 
@@ -462,7 +505,8 @@ function showTracts(tracts, day) {
   }
   table.appendChild(body);
   panel.append(table);
-  panel.scrollIntoView({ block: 'nearest' });
+    },
+  });
 }
 
 /**
@@ -487,241 +531,250 @@ function showTracts(tracts, day) {
  * (src/layers/hailwind/index.js:1399).
  */
 async function showStreets(stateCode, county, day, tract) {
-  const panel = document.getElementById('streets');
-  panel.hidden = false;
-  panel.replaceChildren();
-  const heading = document.createElement('h2');
-  heading.textContent = tract
-    ? `Streets in tract ${tract.slice(5)}, county ${stateCode}${county}`
-    : `Streets in county ${stateCode}${county}`;
   const note = document.createElement('p');
   note.className = 'detail-summary';
   note.textContent = 'Loading the Census street list for this ZIP…';
-  panel.append(heading, note);
   const query = new URLSearchParams({ state: stateCode, county });
   if (day) query.set('day', day);
   if (tract) query.set('tract', tract);
-  try {
-    const response = await fetch(`/api/desk/streets?${query}`);
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      note.textContent = `Could not load the street list: ${payload.error || response.status}`;
-      return;
-    }
-    // The realised damage, by ZIP, for the ZIPs in this county.
-    const byZip = new Map();
-    for (const street of payload.streets) {
-      let entry = byZip.get(street.zip);
-      if (!entry) {
-        // Optional, because the damage file is a separate download and the
-        // street list must still work when it is not there. A missing index
-        // is an absence, not a crash.
-        const fema = state.femaIndex?.get(String(street.zip));
-        entry = {
-          zip: street.zip,
-          segments: 0,
-          addresses: 0,
-          underHail: 0,
-          households: fema?.households ?? 0,
-          damage: fema?.damage ?? 0,
-          approved: fema?.approved ?? 0,
-        };
-        byZip.set(street.zip, entry);
+    let payload = null;
+    let failure = null;
+    try {
+      const response = await fetch(`/api/desk/streets?${query}`);
+      payload = await response.json();
+      if (!response.ok || payload.error) {
+        failure = payload.error || response.status;
       }
-      entry.segments += 1;
-      entry.addresses += street.addresses || 0;
-      entry.underHail += street.underHail || 0;
+    } catch (error) {
+      failure = error.message;
+      console.error('[desk] street list failed', error);
     }
-    const zips = byZip.size;
-    note.textContent =
-      `${payload.count.toLocaleString()} street segments across ` +
-      `${zips} ZIPs, ${payload.addresses.toLocaleString()} addresses in the ` +
-      `ranges. ` +
-      'A range is the stretch of the street the Census edge covers, which can ' +
-      'be more than one block, and the number is ADDRESSES in it - the count ' +
-      'of HOUSES in a ZIP comes from the Census, and the two are never added ' +
-      'together.';
-    // The hail on the day, when the service was asked about a day.
-    if (payload.hail) {
-      const hailNote = document.createElement('p');
-      hailNote.className = 'detail-summary';
-      if (!payload.hail.found) {
-        hailNote.textContent =
-          `There is no 1 km radar field for ${payload.hail.day} - the fine ` +
-          'field starts on 2024-01-01 - so this list cannot be ranked by what ' +
-          'fell.';
-      } else {
-        const underStreets = payload.streets.filter(
-          (street) => street.underHail > 0,
-        ).length;
-        hailNote.textContent =
-          `Under the hail on ${payload.hail.day}: ` +
-          `${payload.underHail.toLocaleString()} of ` +
-          `${payload.addresses.toLocaleString()} addresses, over ` +
-          `${underStreets.toLocaleString()} street segments. ` +
-          `The threshold is ${(payload.hail.thresholdMm / 25.4).toFixed(2)} ` +
-          'inches, the largest reading that day was ' +
-          `${(payload.hail.maxMm / 25.4).toFixed(2)} inches, and the field ` +
-          `reached ${payload.hail.cells.toLocaleString()} cells over it. ` +
-          'A street is a LINE and a hail cell is an AREA, so each street is ' +
-          'measured by the share of its length that was under the hail, and ' +
-          'that share is applied to the addresses in its range. It is not a ' +
-          'claim that those roofs were damaged - it is the number of ' +
-          'addresses on a street that were UNDER hail on a day.';
-        panel.append(hailNote);
+    const title = tract
+      ? `Streets in tract ${tract.slice(5)}, county ${stateCode}${county}`
+      : `Streets in county ${stateCode}${county}`;
+    pushDrill({
+      title,
+      render: (panel) => {
+        const note = document.createElement('p');
+        note.className = 'detail-summary';
+        if (failure) {
+          note.textContent = `Could not load the street list: ${failure}`;
+          panel.append(note);
+          return;
+        }
+        note.textContent = 'Loading the Census street list for this ZIP…';
+      // The realised damage, by ZIP, for the ZIPs in this county.
+        const byZip = new Map();
+      for (const street of payload.streets) {
+        let entry = byZip.get(street.zip);
+        if (!entry) {
+          // Optional, because the damage file is a separate download and the
+          // street list must still work when it is not there. A missing index
+          // is an absence, not a crash.
+          const fema = state.femaIndex?.get(String(street.zip));
+          entry = {
+            zip: street.zip,
+            segments: 0,
+            addresses: 0,
+            underHail: 0,
+            households: fema?.households ?? 0,
+            damage: fema?.damage ?? 0,
+            approved: fema?.approved ?? 0,
+          };
+          byZip.set(street.zip, entry);
+        }
+        entry.segments += 1;
+        entry.addresses += street.addresses || 0;
+        entry.underHail += street.underHail || 0;
       }
-    }
-    // Inside a tract, the numbers are the tract's own.
-    if (payload.tract) {
-      const tractNote = document.createElement('p');
-      tractNote.className = 'detail-summary';
-      const centred = payload.cellsCentred ?? 0;
-      if (payload.underHailInTract > 0) {
-        tractNote.textContent =
-          `In tract ${payload.tract.name}: ` +
-          `${payload.underHailInTract.toLocaleString()} of ` +
-          `${payload.addressesInTract.toLocaleString()} addresses were under ` +
-          `the hail, over ${payload.count.toLocaleString()} street segments. ` +
-          'A street on a tract boundary is in both tracts, for different parts ' +
-          'of itself, so the two columns are measured against the tract: the ' +
-          'addresses on the part of the street that is inside it, and how many ' +
-          'of those were under the hail.';
-      } else {
-        // The hail reached the tract but no street inside it lies under a cell
-        // that was over the threshold. The tract list counts a cell that
-        // only clips the tract's CORNER as reaching it, so a tract can be a
-        // candidate with no street under the hail in it. Saying so is better
-        // than showing a column of zeroes and letting it look like a bug.
-        tractNote.textContent =
-          `In tract ${payload.tract.name}: no street inside it lies under a ` +
-          'cell that was over the threshold. ' +
-          (centred > 0
-            ? `${centred} of the day's hail cells are centred inside the ` +
-              'tract, so the hail fell on ground with no street on it. '
-            : 'The radar reached the tract at its edge rather than over its ' +
-              'streets, because a cell that clips a corner counts as ' +
-              'reaching it. ') +
-          'The tract is on the work list and its houses are candidates all ' +
-          'the same: work the streets nearest the hail.';
+      const zips = byZip.size;
+      note.textContent =
+        `${payload.count.toLocaleString()} street segments across ` +
+        `${zips} ZIPs, ${payload.addresses.toLocaleString()} addresses in the ` +
+        `ranges. ` +
+        'A range is the stretch of the street the Census edge covers, which can ' +
+        'be more than one block, and the number is ADDRESSES in it - the count ' +
+        'of HOUSES in a ZIP comes from the Census, and the two are never added ' +
+        'together.';
+      // The hail on the day, when the service was asked about a day.
+      if (payload.hail) {
+        const hailNote = document.createElement('p');
+        hailNote.className = 'detail-summary';
+        if (!payload.hail.found) {
+          hailNote.textContent =
+            `There is no 1 km radar field for ${payload.hail.day} - the fine ` +
+            'field starts on 2024-01-01 - so this list cannot be ranked by what ' +
+            'fell.';
+        } else {
+          const underStreets = payload.streets.filter(
+            (street) => street.underHail > 0,
+          ).length;
+          hailNote.textContent =
+            `Under the hail on ${payload.hail.day}: ` +
+            `${payload.underHail.toLocaleString()} of ` +
+            `${payload.addresses.toLocaleString()} addresses, over ` +
+            `${underStreets.toLocaleString()} street segments. ` +
+            `The threshold is ${(payload.hail.thresholdMm / 25.4).toFixed(2)} ` +
+            'inches, the largest reading that day was ' +
+            `${(payload.hail.maxMm / 25.4).toFixed(2)} inches, and the field ` +
+            `reached ${payload.hail.cells.toLocaleString()} cells over it. ` +
+            'A street is a LINE and a hail cell is an AREA, so each street is ' +
+            'measured by the share of its length that was under the hail, and ' +
+            'that share is applied to the addresses in its range. It is not a ' +
+            'claim that those roofs were damaged - it is the number of ' +
+            'addresses on a street that were UNDER hail on a day.';
+          panel.append(hailNote);
+        }
       }
-      panel.append(tractNote);
-    }
-    // The damage table first: the street list is the navigation, and this is
-    // the reason to navigate. Sorted by damage, because a ZIP nobody applied
-    // for help in is a ZIP to drive past.
-    const damaged = [...byZip.values()].sort((a, b) => b.damage - a.damage);
-    const withDamage = damaged.filter((zip) => zip.households > 0);
-    if (withDamage.length) {
-      const zipTable = document.createElement('table');
-      zipTable.className = 'desk-table storm-table';
-      const zh = document.createElement('thead');
-      const zhr = document.createElement('tr');
+      // Inside a tract, the numbers are the tract's own.
+      if (payload.tract) {
+        const tractNote = document.createElement('p');
+        tractNote.className = 'detail-summary';
+        const centred = payload.cellsCentred ?? 0;
+        if (payload.underHailInTract > 0) {
+          tractNote.textContent =
+            `In tract ${payload.tract.name}: ` +
+            `${payload.underHailInTract.toLocaleString()} of ` +
+            `${payload.addressesInTract.toLocaleString()} addresses were under ` +
+            `the hail, over ${payload.count.toLocaleString()} street segments. ` +
+            'A street on a tract boundary is in both tracts, for different parts ' +
+            'of itself, so the two columns are measured against the tract: the ' +
+            'addresses on the part of the street that is inside it, and how many ' +
+            'of those were under the hail.';
+        } else {
+          // The hail reached the tract but no street inside it lies under a cell
+          // that was over the threshold. The tract list counts a cell that
+          // only clips the tract's CORNER as reaching it, so a tract can be a
+          // candidate with no street under the hail in it. Saying so is better
+          // than showing a column of zeroes and letting it look like a bug.
+          tractNote.textContent =
+            `In tract ${payload.tract.name}: no street inside it lies under a ` +
+            'cell that was over the threshold. ' +
+            (centred > 0
+              ? `${centred} of the day's hail cells are centred inside the ` +
+                'tract, so the hail fell on ground with no street on it. '
+              : 'The radar reached the tract at its edge rather than over its ' +
+                'streets, because a cell that clips a corner counts as ' +
+                'reaching it. ') +
+            'The tract is on the work list and its houses are candidates all ' +
+            'the same: work the streets nearest the hail.';
+        }
+        panel.append(tractNote);
+      }
+      // The damage table first: the street list is the navigation, and this is
+      // the reason to navigate. Sorted by damage, because a ZIP nobody applied
+      // for help in is a ZIP to drive past.
+      const damaged = [...byZip.values()].sort((a, b) => b.damage - a.damage);
+      const withDamage = damaged.filter((zip) => zip.households > 0);
+      if (withDamage.length) {
+        const zipTable = document.createElement('table');
+        zipTable.className = 'desk-table storm-table';
+        const zh = document.createElement('thead');
+        const zhr = document.createElement('tr');
+        for (const label of [
+          'ZIP',
+          'Households helped',
+          'Damage reported',
+          'Approved',
+          'Street segments',
+          ...(payload.hail ? ['Addresses under the hail'] : []),
+        ]) {
+          const th = document.createElement('th');
+          th.scope = 'col';
+          th.textContent = label;
+          zhr.appendChild(th);
+        }
+        zh.appendChild(zhr);
+        zipTable.appendChild(zh);
+        const zbody = document.createElement('tbody');
+        for (const zip of withDamage.slice(0, 60)) {
+          const tr = document.createElement('tr');
+          for (const value of [
+            zip.zip,
+            zip.households.toLocaleString(),
+            `$${zip.damage.toLocaleString()}`,
+            `$${zip.approved.toLocaleString()}`,
+            zip.segments.toLocaleString(),
+            ...(payload.hail ? [zip.underHail.toLocaleString()] : []),
+          ]) {
+            const td = document.createElement('td');
+            td.textContent = String(value);
+            tr.appendChild(td);
+          }
+          zbody.appendChild(tr);
+        }
+        zipTable.appendChild(zbody);
+        const caption = document.createElement('p');
+        caption.className = 'detail-summary';
+        caption.textContent =
+          'Realised damage, from FEMA Individual Assistance registrations - ' +
+          'households that applied for help, the damage they reported and what ' +
+          'they were approved. It is a FLOOR: most people with hail damage ' +
+          'never apply for anything.';
+        panel.append(caption, zipTable);
+      }
+
+      const table = document.createElement('table');
+      table.className = 'desk-table storm-table';
+      const head = document.createElement('thead');
+      const hr = document.createElement('tr');
+      // Inside a tract the two numbers are the tract's own: the addresses on the
+      // street that are inside the tract, and how many of those were under the
+      // hail. Outside one they are the county's.
+      const hailColumns = payload.tract
+        ? ['In the tract', 'Under the hail']
+        : payload.hail
+          ? ['Under the hail', 'Share']
+          : [];
       for (const label of [
+        'Street',
         'ZIP',
-        'Households helped',
-        'Damage reported',
-        'Approved',
-        'Street segments',
-        ...(payload.hail ? ['Addresses under the hail'] : []),
+        'From',
+        'To',
+        'Side',
+        'Addresses',
+        ...hailColumns,
       ]) {
         const th = document.createElement('th');
         th.scope = 'col';
         th.textContent = label;
-        zhr.appendChild(th);
+        hr.appendChild(th);
       }
-      zh.appendChild(zhr);
-      zipTable.appendChild(zh);
-      const zbody = document.createElement('tbody');
-      for (const zip of withDamage.slice(0, 60)) {
+      head.appendChild(hr);
+      table.appendChild(head);
+      const body = document.createElement('tbody');
+      for (const street of payload.streets.slice(0, 400)) {
         const tr = document.createElement('tr');
         for (const value of [
-          zip.zip,
-          zip.households.toLocaleString(),
-          `$${zip.damage.toLocaleString()}`,
-          `$${zip.approved.toLocaleString()}`,
-          zip.segments.toLocaleString(),
-          ...(payload.hail ? [zip.underHail.toLocaleString()] : []),
+          street.name,
+          street.zip,
+          street.from,
+          street.to,
+          street.side === 'L' ? 'left' : 'right',
+          street.addresses.toLocaleString(),
+          ...(payload.tract
+            ? [
+                street.addressesInTract.toLocaleString(),
+                street.underHailInTract.toLocaleString(),
+              ]
+            : payload.hail
+              ? [
+                  street.underHail.toLocaleString(),
+                  `${Math.round((street.hailShare || 0) * 100)}%`,
+                ]
+              : []),
         ]) {
           const td = document.createElement('td');
           td.textContent = String(value);
           tr.appendChild(td);
         }
-        zbody.appendChild(tr);
+        body.appendChild(tr);
       }
-      zipTable.appendChild(zbody);
-      const caption = document.createElement('p');
-      caption.className = 'detail-summary';
-      caption.textContent =
-        'Realised damage, from FEMA Individual Assistance registrations - ' +
-        'households that applied for help, the damage they reported and what ' +
-        'they were approved. It is a FLOOR: most people with hail damage ' +
-        'never apply for anything.';
-      panel.append(caption, zipTable);
-    }
-
-    const table = document.createElement('table');
-    table.className = 'desk-table storm-table';
-    const head = document.createElement('thead');
-    const hr = document.createElement('tr');
-    // Inside a tract the two numbers are the tract's own: the addresses on the
-    // street that are inside the tract, and how many of those were under the
-    // hail. Outside one they are the county's.
-    const hailColumns = payload.tract
-      ? ['In the tract', 'Under the hail']
-      : payload.hail
-        ? ['Under the hail', 'Share']
-        : [];
-    for (const label of [
-      'Street',
-      'ZIP',
-      'From',
-      'To',
-      'Side',
-      'Addresses',
-      ...hailColumns,
-    ]) {
-      const th = document.createElement('th');
-      th.scope = 'col';
-      th.textContent = label;
-      hr.appendChild(th);
-    }
-    head.appendChild(hr);
-    table.appendChild(head);
-    const body = document.createElement('tbody');
-    for (const street of payload.streets.slice(0, 400)) {
-      const tr = document.createElement('tr');
-      for (const value of [
-        street.name,
-        street.zip,
-        street.from,
-        street.to,
-        street.side === 'L' ? 'left' : 'right',
-        street.addresses.toLocaleString(),
-        ...(payload.tract
-          ? [
-              street.addressesInTract.toLocaleString(),
-              street.underHailInTract.toLocaleString(),
-            ]
-          : payload.hail
-            ? [
-                street.underHail.toLocaleString(),
-                `${Math.round((street.hailShare || 0) * 100)}%`,
-              ]
-            : []),
-      ]) {
-        const td = document.createElement('td');
-        td.textContent = String(value);
-        tr.appendChild(td);
-      }
-      body.appendChild(tr);
-    }
-    table.appendChild(body);
-    panel.appendChild(table);
-  } catch (error) {
-    note.textContent = `Could not load the street list: ${error.message}`;
-    console.error('[desk] street list failed', error);
+      table.appendChild(body);
+      panel.appendChild(table);
+      },
+    });
   }
-}
 
 /** Populate the state dropdown from the states the data actually covers. */
 function fillStates(rows, key) {

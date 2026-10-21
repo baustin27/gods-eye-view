@@ -76,11 +76,21 @@
       <p class="summary" id="summary" role="status" aria-live="polite"></p>
       <ol class="data-row-list" id="ranked" aria-label="Worst places"></ol>
 
-      <section class="detail" id="detail" hidden aria-label="Storms in this place"></section>
-
-      <section class="detail" id="tracts" hidden aria-label="Tracts under the hail"></section>
-
-      <section class="detail" id="streets" hidden aria-label="Streets in this ZIP"></section>
+      <!--
+        ONE drill-down panel, with a stack behind it. There used to be three -
+        the storms, the tracts, the streets - as siblings in the flow, and all
+        three could be open at once, so the page grew downwards and the thing
+        you were reading was always below the fold. A drill-down now REPLACES
+        what was there, and the Back button walks back up.
+      -->
+      <section class="detail" id="detail" hidden aria-label="Drill-down">
+        <div class="detail-head">
+          <button type="button" id="drillBack" class="link-button" hidden>&#8592; Back</button>
+          <h2 id="drillTitle"></h2>
+          <button type="button" id="drillClose" class="secondary">Close</button>
+        </div>
+        <div id="drillBody"></div>
+      </section>
 
       <div class="table-wrap" id="tableWrap">
         <p class="loading" id="loading">Loading county data…</p>

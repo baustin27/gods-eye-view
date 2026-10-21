@@ -1,14 +1,14 @@
 {
   "title": "God's Eye View - Hail Desk county market",
-  "builtAt": "2026-10-20T00:25:07.164Z",
+  "builtAt": "2026-10-21T01:46:16.820Z",
   "artifacts": {
     "counties.json.gz": {
-      "bytes": 766719,
-      "rawBytes": 766719,
+      "bytes": 837475,
+      "rawBytes": 837475,
       "rows": 3234
     },
     "cities.json.gz": {
-      "bytes": 1153453,
+      "bytes": 1654624,
       "rows": 32607,
       "placeYears": 31704
     }

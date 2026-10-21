@@ -175,6 +175,54 @@ function toDeskRow(properties, housing) {
 }
 
 /**
+ * The centre of a GeoJSON polygon's vertices.
+ *
+ * @param {object|null} geometry a GeoJSON Polygon or MultiPolygon
+ * @returns {{lat: number, lon: number}|null}
+ */
+function geoJsonCentre(geometry) {
+  const polygons =
+    geometry?.type === 'MultiPolygon'
+      ? geometry.coordinates
+      : geometry?.type === 'Polygon'
+        ? [geometry.coordinates]
+        : [];
+  const rings = [];
+  for (const polygon of polygons || []) {
+    for (const ring of polygon || []) rings.push(ring);
+  }
+  return ringCentre(rings);
+}
+
+/**
+ * The centre of a set of rings.
+ *
+ * The MEAN of the vertices, which is what the places' own city rows already
+ * use to decide which city a tract belongs to, so the map and the tract
+ * assignment agree about where a place IS. A polygon's centroid would be
+ * better mathematics and a worse answer here: a place with a long thin
+ * island attached has a centroid nowhere near the place.
+ *
+ * @param {Array<Array<Array<number>>>} rings the rings, as [lon, lat] pairs
+ * @returns {{lat: number, lon: number}|null}
+ */
+function ringCentre(rings) {
+  let sumLat = 0;
+  let sumLon = 0;
+  let count = 0;
+  for (const ring of rings || []) {
+    for (const [lon, lat] of ring || []) {
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+      sumLon += lon;
+      sumLat += lat;
+      count += 1;
+    }
+  }
+  if (!count) return null;
+  return { lat: sumLat / count, lon: sumLon / count };
+}
+
+/**
  * A grid index over the place boundaries.
  *
  * 155,738 reports against 32,607 places is five billion pair tests, which is
@@ -354,6 +402,14 @@ async function buildCities() {
   const housing = readHousingUnits();
   const cityRows = features.map((feature) => {
     const units = housing.byPlace.get(feature.geoid);
+    // The centre is what the MAP plots. The geometry was deliberately dropped
+    // from this artifact when it was first built - "the map, when it comes,
+    // will load boundaries on its own" - but a map of 32,607 places needs to
+    // know where they are, and the boundaries are 13.9 MB of outlines where
+    // two numbers will do for a scatter.
+    // The places carry POLYGONS of rings of points, so the rings are one
+    // level down from what `ringCentre` wants.
+    const centre = ringCentre(feature.rings.flat());
     return {
       id: feature.geoid,
       name: feature.name,
@@ -363,6 +419,7 @@ async function buildCities() {
       units: units?.units ?? null,
       umoe: units?.moe ?? null,
       pop: units?.population ?? null,
+      ...(centre ? { lat: centre.lat, lon: centre.lon } : {}),
     };
   });
   cityRows.sort((a, b) => a.id.localeCompare(b.id));
@@ -399,9 +456,8 @@ async function main() {
   step('reading the county snapshot');
   const text = fs.readFileSync(COUNTIES_URL, 'utf8');
   const parsed = parseGeoJsonLines(text);
-  const records = parsed.features
-    .map((feature) => feature?.properties)
-    .filter(Boolean);
+  const features = parsed.features.filter((feature) => feature?.properties);
+  const records = features.map((feature) => feature.properties);
   step(`counties: ${records.length} (${parsed.skipped || 0} skipped)`);
 
   step('reading the housing units');
@@ -409,9 +465,25 @@ async function main() {
   step(`housing units: ${housing.byFips.size} counties`);
 
   const wanted = args.states ? new Set(args.states) : null;
-  const rows = records
-    .filter((record) => !wanted || wanted.has(String(record.state)))
-    .map((record) => toDeskRow(record, housing.byFips.get(String(record.fips))));
+  const rows = features
+    .filter((feature) => !wanted || wanted.has(String(feature.properties.state)))
+    .map((feature) => {
+      const row = toDeskRow(
+        feature.properties,
+        housing.byFips.get(String(feature.properties.fips)),
+      );
+      // The county's centre, for the map. The county polygon is a MultiPolygon
+      // in GeoJSON, and the mean of every vertex is the same answer the
+      // places get - which matters, because a county and the places inside it
+      // have to land in the same place on the map or the map is lying about
+      // which county a report is in.
+      const centre = geoJsonCentre(feature.geometry);
+      if (centre) {
+        row.lat = centre.lat;
+        row.lon = centre.lon;
+      }
+      return row;
+    });
 
   const withHousing = rows.filter((row) => row.units !== null).length;
   step(
