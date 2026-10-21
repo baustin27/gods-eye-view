@@ -233,12 +233,21 @@ function createTheMap() {
 /**
  * Redraw the map, and say what it is showing.
  */
+let mapFittedState = null;
+
 function drawMap() {
   const pane = createTheMap();
-  // The map FITS itself to what is being shown, so the default view - every
-  // place with hail in the country - is a map of the country, and a view of
-  // one state is a map of that state.
-  pane.fitTo(state.rows);
+  // The map FITS itself to what is being shown, but ONLY when the state
+  // changes. Refitting on every render meant that every keystroke in the
+  // search box moved the camera, and the camera moving means new tiles, and
+  // new tiles means a fetch storm - which is what made the desk feel broken.
+  // After this the search filters the map and the list, and the map stays
+  // where the person put it.
+  const wanted = state.filters.state || '';
+  if (mapFittedState !== wanted) {
+    pane.fitTo(state.rows);
+    mapFittedState = wanted;
+  }
   pane.draw();
   const codes = new Set(
     state.rows.map((row) => String(row.st || '')).filter(Boolean),
@@ -857,6 +866,8 @@ async function showStreets(stateCode, county, day, tract) {
  * @param {Array<object>} rows
  * @param {string} key the column holding the state
  */
+let stateNames = [];
+
 function fillStates(rows, key) {
   const states = new Map();
   for (const row of rows) {
@@ -871,12 +882,25 @@ function fillStates(rows, key) {
     option.textContent = `${code} (${count})`;
     el.state.appendChild(option);
   }
+  // The states' NAMES, so a query can name a state and not only its code.
+  stateNames = [];
+  for (const city of state.cityIndex.cities) {
+    const code = String(city.st || '').trim();
+    const name = String(city.state || '').trim();
+    if (code && name && !stateNames.some(([st]) => st === code)) {
+      stateNames.push([code, name]);
+    }
+  }
   // The chips are re-ranked on every render, by the MARKET and not by the
   // number of places: a state with three thousand places and no hail is not a
   // market, and a chip that ranks it above Colorado is a chip that costs the
   // person a click to undo.
   el.stateChips.replaceChildren();
-  for (const [code] of ordered.slice(0, 12)) {
+  // A chip for EVERY state, not just the biggest twelve: the row decides
+  // which ones to SHOW, and a state that is current but not in the top
+  // twelve has to have a chip to keep - otherwise the rule that keeps it
+  // cannot fire, because the chip was never made.
+  for (const [code] of ordered) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'data-toggle-chip chip-idle';
@@ -926,12 +950,7 @@ function fillStates(rows, key) {
 function renderStateMenu() {
   const menu = el.stateMenu;
   if (!menu || menu.hidden) return;
-  const counts = new Map();
-  for (const row of state.rows) {
-    const code = String(row.st || '').trim();
-    if (!code) continue;
-    counts.set(code, (counts.get(code) || 0) + 1);
-  }
+  const counts = stateMarketCounts();
   const shown = new Set(
     [...el.stateChips.querySelectorAll('.data-toggle-chip')]
       .map((chip) => String(chip.dataset.chipId || '').replace(/^state:/, '')),
@@ -963,13 +982,79 @@ function renderStateMenu() {
  *
  * @param {Array<object>} rows the filtered rows
  */
-function rankStateChips(rows) {
+/**
+ * The state a query names, if it names one.
+ *
+ * "Typing Colorado" is a reasonable thing for a person to do and it has to
+ * do SOMETHING, because the box says "place or state". A query that is a
+ * state's code, or the whole of its name, filters to that state - and the
+ * place search carries on inside it.
+ *
+ * @param {string} query
+ * @returns {string} the two-letter code, or ''
+ */
+function stateForQuery(query) {
+  const text = String(query || '').trim();
+  if (!text) return '';
+  const code = text.toUpperCase();
+  const counts = stateMarketCounts();
+  if (counts.has(code)) return code;
+  for (const [st, name] of stateNames) {
+    if (name.toLowerCase() === text.toLowerCase()) return st;
+    if (name.toLowerCase().startsWith(text.toLowerCase()) && text.length >= 3) {
+      return st;
+    }
+  }
+  return '';
+}
+
+/**
+ * The market in each state, for the chip row.
+ *
+ * The counts are of the WHOLE market - the places that pass the year window
+ * and the hail floor - and NOT of the filtered one. The chip row is a way of
+ * CHOOSING a state, so a row ranked by the state that is already selected is
+ * a row of one, and the other forty-nine become unreachable.
+ *
+ * Cached, because counting the market is a scan of every place and the chips
+ * are rebuilt on every render - but the count only changes when the year
+ * window or the hail floor does.
+ */
+let marketCounts = null;
+let marketCountsKey = '';
+
+function stateMarketCounts() {
+  const key = [
+    state.filters.fromYear,
+    state.filters.toYear,
+    state.filters.minHailTenths,
+  ].join('|');
+  if (marketCounts && marketCountsKey === key) return marketCounts;
   const counts = new Map();
-  for (const row of rows || []) {
-    const code = String(row.st || '').trim();
+  const floor = state.filters.minHailTenths || 0;
+  for (const city of state.cityIndex.cities) {
+    const rows = state.cityIndex.byYear.get(city.id);
+    if (!rows || !rows.length) continue;
+    let years = 0;
+    let max = 0;
+    for (const row of rows) {
+      if (row.y < state.filters.fromYear || row.y > state.filters.toYear) continue;
+      years += 1;
+      if (row.max > max) max = row.max;
+    }
+    if (!years) continue;
+    if (floor && max * 10 < floor) continue;
+    const code = String(city.st || '').trim();
     if (!code) continue;
     counts.set(code, (counts.get(code) || 0) + 1);
   }
+  marketCounts = counts;
+  marketCountsKey = key;
+  return counts;
+}
+
+function rankStateChips(rows) {
+  const counts = stateMarketCounts();
   const ordered = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const chips = [...el.stateChips.querySelectorAll('.data-toggle-chip')];
   const wanted = String(state.filters.state || '').toUpperCase();
@@ -999,14 +1084,16 @@ function rankStateChips(rows) {
     const chip = byCode.get(code);
     if (chip) next.push(chip);
   }
-  // Any state that is not in the top twelve but IS the current one keeps its
-  // chip, so a link to it does not lose the control.
+  // A state that is not in the top twelve but IS the current one keeps its
+  // chip, so a link to it does not lose the control. ONLY that one - the rest
+  // are behind the MORE chip, because a row of fifty chips is a wall and the
+  // point of the row is that it is readable.
   if (wanted && !market.includes(wanted) && byCode.has(wanted)) {
     next.push(byCode.get(wanted));
   }
-  for (const chip of ranked) {
-    if (!next.includes(chip) && chip !== all) next.push(chip);
-  }
+  // The MORE chip is always last.
+  const more = ranked.find((chip) => chip.dataset.chipId === 'state:more');
+  if (more) next.push(more);
   el.stateChips.replaceChildren(...next);
   syncStateChips();
 }
@@ -1094,8 +1181,27 @@ async function main() {
     else if (target === el.minHail)
       applyFilters({ minHailTenths: Number(el.minHail.value) });
   });
+  // The search is DEBOUNCED, and it has to be. Every keystroke re-rendered
+  // the table, rebuilt the chip row and refitted the map, and the map moving
+  // means new tiles, and new tiles means the desk was unusable while you
+  // typed. A hundred and fifty milliseconds is below the threshold where a
+  // person notices the wait and above the threshold where it matters.
+  let searchTimer = null;
   el.q.addEventListener('input', () => {
-    applyFilters({ q: el.q.value });
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      searchTimer = null;
+      const value = el.q.value;
+      // A query that names a state filters to that state, and the place
+      // search carries on inside it.
+      const named = stateForQuery(value);
+      if (named) {
+        applyFilters({ state: named, q: '' });
+        el.q.value = '';
+        return;
+      }
+      applyFilters({ q: value });
+    }, 150);
   });
   el.views.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-view]');

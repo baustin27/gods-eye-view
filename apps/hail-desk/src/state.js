@@ -36,7 +36,10 @@ const OWNER_TOKEN = '8';
 export const DEFAULT_FILTERS = Object.freeze({
   fromYear: 1955,
   toYear: 2025,
-  state: '',
+  // COLORADO IS THE STATE. The desk opens on our market, not on the whole
+  // country, because a national list is a list nobody works through and the
+  // state is where the work is. The chips carry the other forty-nine.
+  state: 'CO',
   minHailTenths: 10,
   sort: 'score',
   dir: 'desc',

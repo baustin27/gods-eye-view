@@ -404,6 +404,13 @@ button.secondary {
  * top twelve on hail alone.
  */
 .state-menu {
+  /* It OVERLAYS. Opening a list of states should not push the map down the
+     page - the map is what the person is looking at. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 30;
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -423,6 +430,7 @@ button.secondary {
 
 .state-field {
   flex: 2 1 320px;
+  position: relative;
 }
 
 /*

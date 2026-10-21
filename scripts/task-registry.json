@@ -317,6 +317,29 @@
       ],
       "gate": "one storm renders to a shareable image with its sources on it",
       "commit": "c2d4e6f8"
+    },
+    {
+      "id": "B5.2",
+      "title": "the desk opens on Colorado, and the search box understands a state",
+      "status": "done",
+      "commit": "9e1f3a7c",
+      "files": [
+        "apps/hail-desk/src/state.js",
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/index.html"
+      ],
+      "gate": "the desk opens on Colorado, and typing a state's name filters to it"
+    },
+    {
+      "id": "B5.3",
+      "title": "the desk is responsive: the search is debounced and the map does not refit on every keystroke",
+      "status": "done",
+      "commit": "9e1f3a7c",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/styles.css"
+      ],
+      "gate": "a keystroke settles the table in about a hundred and fifty milliseconds"
     }
   ]
 }
