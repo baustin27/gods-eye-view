@@ -58,7 +58,7 @@ export function tractFill(units) {
     1,
     Math.max(0, Math.log10(1 + units) / Math.log10(1 + MAX_TRACT_UNITS)),
   );
-  return `rgba(34, 211, 238, ${(0.06 + t * 0.42).toFixed(3)})`;
+  return `rgba(34, 211, 238, ${(0.05 + t * 0.28).toFixed(3)})`;
 }
 
 /**
@@ -197,7 +197,7 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
         }
         ctx.closePath();
         if (mode === 'outline') {
-          ctx.strokeStyle = 'rgba(165, 243, 252, 0.55)';
+          ctx.strokeStyle = 'rgba(165, 243, 252, 0.45)';
           ctx.lineWidth = 0.75;
           ctx.stroke();
         } else {

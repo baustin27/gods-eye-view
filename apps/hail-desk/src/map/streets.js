@@ -110,7 +110,17 @@ export function createStreetPainter({
     const { state, county } = options;
     const scale = TILE_SIZE / GEVS_EXTENT;
     ctx.lineWidth = options.lineWidth ?? 1;
-    ctx.strokeStyle = options.strokeStyle ?? 'rgba(120, 190, 255, 0.55)';
+    // THE STREETS FADE WITH THE ZOOM.
+    //
+    // A city grid at state zoom is a solid block of blue, and a solid block
+    // of blue is not a map - it is a rectangle of noise drawn where the
+    // county is. At street level the same lines are the thing a person is
+    // looking for, so they are at full strength there.
+    const zoom = viewport.zoom ?? 11;
+    const fade = Math.max(0.12, Math.min(0.55, 0.12 + (zoom - 8) * 0.055));
+    ctx.strokeStyle =
+      options.strokeStyle ??
+      `rgba(120, 190, 255, ${fade.toFixed(3)})`;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (const tile of tiles) {

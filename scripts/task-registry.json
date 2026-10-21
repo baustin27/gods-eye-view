@@ -580,6 +580,17 @@
         "server/providers/tigerStreets.js"
       ],
       "gate": "a county that is not on the disk yet is downloaded once, and every tile of it comes back without a 404"
+    },
+    {
+      "id": "D2.7",
+      "title": "the streets fade with the zoom and the tract fills are quieter, so a city grid at state zoom is not a solid block of blue",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/map/streets.js",
+        "apps/hail-desk/src/map/tracts.js"
+      ],
+      "gate": "the streets are at full strength at street level and a faint wash at state level"
     }
   ]
 }
