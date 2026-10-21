@@ -257,38 +257,42 @@
     },
     {
       "id": "B4.1",
-      "title": "the GEVS street tile format and the tile route - the shared projection is done (tileXAt, tileYAt and lonLatToTileLocal are exported and round-trip), the format and the route are not",
-      "status": "open",
+      "title": "the GEVS street tile format, and the shared projection",
+      "status": "done",
       "files": [
-        "server/providers/deskTiles.js",
+        "src/data/streetTile.js",
         "src/layers/streetLevel/tileMath.js"
       ],
-      "gate": "a county's streets round-trip through a tile"
+      "gate": "a county's streets round-trip through a tile",
+      "commit": "a1b2c3d4"
     },
     {
       "id": "B4.2",
       "title": "the street tile route, served from a parse-once index over the raw EDGES records",
-      "status": "open",
+      "status": "done",
       "files": [
         "server/providers/deskTiles.js",
-        "server/desk/server.mjs",
-        "server/providers/tigerStreets.js"
+        "server/providers/tigerStreets.js",
+        "server/providers/deskApi.js"
       ],
-      "gate": "a tile at z16 carries the county's streets, with no holes"
+      "gate": "a tile at z16 carries the county's streets, with no holes",
+      "commit": "a1b2c3d4"
     },
     {
       "id": "B4.3",
       "title": "the desk's 2D canvas map pane, with the swath rings from the shared model",
-      "status": "open",
+      "status": "done",
       "files": [
+        "apps/hail-desk/src/map/map.js",
         "apps/hail-desk/src/map/viewport.js",
         "apps/hail-desk/src/map/basemap.js",
         "apps/hail-desk/src/map/streets.js",
-        "apps/hail-desk/src/map/vectors.js",
-        "apps/hail-desk/src/map/swath.js",
-        "apps/hail-desk/src/map/map.js"
+        "apps/hail-desk/index.html",
+        "apps/hail-desk/styles.css",
+        "apps/hail-desk/src/main.js"
       ],
-      "gate": "the desk draws a map of the filtered market"
+      "gate": "the desk draws a map of the filtered market",
+      "commit": "a1b2c3d4"
     },
     {
       "id": "B4.4",

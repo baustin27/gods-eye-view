@@ -63,6 +63,13 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/desk/')) {
     const result = await runDeskApi(url);
     if (result) {
+      if (result.bytes) {
+        res.setHeader('content-type', result.contentType);
+        res.setHeader('x-gev-tile-count', String(result.count ?? 0));
+        res.statusCode = result.status;
+        res.end(Buffer.from(result.bytes));
+        return;
+      }
       send(res, result.status, JSON.stringify(result.body), TYPES['.json']);
       return;
     }

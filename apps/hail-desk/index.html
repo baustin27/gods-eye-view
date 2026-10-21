@@ -84,92 +84,112 @@
         </div>
       </form>
 
-      <p class="summary" id="summary" role="status" aria-live="polite"></p>
-      <ol class="data-row-list" id="ranked" aria-label="Worst places"></ol>
-
       <!--
-        ONE drill-down panel, with a stack behind it. There used to be three -
-        the storms, the tracts, the streets - as siblings in the flow, and all
-        three could be open at once, so the page grew downwards and the thing
-        you were reading was always below the fold. A drill-down now REPLACES
-        what was there, and the Back button walks back up.
+        THE MAP.
+
+        The desk is a table of places, and a table cannot say "where is that"
+        or let a person click a town off a picture. The map answers the first
+        and does the second, and it is drawn on a canvas with the same Web
+        Mercator the street tiles are cut in.
       -->
-      <section class="detail" id="detail" hidden aria-label="Drill-down">
-        <div class="detail-head">
-          <button type="button" id="drillBack" class="link-button" hidden>&#8592; Back</button>
-          <h2 id="drillTitle"></h2>
-          <button type="button" id="drillClose" class="secondary">Close</button>
-        </div>
-        <div id="drillBody"></div>
+      <section class="map-pane" id="mapPane" aria-label="Map of the filtered market">
+        <canvas id="mapCanvas" role="img" aria-label="The filtered places on a map"></canvas>
+        <p class="map-caption" id="mapCaption"></p>
       </section>
 
-      <div class="table-wrap" id="tableWrap">
-        <p class="loading" id="loading">Loading county data…</p>
+      <div class="list-pane">
+        <p class="summary" id="summary" role="status" aria-live="polite"></p>
+        <ol class="data-row-list" id="ranked" aria-label="Worst places"></ol>
+
+        <!--
+          ONE drill-down panel, with a stack behind it. There used to be three -
+          the storms, the tracts, the streets - as siblings in the flow, and all
+          three could be open at once, so the page grew downwards and the thing
+          you were reading was always below the fold. A drill-down now REPLACES
+          what was there, and the Back button walks back up.
+        -->
+        <section class="detail" id="detail" hidden aria-label="Drill-down">
+          <div class="detail-head">
+            <button type="button" id="drillBack" class="link-button" hidden>&#8592; Back</button>
+            <h2 id="drillTitle"></h2>
+            <button type="button" id="drillClose" class="secondary">Close</button>
+          </div>
+          <div id="drillBody"></div>
+        </section>
+
+        <div class="table-wrap" id="tableWrap">
+          <p class="loading" id="loading">Loading county data…</p>
+        </div>
+
+        <details class="notes" aria-label="What these numbers mean">
+          <summary>What these numbers are</summary>
+          <h2>What these numbers are</h2>
+          <dl>
+            <dt>Hail &ge; 1&Prime;</dt>
+            <dd>
+              Hail reports of an inch or more in this place, inside the selected
+              window, counted from the individual reports. This is a
+              <em>count of what was reported</em>, not a model. A town with 232
+              of them is a real signal; a town with two is likely a quiet
+              reporting culture rather than a quiet sky.
+            </dd>
+            <dt>Score</dt>
+            <dd>
+              A model of the likelihood that a residential structure in this
+              county was hit by damaging hail or wind over the selected window.
+              It blends observed hazard, the FEMA National Risk Index's modelled
+              loss rate, and exposure. Sort by it; do not quote it.
+            </dd>
+            <dt>Housing units</dt>
+            <dd>
+              Census ACS 5-year table B25001 — how many roofs are in the county.
+              That is the <em>market size</em>, not the number of houses that were
+              hit. The margin of error is shown because B25001 is a sample
+              estimate.
+            </dd>
+            <dt>Expected loss / yr</dt>
+            <dd>
+              The county's modelled expected annual loss from hail and wind,
+              from the FEMA National Risk Index. A yearly figure, not a dollar
+              amount lost last year.
+            </dd>
+            <dt>Max hail</dt>
+            <dd>
+              The largest stone ever recorded in the county, in inches. Lifetime,
+              not window — a county that had one softball in 1993 still shows it.
+            </dd>
+          </dl>
+          <p class="caveat">
+            Radar says <em>where</em> hail fell; it is unsound as a measure of
+            <em>how big</em> each stone was, so the size columns come from
+            ground reports and the radar is corroboration, never the measure.
+          </p>
+          <p class="caveat">
+            <strong>There is no &ldquo;houses hit&rdquo; column, and that is
+            deliberate too.</strong> Housing units are the market size - how many
+            roofs are in the town - and they are not the number that were hit.
+            Counting the roofs in the swath needs the radar at a resolution that
+            can be laid over a town boundary, which is the next piece of work;
+            until then, a number here would be an estimate dressed as a
+            count.
+          </p>
+          <p class="caveat">
+            <strong>There is no &ldquo;reported damage&rdquo; column, and that
+            is deliberate.</strong> The Storm Prediction Center's loss field
+            mixes two different things: dollars for hail, and the estimated
+            population affected for wind. A single Houston wind report carries
+            70,000,000 in it, and the two are summed into the same county total.
+            A column of those numbers would look like money and mean nothing, so
+            it is not here. The expected annual loss above is the reliable
+            exposure figure, and the housing-unit count is the reliable market
+            size.
+          </p>
+        </section>
+        </details>
       </div>
 
-      <section class="notes" aria-label="What these numbers mean">
-        <h2>What these numbers are</h2>
-        <dl>
-          <dt>Hail &ge; 1&Prime;</dt>
-          <dd>
-            Hail reports of an inch or more in this place, inside the selected
-            window, counted from the individual reports. This is a
-            <em>count of what was reported</em>, not a model. A town with 232
-            of them is a real signal; a town with two is likely a quiet
-            reporting culture rather than a quiet sky.
-          </dd>
-          <dt>Score</dt>
-          <dd>
-            A model of the likelihood that a residential structure in this
-            county was hit by damaging hail or wind over the selected window.
-            It blends observed hazard, the FEMA National Risk Index's modelled
-            loss rate, and exposure. Sort by it; do not quote it.
-          </dd>
-          <dt>Housing units</dt>
-          <dd>
-            Census ACS 5-year table B25001 — how many roofs are in the county.
-            That is the <em>market size</em>, not the number of houses that were
-            hit. The margin of error is shown because B25001 is a sample
-            estimate.
-          </dd>
-          <dt>Expected loss / yr</dt>
-          <dd>
-            The county's modelled expected annual loss from hail and wind,
-            from the FEMA National Risk Index. A yearly figure, not a dollar
-            amount lost last year.
-          </dd>
-          <dt>Max hail</dt>
-          <dd>
-            The largest stone ever recorded in the county, in inches. Lifetime,
-            not window — a county that had one softball in 1993 still shows it.
-          </dd>
-        </dl>
-        <p class="caveat">
-          Radar says <em>where</em> hail fell; it is unsound as a measure of
-          <em>how big</em> each stone was, so the size columns come from
-          ground reports and the radar is corroboration, never the measure.
-        </p>
-        <p class="caveat">
-          <strong>There is no &ldquo;houses hit&rdquo; column, and that is
-          deliberate too.</strong> Housing units are the market size - how many
-          roofs are in the town - and they are not the number that were hit.
-          Counting the roofs in the swath needs the radar at a resolution that
-          can be laid over a town boundary, which is the next piece of work;
-          until then, a number here would be an estimate dressed as a
-          count.
-        </p>
-        <p class="caveat">
-          <strong>There is no &ldquo;reported damage&rdquo; column, and that
-          is deliberate.</strong> The Storm Prediction Center's loss field
-          mixes two different things: dollars for hail, and the estimated
-          population affected for wind. A single Houston wind report carries
-          70,000,000 in it, and the two are summed into the same county total.
-          A column of those numbers would look like money and mean nothing, so
-          it is not here. The expected annual loss above is the reliable
-          exposure figure, and the housing-unit count is the reliable market
-          size.
-        </p>
-      </section>
+
+
     </main>
 
     <script type="module" src="./src/main.js"></script>

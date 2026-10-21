@@ -1,0 +1,138 @@
+/**
+ * The basemap: Esri's World Imagery, as raster tiles on a canvas.
+ *
+ * WHY ESRI AND NOT OSM. The OSMF tile usage policy forbids offline use of
+ * the public tile servers and requires an identifying User-Agent - and a
+ * browser cannot set its own, so the tiles come back `x-blocked: Access
+ * denied`. Esri's public World Imagery endpoint needs no key, no referer and
+ * no user agent, and it sends `Access-Control-Allow-Origin: *`.
+ *
+ * WHY `crossOrigin` IS SET BEFORE `src`. A canvas that has drawn a cross
+ * origin image is TAINTED, and every read of its pixels throws a
+ * SecurityError. The desk's map composites the swath over the imagery and
+ * exports an image of the result, so it reads pixels - and an untainted
+ * canvas needs the image to be fetched with CORS from the start. Setting the
+ * attribute AFTER the `src` is the classic way to get this wrong, because the
+ * fetch has already started.
+ *
+ * The attribution is not optional: Esri's service requires it, and it is
+ * drawn on the map rather than hidden behind a toggle.
+ */
+
+/** The tile URL template. Note the ORDER: the REST path is level/row/column. */
+import { viewportPixel } from './viewport.js';
+
+export const ESRI_WORLD_IMAGERY =
+  'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
+/** The credit the service requires. */
+export const ESRI_ATTRIBUTION =
+  'Powered by Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community';
+
+/**
+ * A cache of loaded tiles.
+ *
+ * The tiles are small - 256 pixels of JPEG, a few tens of kilobytes - and a
+ * pan across a county touches a dozen of them, so a map that fetched them
+ * again on every frame would be unusable.
+ */
+export function createTileCache(limit = 240) {
+  const entries = new Map();
+  return {
+    get(key) {
+      const hit = entries.get(key);
+      if (!hit) return null;
+      // Re-insert, so the Map's insertion order is the recency order.
+      entries.delete(key);
+      entries.set(key, hit);
+      return hit;
+    },
+    set(key, value) {
+      entries.delete(key);
+      entries.set(key, value);
+      while (entries.size > limit) {
+        const oldest = entries.keys().next().value;
+        entries.delete(oldest);
+      }
+    },
+    get size() {
+      return entries.size;
+    },
+  };
+}
+
+/**
+ * Load one basemap tile.
+ *
+ * @param {{z: number, x: number, y: number}} tile
+ * @param {object} [options]
+ * @param {typeof Image} [options.ImageImpl]
+ * @returns {Promise<HTMLImageElement|null>} null when the tile is not there
+ */
+export function loadBasemapTile(tile, { ImageImpl = globalThis.Image } = {}) {
+  const url = ESRI_WORLD_IMAGERY.replace(
+    '{z}',
+    String(tile.z),
+  )
+    .replace('{y}', String(tile.y))
+    .replace('{x}', String(tile.x));
+  return new Promise((resolve) => {
+    const image = new ImageImpl();
+    // BEFORE the src. See the file's note: this is what keeps the canvas
+    // untainted, and every pixel read of a tainted canvas throws.
+    image.crossOrigin = 'anonymous';
+    image.referrerPolicy = 'no-referrer';
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
+}
+
+/**
+ * The basemap painter.
+ *
+ * @param {object} [options]
+ * @param {typeof Image} [options.ImageImpl]
+ */
+export function createBasemap({ ImageImpl = globalThis.Image, onTile } = {}) {
+  const cache = createTileCache();
+  const pending = new Map();
+
+  /**
+   * Draw the basemap under everything else.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {object} viewport
+   @param {import('./viewport.js').visibleTiles} tiles
+   */
+  async function draw(ctx, viewport, tiles) {
+    const size = 256;
+    for (const tile of tiles) {
+      const key = `${tile.z}/${tile.x}/${tile.y}`;
+      let image = cache.get(key);
+      if (!image) {
+        if (!pending.has(key)) {
+          pending.set(
+            key,
+            loadBasemapTile(tile, { ImageImpl }).then((loaded) => {
+              if (loaded) cache.set(key, loaded);
+              pending.delete(key);
+              // A tile that has just arrived is a reason to draw again, or the
+              // map sits there half empty until something else moves it.
+              if (loaded) onTile?.();
+              return loaded;
+            }),
+          );
+        }
+        image = await pending.get(key);
+      }
+      if (!image) continue;
+      const origin = viewportPixel(tile, viewport, size);
+      ctx.drawImage(image, origin.x, origin.y, size, size);
+    }
+  }
+
+  return { draw, cache };
+}
+
+

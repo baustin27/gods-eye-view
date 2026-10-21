@@ -87,7 +87,7 @@ function addressCount(from, to) {
  * @param {string} county three-digit county FIPS
  * @returns {Promise<string>} the path to the zip
  */
-async function countyEdgesPath(state, county) {
+export async function countyEdgesPath(state, county) {
   const name = `tl_${TIGER_YEAR}_${state}${county}_edges.zip`;
   const file = path.join(CACHE_DIR, name);
   const stat = (() => {
@@ -173,7 +173,26 @@ export async function countyStreets(state, county, zip) {
  * @param {string} [zip] only this ZIP, if given
  * @returns {Promise<Array<object>>} each with a `points` flat [lon, lat, ...]
  */
-export async function countyEdges(state, county, zip) {
+/**
+ * The county's EDGES records and their geometry, parsed.
+ *
+ * This is the HALF of {@link countyEdges} that does the expensive work, and
+ * it is exported because the desk's MAP needs it for a different reason than
+ * the knock list does.
+ *
+ * `countyEdges()` returns one object per street SIDE and drops every edge
+ * whose side has no address range - which on Douglas County is 2,468 of the
+ * 6,671 named centrelines, so 63% of the county's streets are missing from
+ * it. A map of a county with 63% of its streets missing is not a map, so the
+ * map is cut from THESE records: one line per named centreline, whether or
+ * not anybody has a house number for it.
+ *
+ * @param {string} state two-digit state FIPS
+ * @param {string} county three-digit county FIPS
+ * @returns {Promise<{rows: Array<object>, shapes: object, file: string,
+ *   mtimeMs: number, size: number}>}
+ */
+export async function countyEdgeRecords(state, county) {
   const file = await countyEdgesPath(state, county);
   const { readZipEntries, readShapefile } = await import(
     path.join(REPO, 'scripts/lib/binary-geo.mjs')
@@ -222,7 +241,27 @@ export async function countyEdges(state, county, zip) {
         `and ${shapes.records.length} shapes; they cannot be joined.`,
     );
   }
+  // The archive's mtime and size are the INDEX KEY: a re-downloaded archive -
+  // which happens when a truncated one is thrown away and fetched again -
+  // changes them, and a tile index built from the old one would be serving
+  // streets that are no longer there.
+  let stat = null;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    stat = null;
+  }
+  return {
+    rows,
+    shapes,
+    file,
+    mtimeMs: stat?.mtimeMs ?? 0,
+    size: stat?.size ?? 0,
+  };
+}
 
+export async function countyEdges(state, county, zip) {
+  const { rows, shapes } = await countyEdgeRecords(state, county);
   const wanted = String(zip || '').trim();
   const streets = [];
   for (let index = 0; index < rows.length; index += 1) {

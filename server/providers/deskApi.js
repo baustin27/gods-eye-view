@@ -19,6 +19,7 @@
  */
 
 import { streetsPayload } from './hailStreets.js';
+import { streetTile } from './deskTiles.js';
 
 /**
  * The desk's API routes, as a map of path to handler.
@@ -47,13 +48,52 @@ export const DESK_ROUTES = {
 };
 
 /**
+ * The street tile route.
+ *
+ * `/api/desk/tiles/{state}/{county}/{z}/{x}/{y}` - and the response is BINARY,
+ * not JSON, because a tile is a tile. The handler below returns the bytes and
+ * the route says so.
+ */
+const STREET_TILE_PATH =
+  /^\/api\/desk\/tiles\/(\d{2})\/(\d{3})\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/;
+
+/**
  * Run the desk's API for one request.
  *
  * @param {URL} url the parsed request URL
- * @returns {Promise<{status: number, body: object}|null>} null when the path
- *   is not one of the desk's
+ * @returns {Promise<{status: number, body: object}|{status: number,
+ *   bytes: Uint8Array, contentType: string}|null>} null when the path is not
+ *   one of the desk's
  */
 export async function runDeskApi(url) {
+  const tileMatch = STREET_TILE_PATH.exec(url.pathname);
+  if (tileMatch) {
+    const [, state, county, z, x, y] = tileMatch;
+    try {
+      const { bytes, count } = await streetTile(
+        state,
+        county,
+        Number(z),
+        Number(x),
+        Number(y),
+      );
+      return {
+        // 204 for an EMPTY tile, not for a tile with no streets in it. A
+        // header-only tile is a perfectly good answer - the browser just
+        // draws nothing - and 204 says "there is nothing here" without
+        // spending the bytes.
+        status: count ? 200 : 204,
+        bytes,
+        contentType: 'application/vnd.gev.street-tile',
+        count,
+      };
+    } catch (error) {
+      return {
+        status: 404,
+        body: { error: error?.message || 'the tile could not be built' },
+      };
+    }
+  }
   const handler = DESK_ROUTES[url.pathname];
   if (!handler) return null;
   try {
@@ -80,6 +120,13 @@ export function deskApiPlugin() {
         if (!req.url?.startsWith('/api/desk/')) return next();
         const result = await runDeskApi(new URL(req.url, 'http://localhost'));
         if (!result) return next();
+        if (result.bytes) {
+          res.setHeader('content-type', result.contentType);
+          res.setHeader('x-gev-tile-count', String(result.count ?? 0));
+          res.statusCode = result.status;
+          res.end(Buffer.from(result.bytes));
+          return;
+        }
         res.setHeader('content-type', 'application/json');
         res.statusCode = result.status;
         res.end(JSON.stringify(result.body));

@@ -37,6 +37,7 @@ import {
   summarise,
 } from './table.js';
 import { csvFilename, downloadCsv, toCsv } from './csv.js';
+import { createMapPane } from './map/map.js';
 
 const CITY_DATA_URL = `${import.meta.env.BASE_URL}data/cities.json.gz`;
 const COUNTY_DATA_URL = `${import.meta.env.BASE_URL}data/counties.json.gz`;
@@ -100,6 +101,9 @@ const el = {
   q: document.getElementById('q'),
   summary: document.getElementById('summary'),
   ranked: document.getElementById('ranked'),
+  mapPane: document.getElementById('mapPane'),
+  mapCanvas: document.getElementById('mapCanvas'),
+  mapCaption: document.getElementById('mapCaption'),
   tableWrap: document.getElementById('tableWrap'),
   loading: document.getElementById('loading'),
   source: document.getElementById('source'),
@@ -134,6 +138,7 @@ function render() {
   el.summary.textContent = summarise(state.rows, state.filters, state.view);
   renderRankedList();
   rankStateChips(state.rows);
+  drawMap();
   el.export.disabled = state.rows.length === 0;
   el.drillBack.addEventListener('click', () => popDrill());
   el.drillClose.addEventListener('click', () => {
@@ -185,6 +190,63 @@ function renderRankedList() {
     li.appendChild(button);
     el.ranked.appendChild(li);
   }
+}
+
+/**
+ * The map pane, created once.
+ *
+ * The places it draws are the FILTERED rows - the same rows the table shows -
+ * so the map and the table can never disagree about which places are the
+ * market. The dots are sized and coloured by the number of severe reports,
+ * which is the column the table is sorted by.
+ */
+let mapPane = null;
+
+function createTheMap() {
+  if (mapPane) return mapPane;
+  mapPane = createMapPane({
+    canvas: el.mapCanvas,
+    places: () => state.rows,
+    scope: () => {
+      // The street tiles are a county's, and the county comes from the state
+      // the market is in. A market that spans states has no single county, and
+      // the map says so rather than drawing one county's streets over
+      // another's.
+      const codes = new Set(
+        state.rows.map((row) => String(row.st || '')).filter(Boolean),
+      );
+      if (codes.size !== 1) return {};
+      const code = [...codes][0];
+      const counties = state.countyRows.filter((row) => row.st === code);
+      if (!counties.length) return {};
+      // The biggest county in the state, which is the one a map of the state
+      // is mostly about.
+      counties.sort((a, b) => (b.units ?? 0) - (a.units ?? 0));
+      return { state: code, county: counties[0].fips };
+    },
+    onPick: (row) => onCityClick(row),
+  });
+  return mapPane;
+}
+
+/**
+ * Redraw the map, and say what it is showing.
+ */
+function drawMap() {
+  const pane = createTheMap();
+  // The map FITS itself to what is being shown, so the default view - every
+  // place with hail in the country - is a map of the country, and a view of
+  // one state is a map of that state.
+  pane.fitTo(state.rows);
+  pane.draw();
+  const codes = new Set(
+    state.rows.map((row) => String(row.st || '')).filter(Boolean),
+  );
+  const where = codes.size === 1 ? [...codes][0] : `${codes.size} states`;
+  el.mapCaption.textContent = codes.size
+    ? `${state.rows.length.toLocaleString()} places in ${where} - ` +
+      'drag to pan, wheel to zoom, click a dot'
+    : 'no places to show';
 }
 
 function applyFilters(next) {
@@ -946,7 +1008,9 @@ async function main() {
     syncControls();
     render();
 
-    el.loading.remove();
+    createTheMap();
+  drawMap();
+  el.loading.remove();
     const cityCount = state.cityIndex.byYear.size;
     el.source.textContent =
       `${cityCount.toLocaleString()} places with hail · ` +

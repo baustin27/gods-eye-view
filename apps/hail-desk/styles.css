@@ -83,10 +83,80 @@ body {
   font: 11px/1.4 var(--mono);
 }
 
+/*
+ * THE LAYOUT.
+ *
+ * `main` had no `display` property, so every child stacked in DOM order and
+ * the page grew downwards - which is what "hard to control" felt like. It is
+ * a GRID now: the controls across the top, and the map and the list side by
+ * side beneath them, because the map and the list are two views of the same
+ * filtered set and a person works them together.
+ */
 main {
-  padding: 16px 20px 48px;
-  max-width: 1600px;
+  padding: 12px 16px 24px;
+  max-width: 1800px;
   margin: 0 auto;
+  height: calc(100vh - 58px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(430px, 0.9fr);
+  grid-template-areas:
+    'views views'
+    'filters filters'
+    'map list';
+  gap: 12px;
+}
+
+main > .views { grid-area: views; }
+main > .filters { grid-area: filters; }
+main > .map-pane { grid-area: map; }
+main > .list-pane { grid-area: list; }
+main > .list-pane .notes { grid-area: auto; }
+
+/* The list column is its own scroller, so the map keeps its size. */
+.list-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.list-pane .table-wrap,
+.list-pane .detail {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.list-pane .summary,
+.list-pane .worst,
+.list-pane .data-row-list {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+@media (max-width: 1100px) {
+  main {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto auto;
+    grid-template-areas:
+      'views'
+      'filters'
+      'map'
+      'list'
+      'notes';
+  }
+  .list-pane .table-wrap,
+  .list-pane .detail {
+    height: auto;
+    max-height: 70vh;
+  }
+  .map-pane {
+    height: 60vh;
+  }
 }
 
 /* ---- view switch ---- */
@@ -329,6 +399,69 @@ button.secondary {
 
 .state-field {
   flex: 2 1 320px;
+}
+
+/*
+ * The map pane.
+ *
+ * A canvas, sized by the grid it sits in, with the credit drawn ON the map -
+ * Esri's service requires it, and a credit behind a toggle is not a credit.
+ */
+.map-pane {
+  position: relative;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #05080b;
+}
+
+.map-pane canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.map-pane canvas:active {
+  cursor: grabbing;
+}
+
+.map-caption {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  margin: 0;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(10, 14, 19, 0.82);
+  color: var(--ink-dim);
+  font: 11px/1.3 var(--mono);
+  pointer-events: none;
+}
+
+/*
+ * The notes, folded.
+ *
+ * They are a wall of prose about what every number means, and they were
+ * taking more of the screen than the map. Folded, they are one line that
+ * says what they are and they are there when they are wanted.
+ */
+.notes summary {
+  cursor: pointer;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink-dim);
+  font: 11px/1.3 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notes[open] summary {
+  margin-bottom: 8px;
 }
 
 .summary {
