@@ -487,6 +487,27 @@
         "apps/hail-desk/src/map/basemap.js"
       ],
       "gate": "the streets and the tracts are on the map, and a tile that is not there is asked for once and not sixty times a second"
+    },
+    {
+      "id": "D1.11",
+      "title": "clicking a day opens its tracts: the work list, with the houses under the hail and a way through to the streets",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/src/data.js"
+      ],
+      "gate": "the biggest Colorado storm opens as 165 tracts and 323,867 houses, and the first tract's streets say 25,803 of 25,803 addresses were under the hail"
+    },
+    {
+      "id": "D1.12",
+      "title": "the street list is given the RADAR day, because the field for a report day is named the day after",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/main.js"
+      ],
+      "gate": "the street list says how many addresses were under the hail, and it is not zero"
     }
   ]
 }

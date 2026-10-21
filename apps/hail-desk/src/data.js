@@ -251,7 +251,7 @@ export function indexSwaths(payload) {
     if (day) {
       let dayEntry = byDay.get(day);
       if (!dayEntry) {
-        dayEntry = { houses: 0, tracts: 0, counties: new Map() };
+        dayEntry = { houses: 0, tracts: 0, counties: new Map(), list: [] };
         byDay.set(day, dayEntry);
       }
       dayEntry.houses += row.u || 0;
@@ -263,6 +263,21 @@ export function indexSwaths(payload) {
           (dayEntry.counties.get(county) || 0) + (row.u || 0),
         );
       }
+      // The tracts of the day, with the houses in them.
+      //
+      // This is the WORK LIST: a canvasser works in a tract, and the tract
+      // is the level the radar is meaningful at. A day that is a row in a
+      // table is a fact; a day that is a list of tracts is an afternoon.
+      dayEntry.list.push({
+        geoid: String(row.g || ''),
+        name: String(row.g || '').slice(5),
+        place: String(row.k || ''),
+        units: row.u || 0,
+        maxMm: row.m || 0,
+        cells: row.c || 0,
+        state: String(row.g || '').slice(0, 2),
+        county,
+      });
     }
     if (row.m > entry.maxMm) entry.maxMm = row.m;
     // The tract itself, kept. The counts above are for the town; a canvasser
@@ -282,6 +297,14 @@ export function indexSwaths(payload) {
   for (const entry of byPlaceDay.values()) {
     entry.list.sort(
       (a, b) => b.units - a.units || b.maxMm - a.maxMm || a.geoid.localeCompare(b.geoid),
+    );
+  }
+  for (const entry of byDay.values()) {
+    entry.list.sort(
+      (a, b) =>
+        b.units - a.units ||
+        b.maxMm - a.maxMm ||
+        a.geoid.localeCompare(b.geoid),
     );
   }
   return { byPlaceDay, byPlace, byDay, firstDay };

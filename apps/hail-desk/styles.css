@@ -130,6 +130,20 @@ main > .list-pane .notes { grid-area: auto; }
   overflow: auto;
 }
 
+/*
+ * A drill-down and the table, sharing the column equally, is a table with
+ * half a table's height and a panel with half a panel's. The open panel
+ * takes the room.
+ */
+.list-pane.drilling .detail {
+  flex: 3 1 auto;
+}
+
+.list-pane.drilling .table-wrap {
+  flex: 0 1 auto;
+  min-height: 120px;
+}
+
 .list-pane .summary,
 .list-pane .worst,
 .list-pane .data-row-list {

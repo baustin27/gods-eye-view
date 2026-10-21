@@ -315,6 +315,22 @@ function onStormSort(key) {
  */
 function onStormDayClick(row) {
   applyFilters({ d: row.date });
+  // THE WORK LIST: the tracts the hail fell in, with the houses in them.
+  //
+  // A day is a row in a table - a fact. A day with its tracts is an
+  // afternoon: these are the neighbourhoods, here are the houses, and here
+  // is the street list under them. A canvasser works in a tract, and the
+  // tract is the level the radar is meaningful at.
+  const entry = state.swathIndex.byDay.get(row.radarDay);
+  // The radar field is NATIONAL, so the day's tracts are the whole country's
+  // - and the desk is about one state. The tract list is scoped to the
+  // state's FIPS prefix, which is the same state the list's house counts
+  // are scoped to.
+  const fips = stateFips();
+  const tracts = entry
+    ? entry.list.filter((tract) => !fips || tract.geoid.startsWith(fips))
+    : [];
+  if (tracts.length) showTracts(tracts, row.date, row.radarDay);
 }
 
 /**
@@ -429,6 +445,22 @@ function fitToSwath(bands) {
     east + padLon,
     north + padLat,
   );
+}
+
+/**
+ * The FIPS prefix of the state in the filters: two digits.
+ *
+ * The tile routes and the tract GEOIDs are in FIPS, and the desk's filters
+ * are in postal codes, and the two have to meet somewhere.
+ *
+ * @returns {string} the two-digit prefix, or '' for every state
+ */
+function stateFips() {
+  const code = String(state.filters.state || '').toUpperCase();
+  if (!code) return '';
+  const county = state.countyRows.find((row) => row.st === code);
+  if (!county) return '';
+  return String(county.fips).slice(0, 2);
 }
 
 /**
@@ -760,6 +792,10 @@ function popDrill() {
 function renderDrill() {
   const top = drillStack[drillStack.length - 1];
   el.drillBody.replaceChildren();
+  // The pane knows whether a drill-down is open, so the stylesheet can give
+  // the panel the room: a drill-down and the table sharing it equally is a
+  // table with half a table's height and a panel with half a panel's.
+  el.detail.parentElement?.classList.toggle('drilling', Boolean(top));
   if (!top) {
     el.detail.hidden = true;
     return;
@@ -946,7 +982,7 @@ async function onCityClick(row) {
  * it, how hard the hail was there, and a link through to the streets inside
  * it.
  */
-function showTracts(tracts, day) {
+function showTracts(tracts, day, fieldDay) {
   pushDrill({
     title: `Tracts under the hail on ${day}`,
     render: (panel) => {
@@ -1017,7 +1053,12 @@ function showTracts(tracts, day) {
       showStreets(
         tract.geoid.slice(0, 2),
         tract.geoid.slice(2, 5),
-        day,
+        // The RADAR day, not the report day. The street service lays the
+        // day's 1 km field over the streets, and the field for a report day
+        // is named the day after - so asking for the report day laid a
+        // DIFFERENT storm's field over the streets and found no hail under
+        // them at all.
+        fieldDay || day,
         tract.geoid,
       ),
     );
