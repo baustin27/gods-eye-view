@@ -397,6 +397,30 @@ button.secondary {
   border: 0;
 }
 
+/*
+ * The states the chips do not show.
+ *
+ * A hidden dropdown is a state nobody can reach, and Colorado is not in the
+ * top twelve on hail alone.
+ */
+.state-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.state-menu-empty {
+  color: var(--ink-faint);
+  font: 11px/1.3 var(--mono);
+}
+
 .state-field {
   flex: 2 1 320px;
 }

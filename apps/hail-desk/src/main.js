@@ -101,6 +101,7 @@ const el = {
   q: document.getElementById('q'),
   summary: document.getElementById('summary'),
   ranked: document.getElementById('ranked'),
+  stateMenu: document.getElementById('stateMenu'),
   mapPane: document.getElementById('mapPane'),
   mapCanvas: document.getElementById('mapCanvas'),
   mapCaption: document.getElementById('mapCaption'),
@@ -277,6 +278,7 @@ function syncControls() {
   // that disagrees with the filter is worse than no dropdown.
   el.state.value = String(st || '').toUpperCase();
   syncStateChips();
+  renderStateMenu();
   el.minHail.value = String(minHailTenths);
 }
 
@@ -894,6 +896,66 @@ function fillStates(rows, key) {
   all.textContent = 'ALL';
   all.addEventListener('click', () => applyFilters({ state: '' }));
   el.stateChips.prepend(all);
+
+  // The chips are the twelve biggest markets, and a chip row of fifty would
+  // be a wall. So the rest are behind a chip that opens them - because a
+  // dropdown that is HIDDEN is a state nobody can reach, and Colorado is not
+  // in the top twelve on hail alone.
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'data-toggle-chip chip-idle';
+  more.dataset.chipId = 'state:more';
+  more.setAttribute('aria-pressed', 'false');
+  more.textContent = 'MORE';
+  more.addEventListener('click', () => {
+    const open = el.stateMenu.hidden;
+    el.stateMenu.hidden = !open;
+    more.classList.toggle('chip-active', open);
+    more.setAttribute('aria-pressed', String(open));
+    renderStateMenu();
+  });
+  el.stateChips.appendChild(more);
+}
+
+/**
+ * The states the chips do not show.
+ *
+ * Built fresh each time it opens, because the list is the states in the
+ * CURRENT market and the market changes with the filters.
+ */
+function renderStateMenu() {
+  const menu = el.stateMenu;
+  if (!menu || menu.hidden) return;
+  const counts = new Map();
+  for (const row of state.rows) {
+    const code = String(row.st || '').trim();
+    if (!code) continue;
+    counts.set(code, (counts.get(code) || 0) + 1);
+  }
+  const shown = new Set(
+    [...el.stateChips.querySelectorAll('.data-toggle-chip')]
+      .map((chip) => String(chip.dataset.chipId || '').replace(/^state:/, '')),
+  );
+  menu.replaceChildren();
+  for (const [code, count] of [...counts.entries()].sort((a, b) => b[1] - a[1])) {
+    if (shown.has(code)) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'data-toggle-chip chip-idle';
+    button.textContent = code;
+    button.title = `${count.toLocaleString()} places in the market`;
+    button.addEventListener('click', () => {
+      menu.hidden = true;
+      applyFilters({ state: code });
+    });
+    menu.appendChild(button);
+  }
+  if (!menu.children.length) {
+    const empty = document.createElement('span');
+    empty.className = 'state-menu-empty';
+    empty.textContent = 'every state in the market is a chip';
+    menu.appendChild(empty);
+  }
 }
 
 /**
