@@ -370,7 +370,7 @@
       "id": "D1.1",
       "title": "the storm-date list: the union of the report days and the radar days, with the houses under the hail, the reports, the >=1in count, the largest stone and the places",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "921f2929",
       "files": [
         "apps/hail-desk/src/storms.js",
         "apps/hail-desk/src/storms.test.mjs",
@@ -383,7 +383,7 @@
       "id": "D1.2",
       "title": "the storm list's sort and the selected day live in the URL, beside the market's own sort and dir",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "921f2929",
       "files": [
         "src/data/layerState.js",
         "apps/hail-desk/src/state.js",
@@ -395,7 +395,7 @@
       "id": "D1.3",
       "title": "clicking a day draws the radar shard that COVERS it and fits the map to the swath, clipped to the market's state",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "921f2929",
       "files": [
         "apps/hail-desk/src/main.js",
         "apps/hail-desk/src/map/map.js"
@@ -406,7 +406,7 @@
       "id": "D1.4",
       "title": "the recent days are chips over the map, and the info line says what is on it",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "921f2929",
       "files": [
         "apps/hail-desk/src/main.js",
         "apps/hail-desk/index.html",
@@ -418,7 +418,7 @@
       "id": "D1.5",
       "title": "the place dots are a layer, off by default in the storm view, where the swath is the map",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "921f2929",
       "files": [
         "apps/hail-desk/src/main.js",
         "apps/hail-desk/index.html",
@@ -430,7 +430,7 @@
       "id": "D1.6",
       "title": "the frame chips: the day, or the six-hour windows inside it, from the sub-daily shards the desk had and never used",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "921f2929",
       "files": [
         "apps/hail-desk/src/map/swath.js",
         "apps/hail-desk/src/main.js",
@@ -442,7 +442,7 @@
       "id": "D1.7",
       "title": "the desk's tract tile API, with the housing units of each tract",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "921f2929",
       "files": [
         "server/providers/deskTracts.js",
         "server/providers/deskApi.js",
