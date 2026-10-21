@@ -545,6 +545,20 @@
         "apps/hail-desk/styles.css"
       ],
       "gate": "the desk opens with a storm on the map, the day in the link, and the row marked in the list"
+    },
+    {
+      "id": "D2.4",
+      "title": "one shared mark style: the storm ramp is in one place and the globe, the desk, the artifact and the gallery all read it",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "src/data/stormRamp.js",
+        "src/data/stormRamp.test.mjs",
+        "src/data/stormArtwork.js",
+        "src/layers/stormReports/index.js",
+        "apps/hail-desk/src/map/swath.js"
+      ],
+      "gate": "a test that says the artifact's bands ARE the shared ramp, and the desk draws the same edges the globe does"
     }
   ]
 }

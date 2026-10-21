@@ -24,15 +24,17 @@
  */
 
 import { contourRings } from '../layers/stormReports/model.js';
+import { STORM_RAMP } from './stormRamp.js';
 
-/** The bands, in the order they are drawn. */
-export const ARTWORK_BANDS = Object.freeze([
-  Object.freeze({ min: 25.4, color: '#6d28d9', label: '1–1.5"' }),
-  Object.freeze({ min: 38.1, color: '#9333ea', label: '1.5–2"' }),
-  Object.freeze({ min: 50.8, color: '#c026d3', label: '2–2.75"' }),
-  Object.freeze({ min: 69.85, color: '#e879f9', label: '2.75–3.5"' }),
-  Object.freeze({ min: 88.9, color: '#fdf4ff', label: '3.5"+' }),
-]);
+/**
+ * The bands, in the order they are drawn.
+ *
+ * THE RAMP IS IN ONE PLACE. The globe draws a storm, the desk draws a storm,
+ * the artifact draws a storm and the gallery draws a storm, and they are
+ * four pictures of the same weather. `src/data/stormRamp.js` holds the
+ * thresholds, the colours and the labels, so the four cannot drift apart.
+ */
+export const ARTWORK_BANDS = STORM_RAMP;
 
 /** The grid step of the fine field, in degrees. */
 const FINE_DEG = 0.01;

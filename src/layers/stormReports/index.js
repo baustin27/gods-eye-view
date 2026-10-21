@@ -73,6 +73,7 @@ import {
 import { radarDateFromDayIndex } from '../../data/stormDatasets.js';
 import { stormDays } from '../../data/stormReports.js';
 import { STORM_SOURCE_BADGE } from '../../data/stormAttribution.js';
+import { stormColorFor, stormRampDescending } from '../../data/stormRamp.js';
 
 /** The layer id, and the token reserved for it in the layer-state ledger. */
 export const STORM_REPORTS_ID = 'storm-reports';
@@ -292,38 +293,12 @@ const RADAR_FLOOR_MM = 25.4;
  * a separate polyline entity would share the `storm-swath:` id prefix and
  * break every test that finds swaths by it. The hue carries the edge.
  */
-const RADAR_RAMP_MM = Object.freeze([
-  Object.freeze({
-    min: 88.9,
-    color: '#fdf4ff',
-    outline: '#ffffff',
-    label: '3.5"+',
-  }),
-  Object.freeze({
-    min: 69.85,
-    color: '#e879f9',
-    outline: '#fdf4ff',
-    label: '2.75-3.5"',
-  }),
-  Object.freeze({
-    min: 50.8,
-    color: '#c026d3',
-    outline: '#e879f9',
-    label: '2-2.75"',
-  }),
-  Object.freeze({
-    min: 38.1,
-    color: '#9333ea',
-    outline: '#c026d3',
-    label: '1.5-2"',
-  }),
-  Object.freeze({
-    min: RADAR_FLOOR_MM,
-    color: '#6d28d9',
-    outline: '#9333ea',
-    label: '1-1.5"',
-  }),
-]);
+// THE RAMP IS IN ONE PLACE. The globe, the desk, the per-storm artifact and
+// the gallery draw the same weather, and four pictures of one storm that
+// use four ramps are four pictures a person has to reconcile. The shared
+// ramp lives in `src/data/stormRamp.js`, and the globe wants it hottest
+// first.
+const RADAR_RAMP_MM = Object.freeze(stormRampDescending());
 
 /**
  * The level each radar band is drawn at.
@@ -355,9 +330,9 @@ const IMPACTED_PLACES_INLINE = 4;
  */
 function radarColorFor(cell) {
   if (cell.implausible) return RADAR_IMPLAUSIBLE_COLOR;
-  for (const step of RADAR_RAMP_MM)
-    if (cell.peakMm >= step.min) return step.color;
-  return null;
+  // The shared ramp's own lookup, so the globe and the desk cannot disagree
+  // about the colour of a reading.
+  return stormColorFor(cell.peakMm);
 }
 
 /**

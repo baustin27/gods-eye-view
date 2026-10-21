@@ -163,6 +163,14 @@ export function createSwathPainter() {
       // still under it.
       ctx.globalAlpha = 0.58;
       ctx.fill('evenodd');
+      // The band's own edge, in the NEXT HOTTER band's colour. That is the
+      // only way to draw a stack of translucent bands and still see where
+      // one ends and the next begins - and it is the same edge the globe
+      // draws, because the ramp is in one place.
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = band.band.outline || 'rgba(255, 255, 255, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
       ctx.globalAlpha = 1;
     }
   }
