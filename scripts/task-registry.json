@@ -595,8 +595,8 @@
     {
       "id": "E1.1",
       "title": "the tract pack carries the Census's own land area, so the share has an authoritative denominator",
-      "status": "open",
-      "commit": "",
+      "status": "done",
+      "commit": "4619943b",
       "files": [
         "scripts/build-admin-packs.mjs",
         "src/data/local_data/us_census_tracts/tracts.json"
@@ -606,8 +606,8 @@
     {
       "id": "E1.2",
       "title": "the share of a tract the hail covered: the corner samples the cell test already takes, divided by the tract's area",
-      "status": "open",
-      "commit": "",
+      "status": "done",
+      "commit": "4619943b",
       "files": [
         "src/data/tractHail.js",
         "src/data/tractHail.test.mjs"
@@ -617,8 +617,8 @@
     {
       "id": "E1.3",
       "title": "the swaths artifact publishes the apportioned houses and the share beside the raw tract units",
-      "status": "open",
-      "commit": "",
+      "status": "done",
+      "commit": "4619943b",
       "files": [
         "scripts/build-hail-desk-swaths.mjs",
         "apps/hail-desk/public/data/swaths.json.gz"
@@ -628,8 +628,8 @@
     {
       "id": "E1.4",
       "title": "the work list leads with the number the canvasser acts on: the tract row shows the houses under the hail and the share",
-      "status": "open",
-      "commit": "",
+      "status": "done",
+      "commit": "2564d2f4",
       "files": [
         "apps/hail-desk/src/main.js"
       ],
@@ -638,8 +638,8 @@
     {
       "id": "E1.5",
       "title": "the storm list shows the apportioned houses, with the raw tract units beside it as the market size",
-      "status": "open",
-      "commit": "",
+      "status": "done",
+      "commit": "2564d2f4",
       "files": [
         "apps/hail-desk/src/storms.js",
         "apps/hail-desk/src/table.js",
@@ -650,19 +650,19 @@
     {
       "id": "E1.6",
       "title": "the tract number is measured against the street-level path, which is the ground truth, and pinned with a test",
-      "status": "open",
-      "commit": "",
+      "status": "done",
+      "commit": "be691dd0",
       "files": [
-        "src/tooling/houseCountValidation.test.mjs",
-        "server/providers/hailStreets.js"
+        "server/providers/houseCountValidation.test.mjs",
+        "scripts/validate-house-counts.mjs"
       ],
       "gate": "the apportioned tract count and the street-level address count are compared for a known storm, and the gap is measured rather than asserted"
     },
     {
       "id": "E1.7",
       "title": "the boundary caveat is corrected: the 500k file drops no tracts, the median edge error is 42 m, and the count is apportioned",
-      "status": "open",
-      "commit": "",
+      "status": "done",
+      "commit": "be691dd0",
       "files": [
         "docs/KNOWN-ISSUES.md",
         "docs/PATH-B.md",
