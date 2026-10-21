@@ -38,10 +38,23 @@ export const ESRI_ATTRIBUTION =
  */
 export function createTileCache(limit = 240) {
   const entries = new Map();
+  // A tile that FAILED is remembered as a failure, with a time, so it is not
+  // asked for again on every frame. A tile that is not there is asked for
+  // again and again, and a server that is slow to refuse is a server the map
+  // hammers for the whole session.
+  const failures = new Map();
+  const FAILURE_TTL_MS = 30_000;
   return {
     get(key) {
       const hit = entries.get(key);
-      if (!hit) return null;
+      if (!hit) {
+        const failed = failures.get(key);
+        if (failed !== undefined) {
+          if (Date.now() - failed < FAILURE_TTL_MS) return null;
+          failures.delete(key);
+        }
+        return null;
+      }
       // Re-insert, so the Map's insertion order is the recency order.
       entries.delete(key);
       entries.set(key, hit);
@@ -50,10 +63,15 @@ export function createTileCache(limit = 240) {
     set(key, value) {
       entries.delete(key);
       entries.set(key, value);
+      failures.delete(key);
       while (entries.size > limit) {
         const oldest = entries.keys().next().value;
         entries.delete(oldest);
       }
+    },
+    /** Remember that a tile could not be had. */
+    fail(key) {
+      if (!entries.has(key)) failures.set(key, Date.now());
     },
     get size() {
       return entries.size;
@@ -124,6 +142,7 @@ export function createBasemap({ ImageImpl = globalThis.Image, onTile } = {}) {
             key,
             loadBasemapTile(tile, { ImageImpl }).then((loaded) => {
               if (loaded) cache.set(key, loaded);
+              else cache.fail(key);
               pending.delete(key);
               if (loaded) onTile?.();
               return loaded;

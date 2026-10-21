@@ -83,18 +83,12 @@ export function createSwathPainter() {
     // so they are projected and clipped by the canvas rather than culled: a
     // band that starts outside the frame and ends inside it still has to be
     // drawn.
-    const project = (point) => {
-      const world = worldPixels(point.lon, point.lat, viewport.zoom);
-      const centre = worldPixels(
-        viewport.centre.lon,
-        viewport.centre.lat,
-        viewport.zoom,
-      );
-      return [
-        world.x - centre.x + viewport.width / 2,
-        world.y - centre.y + viewport.height / 2,
-      ];
-    };
+    //
+    // The projection is the viewport's OWN. This used to be a second copy of
+    // the Mercator maths, in a file whose import sat at the BOTTOM, and two
+    // copies of a projection is two sets of answers - the same thing
+    // tileMath.js warns about.
+    const project = (point) => projectPoint(point.lon, point.lat, viewport);
     for (const band of bands) {
       ctx.beginPath();
       const outer = band.outer;
@@ -125,5 +119,4 @@ export function createSwathPainter() {
   return { draw, load: loadSwathBands, get current() { return current; } };
 }
 
-// The projection, from the viewport's own maths.
-import { worldPixels } from './viewport.js';
+import { project as projectPoint } from './viewport.js';

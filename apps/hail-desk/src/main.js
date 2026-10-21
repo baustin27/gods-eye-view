@@ -212,6 +212,13 @@ function createTheMap() {
   mapPane = createMapPane({
     canvas: el.mapCanvas,
     places: () => state.rows,
+    // The worst severe count in the market, so the dots are sized by RANK and
+    // do not all resize every time the list is filtered.
+    worstSevere: () =>
+      state.rows.reduce(
+        (max, row) => Math.max(max, Number(row.severe) || 0),
+        0,
+      ),
     swath: () => (state.mapBands || []).slice(),
     scope: () => {
       // The street tiles are a county's, and the county comes from the state

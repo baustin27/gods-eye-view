@@ -26,8 +26,29 @@ function clampLat(lat) {
   return Math.max(-MERCATOR_LAT_LIMIT, Math.min(MERCATOR_LAT_LIMIT, lat));
 }
 
-function clampZoom(zoom) {
-  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+/**
+ * Clamp a zoom to the range AND to a whole number.
+ *
+ * THE INTEGER MATTERS. A fractional zoom puts the tile index on a grid of
+ * `2 ** zoom` columns - 2,560 of them at zoom 11.32 - and the tile server
+ * is asked for a level it does not have. Esri does not reject it: it
+ * TRUNCATES the level, so the browser is given the z=11 tile for a column
+ * in a grid of 2,560, and the imagery lands eighteen degrees of longitude off
+ * the map and a quarter too small. The street tiles 404 outright, because
+ * the route matches the zoom with `(\d{1,2})`.
+ *
+ * ROUND and not floor, because the rounding decides how fast the map zooms
+ * in. Floor gives 11, 11, 11, 11 going in against 11, 10 coming out, so
+ * zooming IN is four times slower than zooming out. Round gives 11, 11, 12
+ * both ways.
+ *
+ * @param {number} zoom
+ * @returns {number}
+ */
+export function clampZoom(zoom) {
+  const rounded = Math.round(Number(zoom));
+  if (!Number.isFinite(rounded)) return MIN_ZOOM;
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, rounded));
 }
 
 /**
@@ -63,7 +84,10 @@ export function worldPoint(x, y, zoom) {
   const lon = (x / (n * TILE_SIZE)) * 360 - 180;
   const n2 = Math.PI - (2 * Math.PI * y) / (n * TILE_SIZE);
   const lat = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n2) - Math.exp(-n2)));
-  return { lon, lat };
+  // The latitude is CLAMPED. Without it the map can be panned past the pole,
+  // where the projection stops, and the pan is swallowed - which is how a map
+  // ends up in Antarctica and stays there.
+  return { lon, lat: clampLat(lat) };
 }
 
 /**
@@ -208,7 +232,10 @@ export function panBy(viewport, dx, dy) {
     viewport.zoom,
   );
   const moved = worldPoint(centre.x - dx, centre.y - dy, viewport.zoom);
-  return { ...viewport, centre: moved };
+  return {
+    ...viewport,
+    centre: { lon: moved.lon, lat: clampLat(moved.lat) },
+  };
 }
 
 /**
@@ -230,10 +257,22 @@ export function zoomAround(viewport, zoom, x, y) {
     viewport.centre.lat,
     next,
   );
+  // The anchor is the cursor, and the SIGN is what makes it the cursor.
+  //
+  // This computed `world` and never used it, so the new centre was the old
+  // centre displaced by the cursor's offset from the middle of the canvas.
+  // The map slid away from the pointer, and the error GREW as you zoomed out
+  // - a degree is fewer pixels the further out you are, so the same cursor
+  // offset was a bigger mistake each notch. Zooming out from Colorado, the
+  // map was in ANTARCTICA by the twenty-second notch.
   const centre = worldPoint(
-    centreWorld.x + (x - viewport.width / 2),
-    centreWorld.y + (y - viewport.height / 2),
+    world.x - (x - viewport.width / 2),
+    world.y - (y - viewport.height / 2),
     next,
   );
-  return { ...viewport, zoom: next, centre };
+  return {
+    ...viewport,
+    zoom: next,
+    centre: { lon: centre.lon, lat: clampLat(centre.lat) },
+  };
 }
