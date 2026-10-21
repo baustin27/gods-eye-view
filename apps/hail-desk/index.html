@@ -29,9 +29,20 @@
       </div>
 
       <form class="filters" id="filters" aria-label="Filters">
-        <div class="field">
-          <label for="state">State</label>
-          <select id="state" name="state">
+        <!--
+          The STATE picker is a chip row, not a dropdown.
+
+          A dropdown with fifty entries is a control you have to open, read and
+          close to use one of them, and it is the control a person touches
+          first: which market am I looking at. The globe picks its places with
+          a row of buttons, and the desk now does the same. The twelve
+          biggest markets are the chips; the rest are still reachable, because
+          a chip row of fifty would be a wall.
+        -->
+        <div class="field state-field">
+          <label id="state-label">State</label>
+          <div class="data-toggle-controls" id="stateChips" role="group" aria-labelledby="state-label"></div>
+          <select id="state" name="state" class="visually-hidden" aria-hidden="true" tabindex="-1">
             <option value="">All states</option>
           </select>
         </div>

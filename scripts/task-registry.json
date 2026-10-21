@@ -203,13 +203,14 @@
     {
       "id": "B3.3",
       "title": "the control rail, porting the globe's toggle rows, chips and ranked list",
-      "status": "open",
+      "status": "done",
       "files": [
-        "apps/hail-desk/src/rail.js",
+        "apps/hail-desk/src/main.js",
         "apps/hail-desk/index.html",
         "apps/hail-desk/styles.css"
       ],
-      "gate": "the desk's controls are the globe's controls"
+      "gate": "the desk's controls are the globe's controls",
+      "commit": "b3c9d20"
     },
     {
       "id": "B3.4",

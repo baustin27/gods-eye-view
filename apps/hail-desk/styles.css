@@ -267,6 +267,70 @@ button.secondary {
   border-color: var(--accent);
 }
 
+/*
+ * The globe's control vocabulary, in the desk.
+ *
+ * A chip is a button with a state, not an option in a dropdown: the desk's
+ * state picker was a <select> with fifty entries, which is a control you have
+ * to open, read and close to use one of them, and it is the control a person
+ * touches FIRST. These are the same class names the globe uses, so the two
+ * surfaces say the same thing the same way.
+ */
+.data-toggle-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.data-toggle-chip {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--ink-dim);
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.data-toggle-chip:hover {
+  color: var(--ink);
+  border-color: var(--accent-dim);
+}
+
+.data-toggle-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.data-toggle-chip.chip-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(58, 214, 200, 0.1);
+}
+
+/*
+ * The dropdown is still there - it is how the other thirty-eight states are
+ * reached - but it is out of sight and out of the tab order, so the chip row
+ * is what a person sees and the form still submits a state.
+ */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.state-field {
+  flex: 2 1 320px;
+}
+
 .summary {
   margin: 14px 0 2px;
   font: 13px/1.4 var(--mono);

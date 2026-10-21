@@ -93,6 +93,7 @@ const CSV_COLUMNS = {
 const el = {
   filters: document.getElementById('filters'),
   state: document.getElementById('state'),
+  stateChips: document.getElementById('stateChips'),
   fromYear: document.getElementById('fromYear'),
   toYear: document.getElementById('toYear'),
   minHail: document.getElementById('minHail'),
@@ -132,6 +133,7 @@ function render() {
   );
   el.summary.textContent = summarise(state.rows, state.filters, state.view);
   renderRankedList();
+  rankStateChips(state.rows);
   el.export.disabled = state.rows.length === 0;
   el.drillBack.addEventListener('click', () => popDrill());
   el.drillClose.addEventListener('click', () => {
@@ -212,6 +214,7 @@ function syncControls() {
   // and the filter keeps working on a value the user cannot see. A dropdown
   // that disagrees with the filter is worse than no dropdown.
   el.state.value = String(st || '').toUpperCase();
+  syncStateChips();
   el.minHail.value = String(minHailTenths);
 }
 
@@ -777,6 +780,19 @@ async function showStreets(stateCode, county, day, tract) {
   }
 
 /** Populate the state dropdown from the states the data actually covers. */
+/**
+ * The state picker: chips for the biggest markets, and the dropdown kept
+ * behind them for the rest.
+ *
+ * The twelve biggest are the chips, because a chip row of fifty would be a
+ * wall, and the wall would be the first thing on the page. The dropdown is
+ * still there - it is how the other thirty-eight are reached, and it is
+ * hidden from the eye and from the tab order rather than removed, so the
+ * form still submits a state and the URL still carries one.
+ *
+ * @param {Array<object>} rows
+ * @param {string} key the column holding the state
+ */
 function fillStates(rows, key) {
   const states = new Map();
   for (const row of rows) {
@@ -784,11 +800,101 @@ function fillStates(rows, key) {
     if (!code) continue;
     states.set(code, (states.get(code) || 0) + 1);
   }
-  for (const code of [...states.keys()].sort()) {
+  const ordered = [...states.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [code, count] of ordered) {
     const option = document.createElement('option');
     option.value = code;
-    option.textContent = `${code} (${states.get(code)})`;
+    option.textContent = `${code} (${count})`;
     el.state.appendChild(option);
+  }
+  // The chips are re-ranked on every render, by the MARKET and not by the
+  // number of places: a state with three thousand places and no hail is not a
+  // market, and a chip that ranks it above Colorado is a chip that costs the
+  // person a click to undo.
+  el.stateChips.replaceChildren();
+  for (const [code] of ordered.slice(0, 12)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'data-toggle-chip chip-idle';
+    button.dataset.chipId = `state:${code}`;
+    button.setAttribute('aria-pressed', 'false');
+    button.textContent = code;
+    button.addEventListener('click', () => {
+      applyFilters({ state: code });
+    });
+    el.stateChips.appendChild(button);
+  }
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'data-toggle-chip chip-idle';
+  all.dataset.chipId = 'state:';
+  all.setAttribute('aria-pressed', 'false');
+  all.textContent = 'ALL';
+  all.addEventListener('click', () => applyFilters({ state: '' }));
+  el.stateChips.prepend(all);
+}
+
+/**
+ * Re-rank the state chips by the size of the market, and mark the current one.
+ *
+ * @param {Array<object>} rows the filtered rows
+ */
+function rankStateChips(rows) {
+  const counts = new Map();
+  for (const row of rows || []) {
+    const code = String(row.st || '').trim();
+    if (!code) continue;
+    counts.set(code, (counts.get(code) || 0) + 1);
+  }
+  const ordered = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const chips = [...el.stateChips.querySelectorAll('.data-toggle-chip')];
+  const wanted = String(state.filters.state || '').toUpperCase();
+  const ranked = [];
+  for (const chip of chips) {
+    const code = String(chip.dataset.chipId || '').replace(/^state:/, '');
+    if (!code) {
+      ranked.push(chip);
+      continue;
+    }
+    chip.title = `${code} — ${(counts.get(code) || 0).toLocaleString()} places in the market`;
+    ranked.push(chip);
+  }
+  const market = ordered.slice(0, 12).map(([code]) => code);
+  const byCode = new Map(
+    ranked
+      .filter((chip) => chip.dataset.chipId !== 'state:')
+      .map((chip) => [
+        String(chip.dataset.chipId || '').replace(/^state:/, ''),
+        chip,
+      ]),
+  );
+  const all = ranked.find((chip) => chip.dataset.chipId === 'state:');
+  const next = [];
+  if (all) next.push(all);
+  for (const code of market) {
+    const chip = byCode.get(code);
+    if (chip) next.push(chip);
+  }
+  // Any state that is not in the top twelve but IS the current one keeps its
+  // chip, so a link to it does not lose the control.
+  if (wanted && !market.includes(wanted) && byCode.has(wanted)) {
+    next.push(byCode.get(wanted));
+  }
+  for (const chip of ranked) {
+    if (!next.includes(chip) && chip !== all) next.push(chip);
+  }
+  el.stateChips.replaceChildren(...next);
+  syncStateChips();
+}
+
+function syncStateChips() {
+  const wanted = String(state.filters.state || '').toUpperCase();
+  for (const chip of el.stateChips.querySelectorAll('.data-toggle-chip')) {
+    const code = String(chip.dataset.chipId || '').replace(/^state:/, '');
+    const on = code === wanted;
+    chip.classList.toggle('chip-active', on);
+    chip.classList.toggle('chip-idle', !on);
+    chip.setAttribute('aria-pressed', String(on));
   }
 }
 
