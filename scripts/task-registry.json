@@ -508,6 +508,31 @@
         "apps/hail-desk/src/main.js"
       ],
       "gate": "the street list says how many addresses were under the hail, and it is not zero"
+    },
+    {
+      "id": "D2.1",
+      "title": "the lead list: the storm list can show the days the radar reached and nobody called the hail in",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "src/data/layerState.js",
+        "apps/hail-desk/src/state.js",
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/index.html",
+        "apps/hail-desk/styles.css"
+      ],
+      "gate": "the PROSPECT scope shows 114 Colorado days and 1,141,661 houses in reach with no reports at all"
+    },
+    {
+      "id": "D2.2",
+      "title": "the map has a scale bar, a zoom readout, and a keyboard",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/map/map.js",
+        "apps/hail-desk/index.html"
+      ],
+      "gate": "a round number of metres between 60 and 140 pixels, the zoom beside it, and the arrow keys pan and the plus and minus zoom"
     }
   ]
 }

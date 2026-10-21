@@ -558,6 +558,17 @@ const OPTION_GROUPS = Object.freeze({
       },
     ),
     enumOption('ddir', 'E', 'desc', ['asc', 'desc'], { asc: 'a', desc: 'd' }),
+    // WHICH SPINE the storm list shows: every day, the days somebody called
+    // in, or the days the radar reached and NOBODY DID.
+    //
+    // The third one is the lead list, and it is the list the product is
+    // actually for: the hail fell, and the only people who know are the
+    // people who did not call it in.
+    enumOption('dscope', 'F', 'all', ['all', 'reported', 'prospect'], {
+      all: 'a',
+      reported: 'r',
+      prospect: 'p',
+    }),
     enumOption(
       'sort',
       'o',

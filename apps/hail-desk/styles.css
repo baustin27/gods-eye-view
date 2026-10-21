@@ -548,6 +548,38 @@ button.secondary {
   gap: 4px;
 }
 
+/*
+ * THE SCOPE CHIPS: every day, the days somebody called in, the days nobody
+ * did.
+ */
+.scope-chips {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.scope-chip {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--ink-dim);
+  font: 10px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.scope-chip:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
+.scope-chip.active {
+  color: #fff;
+  background: rgba(109, 40, 217, 0.85);
+  border-color: #c026d3;
+}
+
 .frame-chip {
   padding: 3px 7px;
   border: 1px solid var(--line);

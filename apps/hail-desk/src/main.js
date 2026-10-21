@@ -144,6 +144,7 @@ const el = {
   mapInfo: document.getElementById('mapInfo'),
   dayChips: document.getElementById('dayChips'),
   frameChips: document.getElementById('frameChips'),
+  scopeChips: document.getElementById('scopeChips'),
   dotsToggle: document.getElementById('dotsToggle'),
   tableWrap: document.getElementById('tableWrap'),
   loading: document.getElementById('loading'),
@@ -195,6 +196,7 @@ function renderMarketView() {
     state.view === 'city' ? onCityClick : null,
   );
   el.summary.textContent = summarise(state.rows, state.filters, state.view);
+  el.scopeChips.hidden = true;
   el.ranked.hidden = false;
   renderRankedList();
   rankStateChips(state.rows);
@@ -225,6 +227,10 @@ function renderStormView() {
     onStormDayClick,
   );
   el.summary.textContent = stormSummary(rows);
+  // The scope chips are the storm list's own filter, so they are only
+  // meaningful in the storm view.
+  el.scopeChips.hidden = false;
+  renderScopeChips();
   // The ranked list is the market's list of towns; in the storm view the
   // list beside the map is the list of DAYS, and the days are the table.
   el.ranked.hidden = true;
@@ -271,7 +277,7 @@ function stormDays() {
       }),
     };
   }
-  const { fromYear, toYear } = state.filters;
+  const { fromYear, toYear, minHailTenths, dscope } = state.filters;
   return stormDayCache.rows.filter((row) => {
     // The YEAR, not the whole date: '2025-01-18' <= '2025' is FALSE as
     // strings, so comparing the whole date against a bare year silently
@@ -279,8 +285,57 @@ function stormDays() {
     const year = row.date.slice(0, 4);
     if (fromYear && year < String(fromYear)) return false;
     if (toYear && year > String(toYear)) return false;
+    // THE SPINE. 'prospect' is the days the radar reached and nobody called
+    // the hail in, which is the list the product is for.
+    if (dscope === 'prospect' && row.kind !== 'radar') return false;
+    if (dscope === 'reported' && row.kind === 'radar') return false;
+    // The hail that counts. The same control the market table uses, because
+    // it means the same thing there: an inch is cosmetic damage, an inch and
+    // a half is a repair.
+    const floor = (Number(minHailTenths) || 0) / 10;
+    if (floor > 0) {
+      const largest = row.largest === null || row.largest === undefined
+        ? null
+        : row.largest;
+      if (largest === null || largest + 1e-9 < floor) return false;
+    }
     return true;
   });
+}
+
+/**
+ * The scope chips: every day, the days somebody called in, the days nobody
+ * did.
+ */
+function renderScopeChips() {
+  el.scopeChips.replaceChildren();
+  const scopes = [
+    { key: 'all', label: 'ALL', title: 'Every storm day: the reports and the radar.' },
+    {
+      key: 'reported',
+      label: 'REPORTED',
+      title: 'The days somebody measured a stone inside a town.',
+    },
+    {
+      key: 'prospect',
+      label: 'PROSPECT',
+      title:
+        'The days the radar reached and nobody called the hail in. The hail ' +
+        'fell, and the only people who know are the people who did not call ' +
+        'it in. This is the lead list.',
+    },
+  ];
+  for (const scope of scopes) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'scope-chip';
+    if ((state.filters.dscope || 'all') === scope.key) button.classList.add('active');
+    button.textContent = scope.label;
+    button.title = scope.title;
+    button.setAttribute('aria-pressed', String((state.filters.dscope || 'all') === scope.key));
+    button.addEventListener('click', () => applyFilters({ dscope: scope.key }));
+    el.scopeChips.appendChild(button);
+  }
 }
 
 /** The one line that says what the list holds. */

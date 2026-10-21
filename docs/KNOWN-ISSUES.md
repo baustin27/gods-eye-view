@@ -167,6 +167,49 @@ Validation target:
 
 ---
 
+### The simplified tract file drops small urban tracts, so a rural county has almost none
+Status: Open (by design, and it matters)
+
+Context:
+- The 500k cartographic boundary file keeps the LARGEST tracts in a county and
+  drops the small ones. The counts in the committed pack are stark: Denver
+  County has 178 tracts and Bent County, Colorado, has **2**. A storm over a
+  rural county therefore draws a choropleth with almost no houses on it, and
+  the map says nothing about why.
+- This is the opposite of the usual error. The urban counties - the ones with
+  the people in them - are the ones the file keeps, so the places where the
+  choropleth is wrong are the places with the fewest houses. It is still
+  wrong, and the desk's house count for a day comes from the swaths artifact
+  rather than from these rings, so the LIST is not affected.
+- The fix is the 500k file's own successor (the 5m or 20m cartographic
+  boundary file), which is an order of magnitude larger.
+
+Validation target:
+- `server/providers/deskTracts.js`
+- `src/data/local_data/us_census_tracts/tracts.json`
+
+---
+
+### The desk's map draws ONE county's streets and tracts
+Status: Open (by design)
+
+Context:
+- The street and tract tiles are a county's, so the desk's map draws the
+  county the selected storm fell in - the one with the most houses under the
+  hail - and nothing else. Panning off that county shows the imagery and the
+  swath, and no streets.
+- The county is not a zoom level: at any zoom the map draws the same
+  county's streets, so a person who pans to the next county sees no roads at
+  all and no message saying why.
+- The county's data is fetched from the Census on demand and cached, so the
+  first request for a county takes a download and the rest are instant.
+
+Validation target:
+- `apps/hail-desk/src/main.js` (the map's `scope`)
+- `server/providers/tigerStreets.js`
+
+---
+
 ## Closed / Intentional (for clarity)
 
 ### Proxy SSRF and error-surface hardening gaps

@@ -95,7 +95,12 @@
         Mercator the street tiles are cut in.
       -->
       <section class="map-pane" id="mapPane" aria-label="Map of the filtered market">
-        <canvas id="mapCanvas" role="img" aria-label="The filtered places on a map"></canvas>
+        <canvas
+          id="mapCanvas"
+          role="img"
+          tabindex="0"
+          aria-label="The map. Arrow keys pan, plus and minus zoom."
+        ></canvas>
         <!--
           THE RECENT DAYS, as chips over the map. The globe's pattern: the
           open leads are the recent storms, and the ones before them are
@@ -133,6 +138,12 @@
       </section>
 
       <div class="list-pane">
+        <!--
+          THE SPOPE CHIPS: every storm day, the days somebody called in, and
+          the days nobody did. The third is the lead list - the hail fell and
+          the only people who know are the people who did not call it in.
+        -->
+        <div class="scope-chips" id="scopeChips" role="group" aria-label="Which storms the list holds" hidden></div>
         <p class="summary" id="summary" role="status" aria-live="polite"></p>
         <ol class="data-row-list" id="ranked" aria-label="Worst places"></ol>
 

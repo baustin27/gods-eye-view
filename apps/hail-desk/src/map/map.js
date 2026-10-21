@@ -127,6 +127,7 @@ export function createMapPane(options) {
       }
       drawPlaces();
       drawAttribution();
+      drawScaleBar();
     } finally {
       drawing = false;
     }
@@ -168,6 +169,75 @@ export function createMapPane(options) {
       ctx.lineWidth = 1;
       ctx.stroke();
     }
+  }
+
+  /**
+   * THE SCALE BAR, and the zoom.
+   *
+   * A map with no scale is a picture. The bar is a round number of metres -
+   * 10, 25, 50, 100, 200, 500, 1, 2, 5, 10, 25, 50, 100 km - chosen so it is
+   * between sixty and a hundred and forty pixels wide, because a bar of
+   * nine pixels cannot be read and a bar of nine hundred covers the map.
+   *
+   * The metres per pixel are taken at the CENTRE's latitude, because the
+   * scale of a Mercator map is the scale at its middle: at the top of the
+   * frame it is a different number, and a bar that is right in the middle
+   * and wrong at the edges is a bar nobody can trust.
+   */
+  function drawScaleBar() {
+    const lat = viewport.centre.lat;
+    const metresPerPixel =
+      (156543.03392 * Math.cos((lat * Math.PI) / 180)) / 2 ** viewport.zoom;
+    if (!Number.isFinite(metresPerPixel) || metresPerPixel <= 0) return;
+    const steps = [
+      10, 25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 25000, 50000,
+      100000, 250000, 500000, 1000000,
+    ];
+    let metres = steps[0];
+    for (const step of steps) {
+      if (step / metresPerPixel <= 140) metres = step;
+    }
+    const pixels = metres / metresPerPixel;
+    const label =
+      metres >= 1000 ? `${(metres / 1000).toLocaleString()} km` : `${metres} m`;
+    const x = viewport.width - 16 - pixels;
+    // ABOVE the attribution, not on it. The attribution is the service's
+    // credit and it is long, and a scale bar drawn across it is a scale bar
+    // nobody can read.
+    const y = viewport.height - 48;
+    ctx.strokeStyle = 'rgba(10, 14, 19, 0.9)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + pixels, y);
+    ctx.moveTo(x, y - 4);
+    ctx.lineTo(x, y + 4);
+    ctx.moveTo(x + pixels, y - 4);
+    ctx.lineTo(x + pixels, y + 4);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(220, 230, 240, 0.9)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + pixels, y);
+    ctx.moveTo(x, y - 4);
+    ctx.lineTo(x, y + 4);
+    ctx.moveTo(x + pixels, y - 4);
+    ctx.lineTo(x + pixels, y + 4);
+    ctx.stroke();
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(10, 14, 19, 0.9)';
+    const textWidth = ctx.measureText(label).width;
+    ctx.fillRect(x + pixels / 2 - textWidth / 2 - 3, y - 17, textWidth + 6, 13);
+    ctx.fillStyle = 'rgba(220, 230, 240, 0.95)';
+    ctx.fillText(label, x + pixels / 2, y - 6);
+    // The zoom, beside the scale: the number a person compares with the
+    // others.
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(220, 230, 240, 0.8)';
+    ctx.fillText(`Z${viewport.zoom}`, viewport.width - 8, y - 6);
+    ctx.textAlign = 'left';
   }
 
   /**
@@ -236,6 +306,53 @@ export function createMapPane(options) {
     viewport = panBy(viewport, dx, dy);
     scheduleDraw();
   });
+  // THE KEYBOARD. The map is a picture with no keyboard, and a picture with
+  // no keyboard is a picture a person cannot read alone.
+  canvas.addEventListener('keydown', (event) => {
+    const step = 90;
+    let handled = true;
+    switch (event.key) {
+      case 'ArrowLeft':
+        viewport = panBy(viewport, -step, 0);
+        break;
+      case 'ArrowRight':
+        viewport = panBy(viewport, step, 0);
+        break;
+      case 'ArrowUp':
+        viewport = panBy(viewport, 0, -step);
+        break;
+      case 'ArrowDown':
+        viewport = panBy(viewport, 0, step);
+        break;
+      case '+':
+      case '=':
+        zoomAroundAtCentre(1);
+        break;
+      case '-':
+      case '_':
+        zoomAroundAtCentre(-1);
+        break;
+      default:
+        handled = false;
+    }
+    if (handled) {
+      event.preventDefault();
+      scheduleDraw();
+    }
+  });
+
+  /**
+   * Zoom one level, about the middle of the frame.
+   *
+   * @param {number} levels
+   */
+  function zoomAroundAtCentre(levels) {
+    const next = clampZoom(viewport.zoom + levels);
+    if (next === viewport.zoom) return;
+    viewport = { ...viewport, zoom: next };
+    zoomTarget = next;
+  }
+
   canvas.addEventListener('pointercancel', () => {
     // A drag that is cancelled - a second finger, a system gesture - must
     // LET GO, or the map stays latched to the pointer.
