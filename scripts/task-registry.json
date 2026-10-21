@@ -492,7 +492,7 @@
       "id": "D1.11",
       "title": "clicking a day opens its tracts: the work list, with the houses under the hail and a way through to the streets",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "4a1fe5b4",
       "files": [
         "apps/hail-desk/src/main.js",
         "apps/hail-desk/src/data.js"
@@ -503,7 +503,7 @@
       "id": "D1.12",
       "title": "the street list is given the RADAR day, because the field for a report day is named the day after",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "4a1fe5b4",
       "files": [
         "apps/hail-desk/src/main.js"
       ],
