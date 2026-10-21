@@ -538,7 +538,7 @@
       "id": "D2.3",
       "title": "the desk opens on a storm: the most recent day the radar reached, in the URL, with the row marked in the list",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "ac63fcab",
       "files": [
         "apps/hail-desk/src/main.js",
         "apps/hail-desk/src/table.js",
