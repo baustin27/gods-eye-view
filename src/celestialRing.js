@@ -104,7 +104,7 @@ export function getKeyholeGeometry(width, height) {
   const w = Number(width);
   const h = Number(height);
   if (!(w > 0) || !(h > 0)) {
-    return { centerX: 0, centerY: 0, radius: 0, featherPx: 0 };
+    return { centerX: 0, centerY: 0, radius: 0, featherPx: 0, frameRadius: 0 };
   }
   const radius = h * 0.5 * KEYHOLE_OUTER_RADIUS;
   return {
@@ -112,6 +112,11 @@ export function getKeyholeGeometry(width, height) {
     centerY: h * 0.5,
     radius,
     featherPx: radius * keyholeFadeRatio,
+    // The distance from the centre to the CORNER of the viewport. The porthole
+    // is a circle inscribed in the frame, so its radius is the SHORT side; the
+    // frame is the whole picture, and the ring and the full-globe test have to
+    // be measured against it now that the porthole is gone.
+    frameRadius: Math.hypot(w * 0.5, h * 0.5),
   };
 }
 
@@ -220,6 +225,7 @@ export function isFullGlobeInsideKeyhole(geometry, wasVisible = false) {
     keyholeCenterX,
     keyholeCenterY,
     keyholeRadius,
+    frameRadius,
   } = geometry || {};
   const values = [
     earthCenterX,
@@ -235,7 +241,12 @@ export function isFullGlobeInsideKeyhole(geometry, wasVisible = false) {
     earthCenterX - keyholeCenterX,
     earthCenterY - keyholeCenterY,
   );
-  const clearance = keyholeRadius - (offset + earthRadius);
+  // The test is against the FRAME, not the porthole. The porthole is a circle
+  // inscribed in the viewport, so a globe that fits inside it is not the same
+  // as a globe that fits inside the picture - and the picture is what the
+  // person is looking at now that the porthole is gone.
+  const limit = Number.isFinite(frameRadius) ? frameRadius : keyholeRadius;
+  const clearance = limit - (offset + earthRadius);
   return (
     clearance >=
     (wasVisible ? GLOBE_EXIT_CLEARANCE_PX : GLOBE_ENTER_CLEARANCE_PX)
@@ -318,6 +329,7 @@ export function projectEarthDiscToViewport(
     keyholeCenterX: keyhole.centerX,
     keyholeCenterY: keyhole.centerY,
     keyholeRadius: keyhole.radius,
+    frameRadius: keyhole.frameRadius,
   };
 }
 
@@ -806,7 +818,18 @@ export class CelestialRing {
 
     const cx = width * 0.5;
     const cy = height * 0.5;
-    const radius = disc.keyholeRadius - RING_INSET_PX;
+    // The ring goes AROUND THE GLOBE, not around the porthole. It used to be
+    // the porthole's radius less an inset, which drew a circle in the black
+    // surround with the globe inside it - correct for a keyhole, and wrong for
+    // a full-bleed map. It is now just outside the globe, and never off the
+    // frame.
+    const frameLimit = Number.isFinite(disc.frameRadius)
+      ? disc.frameRadius - RING_INSET_PX
+      : disc.keyholeRadius - RING_INSET_PX;
+    const radius = Math.min(
+      frameLimit,
+      disc.earthRadius + Math.max(38, disc.earthRadius * 0.12),
+    );
     const rayInnerRadius = Math.min(
       radius - 12,
       disc.earthRadius + Math.max(38, radius * 0.065),

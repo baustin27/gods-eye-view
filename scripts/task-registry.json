@@ -116,42 +116,46 @@
     {
       "id": "B1.9",
       "title": "the celestial ring must hug the globe rather than the porthole",
-      "status": "open",
+      "status": "done",
       "files": [
         "src/celestialRing.js"
       ],
-      "gate": "the ring is around the globe at every viewport size"
+      "gate": "the ring is around the globe at every viewport size",
+      "commit": "9a1c2b3d"
     },
     {
       "id": "B1.10",
       "title": "the stylesheet still carries the scope mask and the cockpit clip-path",
-      "status": "open",
+      "status": "done",
       "files": [
         "src/ui/styles/foundation.css"
       ],
-      "gate": "nothing in the stylesheet assumes a porthole"
+      "gate": "nothing in the stylesheet assumes a porthole",
+      "commit": "9a1c2b3d"
     },
     {
       "id": "B1.11",
       "title": "the HUD becomes one telemetry strip, because the Cyber sonar and the cockpit layout depend on it",
-      "status": "open",
+      "status": "done",
       "files": [
         "src/hud.js",
         "src/ui/styles/overlays.css"
       ],
-      "gate": "the map is not covered by a HUD"
+      "gate": "the map is not covered by a HUD",
+      "commit": "9a1c2b3d"
     },
     {
       "id": "B1.12",
       "title": "the rails collapse around the HUD's corner readouts, which are going away",
-      "status": "open",
+      "status": "done",
       "files": [
         "src/ui/panelChrome.js",
         "src/ui/panelLayoutController.js",
         "src/ui/leftPanelRail.js",
         "src/ui/rightPanelRail.js"
       ],
-      "gate": "the panels do not collapse when the HUD is not there"
+      "gate": "the panels do not collapse when the HUD is not there",
+      "commit": "9a1c2b3d"
     },
     {
       "id": "B2.1",

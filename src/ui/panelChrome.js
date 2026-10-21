@@ -67,7 +67,11 @@ export class PanelChrome {
     });
     this._panelLayout = new PanelLayoutController({
       readHud: () => ({
-        visible: this.hud.visible,
+        // The HUD's corner readouts are HIDDEN now - the cockpit chrome is
+        // gone and the HUD is a telemetry strip - so the rails must not make
+        // room for them. The cockpit view has its own layout path, and the
+        // Cyber sonar reads the HUD's own state, so neither is affected.
+        visible: false,
         variant: this.hud.getVariant(),
       }),
       scheduleCockpitLayout: () => this.cockpitView?.scheduleContextLayout(),

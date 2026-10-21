@@ -96,6 +96,33 @@
 }
 
 /* ── Intelligence HUD Overlay ────────────────── */
+/*
+ * THE HUD IS A TELEMETRY STRIP, NOT A COCKPIT.
+ *
+ * The corner readouts, the classification bar, the REC dot and the edge
+ * labels are the cockpit aesthetic, and the cockpit aesthetic is what the
+ * map is not: it is a circular porthole in a black surround with 8 pixel
+ * type around it, and it was eating more than half the screen.
+ *
+ * What survives is the bottom-left telemetry line - MGRS, lat/lon, altitude,
+ * ground sample distance - because that is a READING of the camera and it
+ * belongs on the picture.
+ *
+ * The elements are still in the DOM. The Cyber sonar gates on
+ * `#intel-hud.active` and the cockpit layout anchors on `.hud-top-right`, so
+ * removing them from the tree would break two features that are not the
+ * cockpit's. Hiding them costs nothing and breaks nothing.
+ */
+#intel-hud .hud-top-left,
+#intel-hud .hud-top-right,
+#intel-hud .hud-bottom-right,
+#intel-hud .hud-top-bar,
+#intel-hud .hud-bottom-bar,
+#intel-hud .hud-left-edge,
+#intel-hud .hud-right-edge {
+  display: none;
+}
+
 #intel-hud {
   position: fixed;
   inset: 0;
