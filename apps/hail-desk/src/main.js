@@ -38,6 +38,7 @@ import {
 } from './table.js';
 import { csvFilename, downloadCsv, toCsv } from './csv.js';
 import { createMapPane } from './map/map.js';
+import { loadSwathBands } from './map/swath.js';
 
 const CITY_DATA_URL = `${import.meta.env.BASE_URL}data/cities.json.gz`;
 const COUNTY_DATA_URL = `${import.meta.env.BASE_URL}data/counties.json.gz`;
@@ -53,6 +54,9 @@ const state = {
   countyRows: [],
   swathIndex: null,
   femaIndex: null,
+  // The day whose swath the map is showing. It is set when a place is opened -
+  // to its biggest storm - and when a storm day is picked.
+  mapDay: null,
 };
 
 const CSV_COLUMNS = {
@@ -208,6 +212,7 @@ function createTheMap() {
   mapPane = createMapPane({
     canvas: el.mapCanvas,
     places: () => state.rows,
+    swath: () => (state.mapBands || []).slice(),
     scope: () => {
       // The street tiles are a county's, and the county comes from the state
       // the market is in. A market that spans states has no single county, and
@@ -352,7 +357,7 @@ function renderDrill() {
   el.detail.scrollIntoView({ block: 'nearest' });
 }
 
-function onCityClick(row) {
+async function onCityClick(row) {
   const reported = cityStorms(state.cityIndex, row.id, state.filters);
   const radar = radarDays(state.swathIndex, row.id, state.filters);
   // The union of the two. A day the radar reached but nobody reported is not
@@ -371,6 +376,16 @@ function onCityClick(row) {
       b.max - a.max ||
       a.d.localeCompare(b.d),
   );
+  // The map shows the biggest storm in this place, because a map with no
+  // swath on it when there is hail to look at is a map of nothing.
+  const biggest = storms[0];
+  state.mapDay = biggest ? biggest.d : null;
+  state.mapBands = state.mapDay
+    ? await loadSwathBands(state.mapDay)
+    : [];
+  // And the map is told. Without this the bands are loaded and nothing
+  // redraws, so the map carries on showing the ground.
+  drawMap();
   pushDrill({
     title: `${row.full || row.name}, ${row.st || ''}`,
     render: (panel) => {
@@ -437,6 +452,23 @@ function onCityClick(row) {
   const body = document.createElement('tbody');
   for (const storm of storms) {
     const tr = document.createElement('tr');
+    // A storm day can be put on the map by clicking it, which is the fastest
+    // way to see where that day's hail actually fell.
+    tr.className = 'clickable';
+    tr.tabIndex = 0;
+    tr.title = 'Show this storm on the map';
+    const showThisStorm = async () => {
+      state.mapDay = storm.d;
+      state.mapBands = await loadSwathBands(storm.d);
+      drawMap();
+    };
+    tr.addEventListener('click', showThisStorm);
+    tr.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        void showThisStorm();
+      }
+    });
     const swath = storm.swath;
     const values = [
       storm.d,

@@ -101,32 +101,37 @@ export function createBasemap({ ImageImpl = globalThis.Image, onTile } = {}) {
   /**
    * Draw the basemap under everything else.
    *
+   * SYNCHRONOUS, and that is the whole point of it: the cached tiles are
+   * drawn immediately and the missing ones are fetched in the background, so
+   * the frame on screen never goes blank.
+   *
    * @param {CanvasRenderingContext2D} ctx
    * @param {object} viewport
    @param {import('./viewport.js').visibleTiles} tiles
    */
-  async function draw(ctx, viewport, tiles) {
+  function draw(ctx, viewport, tiles) {
     const size = 256;
     for (const tile of tiles) {
       const key = `${tile.z}/${tile.x}/${tile.y}`;
-      let image = cache.get(key);
+      const image = cache.get(key);
       if (!image) {
+        // Start the fetch and CARRY ON. The tile arrives later and asks for a
+        // redraw. Awaiting it here meant the canvas was cleared and left
+        // BLANK until the network came back, so every pan emptied the map and
+        // refilled it a moment later, and dragging felt like dragging a hole.
         if (!pending.has(key)) {
           pending.set(
             key,
             loadBasemapTile(tile, { ImageImpl }).then((loaded) => {
               if (loaded) cache.set(key, loaded);
               pending.delete(key);
-              // A tile that has just arrived is a reason to draw again, or the
-              // map sits there half empty until something else moves it.
               if (loaded) onTile?.();
               return loaded;
             }),
           );
         }
-        image = await pending.get(key);
+        continue;
       }
-      if (!image) continue;
       const origin = viewportPixel(tile, viewport, size);
       ctx.drawImage(image, origin.x, origin.y, size, size);
     }

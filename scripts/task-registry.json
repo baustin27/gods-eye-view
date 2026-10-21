@@ -340,6 +340,31 @@
         "apps/hail-desk/styles.css"
       ],
       "gate": "a keystroke settles the table in about a hundred and fifty milliseconds"
+    },
+    {
+      "id": "B5.4",
+      "title": "the map stops blanking while it pans, and the redraws are coalesced into one frame",
+      "status": "done",
+      "commit": "3c7d1e90",
+      "files": [
+        "apps/hail-desk/src/map/basemap.js",
+        "apps/hail-desk/src/map/streets.js",
+        "apps/hail-desk/src/map/map.js"
+      ],
+      "gate": "the canvas is still painted immediately after a drag, and a keystroke does not queue a hundred draws"
+    },
+    {
+      "id": "B5.5",
+      "title": "the desk's map shows the storm swath",
+      "status": "done",
+      "commit": "3c7d1e90",
+      "files": [
+        "apps/hail-desk/src/map/swath.js",
+        "apps/hail-desk/src/main.js",
+        "server/providers/deskApi.js",
+        "server/desk/server.mjs"
+      ],
+      "gate": "the swath of the day on the map, drawn with the same bands as the artifact"
     }
   ]
 }

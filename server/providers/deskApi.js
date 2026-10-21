@@ -18,8 +18,19 @@
  * the dev server runs.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { streetsPayload } from './hailStreets.js';
 import { streetTile } from './deskTiles.js';
+
+const REPO = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+);
+const STORM_DIR = path.join(REPO, 'src/data/local_data/storm');
 
 /**
  * The desk's API routes, as a map of path to handler.
@@ -66,6 +77,31 @@ const STREET_TILE_PATH =
  *   one of the desk's
  */
 export async function runDeskApi(url) {
+  // The day's fine 1 km field, so the desk's map can draw the swath.
+  //
+  // It is a COMMITTED artifact and it is gzipped, and the browser cannot reach
+  // it: the desk is a separate build and the storm payloads live in the
+  // shared core's tree, not in the desk's public folder. So the server
+  // streams it, the way it streams the street tiles.
+  const storm = /^\/api\/desk\/storm\/(\d{4}-\d{2}-\d{2})\.bin\.gz$/.exec(
+    url.pathname,
+  );
+  if (storm) {
+    const file = path.join(
+      STORM_DIR,
+      `storm_radar_hail_fine_${storm[1]}.bin.gz`,
+    );
+    if (!fs.existsSync(file)) {
+      return { status: 404, body: { error: `no field for ${storm[1]}` } };
+    }
+    return {
+      status: 200,
+      bytes: new Uint8Array(fs.readFileSync(file)),
+      contentType: 'application/gzip',
+      count: 1,
+    };
+  }
+
   const tileMatch = STREET_TILE_PATH.exec(url.pathname);
   if (tileMatch) {
     const [, state, county, z, x, y] = tileMatch;

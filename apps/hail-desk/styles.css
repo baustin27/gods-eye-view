@@ -403,6 +403,13 @@ button.secondary {
  * A hidden dropdown is a state nobody can reach, and Colorado is not in the
  * top twelve on hail alone.
  */
+.state-menu[hidden] {
+  /* The `hidden` attribute sets `display: none`, and a `display: flex` rule on
+     the same element BEATS it - so a hidden menu still took up the space of a
+     row. The rule has to be explicit. */
+  display: none;
+}
+
 .state-menu {
   /* It OVERLAYS. Opening a list of states should not push the map down the
      page - the map is what the person is looking at. */

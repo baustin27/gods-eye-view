@@ -75,17 +75,22 @@ export async function loadStreetTile(
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl]
  */
-export function createStreetPainter({ fetchImpl = globalThis.fetch } = {}) {
+export function createStreetPainter({
+  fetchImpl = globalThis.fetch,
+  onTile,
+} = {}) {
   const cache = createStreetCache();
   const pending = new Map();
 
   /**
    * Draw the streets, once they are in.
    *
+   * SYNCHRONOUS, for the same reason the basemap is.
+   *
    * @param {CanvasRenderingContext2D} ctx
    @param {object} viewport
    */
-  async function draw(ctx, viewport, tiles, options = {}) {
+  function draw(ctx, viewport, tiles, options = {}) {
     const { state, county } = options;
     const scale = TILE_SIZE / GEVS_EXTENT;
     ctx.lineWidth = options.lineWidth ?? 1;
@@ -94,8 +99,10 @@ export function createStreetPainter({ fetchImpl = globalThis.fetch } = {}) {
     ctx.lineJoin = 'round';
     for (const tile of tiles) {
       const key = `${tile.z}/${tile.x}/${tile.y}`;
-      let lines = cache.get(key);
+      const lines = cache.get(key);
       if (!lines) {
+        // The same rule as the basemap: fetch in the background, draw what is
+        // here. Awaiting the tiles emptied the map on every pan.
         if (!pending.has(key)) {
           pending.set(
             key,
@@ -103,6 +110,7 @@ export function createStreetPainter({ fetchImpl = globalThis.fetch } = {}) {
               .then((loaded) => {
                 cache.set(key, loaded);
                 pending.delete(key);
+                if (loaded) onTile?.();
                 return loaded;
               })
               .catch(() => {
@@ -111,9 +119,9 @@ export function createStreetPainter({ fetchImpl = globalThis.fetch } = {}) {
               }),
           );
         }
-        lines = await pending.get(key);
+        continue;
       }
-      if (!lines || !lines.length) continue;
+      if (!lines.length) continue;
       const origin = viewportPixel(tile, viewport, TILE_SIZE);
       ctx.beginPath();
       for (const line of lines) {

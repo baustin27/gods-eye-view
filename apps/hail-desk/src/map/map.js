@@ -31,6 +31,7 @@ import {
 } from './viewport.js';
 import { createBasemap, ESRI_ATTRIBUTION } from './basemap.js';
 import { createStreetPainter } from './streets.js';
+import { createSwathPainter } from './swath.js';
 
 /**
  * The map pane.
@@ -48,8 +49,17 @@ export function createMapPane(options) {
   const ctx = canvas.getContext('2d');
   // The basemap asks for a redraw when a tile arrives, so the map fills in
   // rather than sitting half empty.
-  const basemap = createBasemap({ onTile: () => void draw() });
-  const streets = createStreetPainter();
+  // The redraw is COALESCED into one animation frame.
+  //
+  // A pointermove fires sixty times a second and a redraw is not free, so
+  // every move used to queue another full draw and the queue ran away from
+  // the pointer. One frame is all a person can see anyway.
+  let frame = null;
+  let drawing = false;
+
+  const basemap = createBasemap({ onTile: () => scheduleDraw() });
+  const streets = createStreetPainter({ onTile: () => scheduleDraw() });
+  const swath = createSwathPainter();
   let viewport = options.viewport || createViewport();
   let dragging = null;
   let moved = 0;
@@ -65,27 +75,50 @@ export function createMapPane(options) {
 
   /**
    * Draw everything.
+   *
+   * SYNCHRONOUS, because the tiles draw what is cached and fetch the rest in
+   * the background. An awaited draw left the canvas blank between the clear
+   * and the tiles arriving, which is what made the map feel broken.
    */
-  async function draw() {
-    const ratio = Math.max(1, globalThis.devicePixelRatio || 1);
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.clearRect(0, 0, viewport.width, viewport.height);
-    ctx.fillStyle = '#05080b';
-    ctx.fillRect(0, 0, viewport.width, viewport.height);
+  function draw() {
+    if (drawing) return;
+    drawing = true;
+    try {
+      const ratio = Math.max(1, globalThis.devicePixelRatio || 1);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, viewport.width, viewport.height);
+      ctx.fillStyle = '#05080b';
+      ctx.fillRect(0, 0, viewport.width, viewport.height);
 
-    const tiles = visibleTiles(viewport);
-    await basemap.draw(ctx, viewport, tiles);
+      const tiles = visibleTiles(viewport);
+      basemap.draw(ctx, viewport, tiles);
 
-    const scope = options.scope?.() || {};
-    if (scope.state && scope.county) {
-      await streets.draw(ctx, viewport, tiles, {
-        state: scope.state,
-        county: scope.county,
-      });
+      const scope = options.scope?.() || {};
+      if (scope.state && scope.county) {
+        streets.draw(ctx, viewport, tiles, {
+          state: scope.state,
+          county: scope.county,
+        });
+      }
+
+      const bands = options.swath?.();
+      if (bands && bands.length) swath.draw(ctx, viewport, bands);
+      drawPlaces();
+      drawAttribution();
+    } finally {
+      drawing = false;
     }
+  }
 
-    drawPlaces();
-    drawAttribution();
+  /**
+   * Draw on the next frame, at most once.
+   */
+  function scheduleDraw() {
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      draw();
+    });
   }
 
   /**
@@ -159,7 +192,7 @@ export function createMapPane(options) {
     moved += Math.abs(dx) + Math.abs(dy);
     dragging = { x: event.offsetX, y: event.offsetY };
     viewport = panBy(viewport, dx, dy);
-    void draw();
+    scheduleDraw();
   });
   canvas.addEventListener('pointerup', (event) => {
     const wasDragging = dragging;
@@ -183,7 +216,7 @@ export function createMapPane(options) {
         event.offsetX,
         event.offsetY,
       );
-      void draw();
+      scheduleDraw();
     },
     { passive: false },
   );
@@ -194,6 +227,17 @@ export function createMapPane(options) {
   return {
     get viewport() {
       return viewport;
+    },
+    /**
+     * Load a day's swath and redraw with it.
+     *
+     * @param {string} day ISO
+     * @returns {Promise<Array<object>>} the bands
+     */
+    async showSwath(day) {
+      const bands = await swath.load(day);
+      scheduleDraw();
+      return bands;
     },
     /**
      * Fit the map to the places being shown.
