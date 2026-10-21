@@ -450,6 +450,32 @@ surprise.
 
 ---
 
+## 5b. The house count, apportioned (landed)
+
+The work list's number was the whole housing-unit count of every tract the
+radar touched. It is now the share of the tract the hail covered, times the
+units in it, with the market size beside it.
+
+- The estimator is the **corner-sample share**: the cell test already takes
+  five samples of every cell - its centre and its four corners - and the
+  samples that land in a tract are a measure of how much of that cell the
+  tract holds. A tract smaller than one radar cell is counted whole, because
+  a 1 km field cannot resolve it.
+- The denominator is the Census's own **ALAND**, now carried in the tracts
+  pack, because the houses are on the land and the ring carries the water.
+- The artifact publishes the raw units, the apportioned houses and the
+  share, and the desk leads with the claim and shows the market beside it.
+- It is **measured against the street-level path**, which is the ground
+  truth: for 8 July 2024 in El Paso County the tract path says 17 percent
+  of the units were under the hail and the street path says 21 percent of
+  the addresses. A test pins that.
+- The 500k boundary file was measured at the same time and is **not** the
+  problem: it drops no tracts and its median edge error is 42 m against a
+  1 km radar cell. The claim that it "drops small urban tracts" was wrong,
+  and `docs/KNOWN-ISSUES.md` says so.
+
+---
+
 ## 6. Two decisions I will make unless you say otherwise
 
 1. **The date list is built on REPORT days**, with the houses under the hail

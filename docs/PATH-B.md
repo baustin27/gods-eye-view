@@ -192,6 +192,26 @@ default, and a day is a link.
 `npm test` → **7,356 pass, 0 fail**. `npm run check:tasks` → 49 tasks, 0
 open.
 
+### The house count, apportioned
+
+The desk's "houses in reach" was the whole housing-unit count of every tract
+the 1 km radar field touched, which claims that a storm which clipped two and
+a half percent of a 1,248 square kilometre tract put hail over 2,805 roofs.
+It is now the share of the tract the field covered, times the units in it,
+and the market size is shown beside it as a separate number.
+
+The number is smaller, and the two paths agree on it: for 8 July 2024 in El
+Paso County the tract path says 17 percent of the units were under the hail
+and the independent street-level path says 21 percent of the addresses.
+Colorado's window went from 2,588,951 houses in reach to **970,872**.
+
+The 500k boundary file was measured against the authoritative TIGER/Line
+geometry while this was being worked out, and the answer was that it is not
+the problem: it drops no tracts (Colorado has 1,447 in both), and its median
+boundary error is 42 m against a 1 km radar cell. There is no finer file to
+move to - the Census discontinued the 20k scale - so the pack now carries the
+Census's own land area instead.
+
 ### Known open items
 
 - `swaths.json.gz` was **not** rebuilt for the tract list — the desk reuses

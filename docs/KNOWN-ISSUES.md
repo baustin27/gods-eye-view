@@ -167,26 +167,69 @@ Validation target:
 
 ---
 
-### The simplified tract file drops small urban tracts, so a rural county has almost none
-Status: Open (by design, and it matters)
+### The tract boundaries: what the 500k file keeps, and what it costs
+Status: Open (by design, and measured)
 
 Context:
-- The 500k cartographic boundary file keeps the LARGEST tracts in a county and
-  drops the small ones. The counts in the committed pack are stark: Denver
-  County has 178 tracts and Bent County, Colorado, has **2**. A storm over a
-  rural county therefore draws a choropleth with almost no houses on it, and
-  the map says nothing about why.
-- This is the opposite of the usual error. The urban counties - the ones with
-  the people in them - are the ones the file keeps, so the places where the
-  choropleth is wrong are the places with the fewest houses. It is still
-  wrong, and the desk's house count for a day comes from the swaths artifact
-  rather than from these rings, so the LIST is not affected.
-- The fix is the 500k file's own successor (the 5m or 20m cartographic
-  boundary file), which is an order of magnitude larger.
+- The 500k cartographic boundary file drops **no tracts**. Colorado has 1,447
+  in it and the authoritative TIGER/Line file has 1,447, and every county
+  matches. A small rural county having two tracts is a fact about the county,
+  not about the file: Bent County, Colorado, has two, and it has two in
+  TIGER/Line too.
+- The generalisation is real but small. Measured against TIGER/Line, Colorado's
+  boundaries are off by a **median of 42 m** and a median worst vertex of
+  6 m, against a radar cell that is a kilometre across. Three of the 1,447
+  tracts have a corner more than a kilometre out and the worst is 4.3 km, so
+  the shape of a few tracts is coarse.
+- There is no finer file to move to. The Census discontinued the 20k scale:
+  GENZ2025 publishes `cb_2025_us_tract_500k` and `cb_2025_us_tract_5m` and
+  nothing between them. The per-state TIGER/Line file
+  (`tl_2024_<state>_tract.zip`, 8 MB for Colorado) is unsimplified, and it is
+  a second source for geometry we already have.
+- The pack now carries the Census's own **ALAND**, the land area in square
+  metres, because the ring's own area is 8 percent high on a tenth of the
+  country's tracts - it carries the water the land area excludes, plus its
+  own simplification error.
 
 Validation target:
 - `server/providers/deskTracts.js`
 - `src/data/local_data/us_census_tracts/tracts.json`
+
+---
+
+### The house count is apportioned, and it is an estimate
+Status: Open (by design, and it is the number we lead with)
+
+Context:
+- "Houses in reach" is the share of each tract the 1 km field covered,
+  times the ACS housing units in it. It is not the whole tract, because the
+  hail did not fall on the whole tract: a storm that clipped two and a half
+  percent of a 1,248 square kilometre tract did not put hail over 2,805 roofs.
+- It is an estimate from a 1 km field, and the precise version of it is the
+  street list, which lays the same field over the TIGER ranges and counts
+  the addresses under it. The two paths are different arithmetic on different
+  data - ACS housing units against TIGER address ranges, and the ranges run
+  about six times high - so they are compared on a SHARE, and they agree:
+  for 8 July 2024 in El Paso County the tract path says 17 percent of the
+  units were under the hail and the street path says 21 percent of the
+  addresses. `server/providers/houseCountValidation.test.mjs` pins that.
+- A tract **smaller than one radar cell** is counted whole, because a 1 km
+  field cannot say whether it covered it or clipped its edge, and a number
+  that pretends to know is worse than the conservative one. 13 percent of
+  the country's tracts are under one cell.
+- The number is therefore much smaller than the one it replaced. Colorado's
+  window went from 2,588,951 houses in reach to 970,872, and the market
+  size - every housing unit in the tracts the hail touched - is still shown
+  beside it, because that is a true statement about the market and not a
+  claim about houses.
+- A tract the hail reached is a tract to work, and every house in it is a
+  candidate. The radar cannot say the hail fell on that particular roof, and
+  neither can anything else in public data.
+
+Validation target:
+- `src/data/tractHail.js`
+- `server/providers/houseCountValidation.test.mjs`
+- `scripts/validate-house-counts.mjs`
 
 ---
 

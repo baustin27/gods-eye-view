@@ -591,6 +591,84 @@
         "apps/hail-desk/src/map/tracts.js"
       ],
       "gate": "the streets are at full strength at street level and a faint wash at state level"
+    },
+    {
+      "id": "E1.1",
+      "title": "the tract pack carries the Census's own land area, so the share has an authoritative denominator",
+      "status": "open",
+      "commit": "",
+      "files": [
+        "scripts/build-admin-packs.mjs",
+        "src/data/local_data/us_census_tracts/tracts.json"
+      ],
+      "gate": "every tract in the pack carries ALAND, and the area it gives is the Census's, not a polygon we measured"
+    },
+    {
+      "id": "E1.2",
+      "title": "the share of a tract the hail covered: the corner samples the cell test already takes, divided by the tract's area",
+      "status": "open",
+      "commit": "",
+      "files": [
+        "src/data/tractHail.js",
+        "src/data/tractHail.test.mjs"
+      ],
+      "gate": "a tract wholly covered is 1, a tract the hail clipped at one corner is a fraction, and a tract smaller than one radar cell is either wholly under the hail or not in it at all"
+    },
+    {
+      "id": "E1.3",
+      "title": "the swaths artifact publishes the apportioned houses and the share beside the raw tract units",
+      "status": "open",
+      "commit": "",
+      "files": [
+        "scripts/build-hail-desk-swaths.mjs",
+        "apps/hail-desk/public/data/swaths.json.gz"
+      ],
+      "gate": "every row carries the raw units, the apportioned houses and the share, and the Colorado total falls from 1,895,161 to about 1,080,000"
+    },
+    {
+      "id": "E1.4",
+      "title": "the work list leads with the number the canvasser acts on: the tract row shows the houses under the hail and the share",
+      "status": "open",
+      "commit": "",
+      "files": [
+        "apps/hail-desk/src/main.js"
+      ],
+      "gate": "the tract drill-down shows the apportioned houses, the raw units and the share, so a rural tract claiming 2,805 houses shows the 71 it really has"
+    },
+    {
+      "id": "E1.5",
+      "title": "the storm list shows the apportioned houses, with the raw tract units beside it as the market size",
+      "status": "open",
+      "commit": "",
+      "files": [
+        "apps/hail-desk/src/storms.js",
+        "apps/hail-desk/src/table.js",
+        "apps/hail-desk/src/main.js"
+      ],
+      "gate": "the list leads with the apportioned number, the raw total is labelled as the market size, and the share is in the tooltip"
+    },
+    {
+      "id": "E1.6",
+      "title": "the tract number is measured against the street-level path, which is the ground truth, and pinned with a test",
+      "status": "open",
+      "commit": "",
+      "files": [
+        "src/tooling/houseCountValidation.test.mjs",
+        "server/providers/hailStreets.js"
+      ],
+      "gate": "the apportioned tract count and the street-level address count are compared for a known storm, and the gap is measured rather than asserted"
+    },
+    {
+      "id": "E1.7",
+      "title": "the boundary caveat is corrected: the 500k file drops no tracts, the median edge error is 42 m, and the count is apportioned",
+      "status": "open",
+      "commit": "",
+      "files": [
+        "docs/KNOWN-ISSUES.md",
+        "docs/PATH-B.md",
+        ".opencode/plans/DESK-REBUILD.md"
+      ],
+      "gate": "the docs say what was measured, including the claim that was wrong"
     }
   ]
 }
