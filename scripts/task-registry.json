@@ -564,7 +564,7 @@
       "id": "D2.5",
       "title": "the county the map draws is the county the storm fell in, IN THE STATE",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "09c32dca",
       "files": [
         "apps/hail-desk/src/data.js",
         "apps/hail-desk/src/main.js"
@@ -575,7 +575,7 @@
       "id": "D2.6",
       "title": "one download per county: the map asks for a dozen tiles of a county at once and they were fighting over one temp file",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "09c32dca",
       "files": [
         "server/providers/tigerStreets.js"
       ],
