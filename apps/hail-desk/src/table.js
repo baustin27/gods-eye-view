@@ -42,10 +42,25 @@ export const STORM_COLUMNS = Object.freeze([
     get: (row) => row.houses,
     format: (value) => value.toLocaleString(),
     title:
-      'The housing units in the census tracts the 1 km radar field reached ' +
-      'that day. This is a FOOTPRINT: the houses standing under the hail, ' +
-      'not the houses a stone landed on. The radar says where hail fell and ' +
-      'is unsound about how big each stone was.',
+      'The houses that were UNDER THE HAIL: for each tract the 1 km radar ' +
+      'field reached, the share of the tract the hail covered, times the ' +
+      'housing units in it. An estimate from a 1 km field, and the number ' +
+      'the street list under a tract agrees with to within a few points. ' +
+      'The radar says where hail fell and is unsound about how big each ' +
+      'stone was.',
+  },
+  {
+    key: 'units',
+    label: 'Tract units',
+    align: 'right',
+    get: (row) => row.units,
+    format: (value) => value.toLocaleString(),
+    title:
+      'Every housing unit in the tracts the hail reached - the MARKET, not ' +
+      'a claim about houses. A tract the hail clipped at one corner still ' +
+      'counts all of its units here. Beside the houses in reach, so the ' +
+      'difference between a market and a claim is visible rather than ' +
+      'buried.',
   },
   {
     key: 'reports',

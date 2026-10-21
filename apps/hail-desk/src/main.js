@@ -1049,14 +1049,21 @@ function showTracts(tracts, day, fieldDay) {
     render: (panel) => {
   const note = document.createElement('p');
   note.className = 'detail-summary';
-  const houses = tracts.reduce((total, tract) => total + tract.units, 0);
+  const houses = tracts.reduce(
+    (total, tract) => total + (tract.houses ?? tract.units),
+    0,
+  );
+  const units = tracts.reduce((total, tract) => total + tract.units, 0);
   note.textContent =
     `${tracts.length.toLocaleString()} tracts, ` +
-    `${houses.toLocaleString()} housing units. ` +
-    'A tract the radar reached is a tract to work and every house in it is a ' +
-    'candidate: the radar is sound about where hail fell and unsound about ' +
-    'how big each stone was. The number is the Census count of HOUSING ' +
-    'UNITS, which is not the same as the addresses in the street ranges.';
+    `${houses.toLocaleString()} houses under the hail, out of ` +
+    `${units.toLocaleString()} housing units in them. ` +
+    'The hail-covered share of each tract is what turns a market into a ' +
+    'work list: a tract the radar clipped at one corner is a few houses, ' +
+    'not all of them. The radar is sound about where hail fell and unsound ' +
+    'about how big each stone was. The street list under a tract is the ' +
+    'precise version of this number, and the address count in it is not the ' +
+    'same as a count of houses.';
   panel.append(note);
   if (!tracts.length) {
     return;
@@ -1070,8 +1077,21 @@ function showTracts(tracts, day, fieldDay) {
     ['Tract', 'The census tract number.'],
     [
       'Houses',
-      'The housing units in this tract, from the ACS. Every one of them is ' +
-        'a candidate.',
+      'The houses that were UNDER THE HAIL in this tract: the share of the ' +
+        'tract the 1 km field covered, times the units in it. This is the ' +
+        'number to work.',
+    ],
+    [
+      'Share',
+      'The share of the tract the hail covered. A rural tract the hail ' +
+        'clipped at one corner is a small share and a small number of ' +
+        'houses, and that is the point: the work list is a list of places ' +
+        'the hail actually reached.',
+    ],
+    [
+      'Units',
+      'Every housing unit in the tract, from the ACS. The market, not a ' +
+        'claim.',
     ],
     [
       'Hail',
@@ -1097,6 +1117,8 @@ function showTracts(tracts, day, fieldDay) {
     const tr = document.createElement('tr');
     for (const value of [
       tract.name,
+      (tract.houses ?? tract.units).toLocaleString(),
+      `${Math.round((tract.share ?? 0) * 100)}%`,
       tract.units.toLocaleString(),
       `${(tract.maxMm / 25.4).toFixed(2)}"`,
       tract.cells.toLocaleString(),

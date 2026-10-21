@@ -225,7 +225,7 @@ export function indexSwaths(payload) {
     const key = `${row.k}:${row.d}`;
     let entry = byPlaceDay.get(key);
     if (!entry) {
-      entry = { tracts: 0, houses: 0, maxMm: 0, list: [] };
+      entry = { tracts: 0, houses: 0, units: 0, maxMm: 0, list: [] };
       byPlaceDay.set(key, entry);
       if (!byPlace.has(row.k)) byPlace.set(row.k, new Map());
       byPlace.get(row.k).set(row.d, entry);
@@ -244,17 +244,30 @@ export function indexSwaths(payload) {
       entry.county = String(row.g || '').slice(2, 5);
     }
     entry.tracts += 1;
-    entry.houses += row.u || 0;
+    // THE HOUSES THAT WERE UNDER THE HAIL, and the market size beside them.
+    //
+    // `houses` is the apportioned count: the share of the tract the hail
+    // covered, times the units in it. `units` is the whole tract, which is
+    // the market and not a claim.
+    entry.houses += (row.h ?? row.u) || 0;
+    entry.units += row.u || 0;
     // The day's counties, by the houses in them. The county with the most
     // houses under the hail is the county the map draws.
     const day = String(row.d || '');
     if (day) {
       let dayEntry = byDay.get(day);
       if (!dayEntry) {
-        dayEntry = { houses: 0, tracts: 0, counties: new Map(), list: [] };
+        dayEntry = {
+          houses: 0,
+          units: 0,
+          tracts: 0,
+          counties: new Map(),
+          list: [],
+        };
         byDay.set(day, dayEntry);
       }
-      dayEntry.houses += row.u || 0;
+      dayEntry.houses += (row.h ?? row.u) || 0;
+      dayEntry.units += row.u || 0;
       dayEntry.tracts += 1;
       // The county is keyed by its WHOLE FIPS - the state and the county -
       // because the radar field is national and a key of three digits cannot
@@ -268,7 +281,7 @@ export function indexSwaths(payload) {
       if (county.length === 5) {
         dayEntry.counties.set(
           county,
-          (dayEntry.counties.get(county) || 0) + (row.u || 0),
+          (dayEntry.counties.get(county) || 0) + ((row.h ?? row.u) || 0),
         );
       }
       // The tracts of the day, with the houses in them.
@@ -281,6 +294,11 @@ export function indexSwaths(payload) {
         name: String(row.g || '').slice(5),
         place: String(row.k || ''),
         units: row.u || 0,
+        // The houses under the hail in this tract, and the share of the
+        // tract they were in. The unit row is the market; these two are the
+        // claim.
+        houses: (row.h ?? row.u) || 0,
+        share: row.s ?? 0,
         maxMm: row.m || 0,
         cells: row.c || 0,
         state: String(row.g || '').slice(0, 2),
@@ -295,6 +313,10 @@ export function indexSwaths(payload) {
       geoid: row.g,
       name: String(row.g || '').slice(5),
       units: row.u || 0,
+      // The houses under the hail in this tract, and the share of the tract
+      // they were in. The unit row is the market; these two are the claim.
+      houses: (row.h ?? row.u) || 0,
+      share: row.s ?? 0,
       maxMm: row.m || 0,
       cells: row.c || 0,
     });

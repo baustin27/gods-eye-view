@@ -100,7 +100,11 @@ test('the biggest Colorado radar day is 2024-06-01', () => {
   // covers that day is the one that measured the hail - which is why the
   // biggest number in the list is on the row before it.
   assert.equal(biggest.date, '2024-05-31', 'the row is the day before the shard');
-  assert.equal(biggest.houses, 323867, '323,867 houses in reach');
+  // THE HOUSES IN REACH are the houses that were UNDER THE HAIL: the share
+  // of each tract the 1 km field covered, times the units in it. The market
+  // size - every unit in the tracts the hail touched - is beside it.
+  assert.equal(biggest.houses, 209072, '209,072 houses under the hail');
+  assert.equal(biggest.units, 323867, 'out of 323,867 housing units');
   assert.equal(biggest.tracts, 165, 'across 165 tracts');
   assert.equal(biggest.radarPlaces, 22, 'and 22 places');
   assert.ok(
@@ -110,13 +114,34 @@ test('the biggest Colorado radar day is 2024-06-01', () => {
   assert.ok(Math.abs(biggest.largest - 3.4) < 0.005, 'which reads as 3.40 inches');
 });
 
-test('2025-07-07 in Colorado is 40,221 houses in 24 tracts', () => {
+test('2025-07-07 in Colorado is 17,750 houses in 24 tracts', () => {
   const row = COLORADO.find((day) => day.radarDay === '2025-07-07');
   assert.ok(row, 'the shard is on a row');
   assert.equal(row.date, '2025-07-06', 'on the row of the day it covers');
-  assert.equal(row.houses, 40221);
+  assert.equal(row.houses, 17750, '17,750 houses under the hail');
+  assert.equal(row.units, 40221, 'out of 40,221 housing units');
   assert.equal(row.tracts, 24);
   assert.equal(row.radarPlaces, 3);
+});
+
+test('the houses in reach are never more than the market, and usually far less', () => {
+  // The apportioned count is the claim and the unit count is the market, and
+  // the claim is always the smaller of the two - a number that claimed more
+  // houses than the tracts it came from held would be a bug in the
+  // arithmetic rather than a rounding.
+  for (const row of COLORADO) {
+    if (row.houses === null) continue;
+    assert.ok(
+      row.houses <= row.units,
+      `${row.date}: ${row.houses} houses claimed from ${row.units} units`,
+    );
+  }
+  // And over the whole Colorado window the claim is a fraction of the
+  // market, because most of the tracts the hail reached were only clipped.
+  const houses = COLORADO.reduce((total, row) => total + (row.houses || 0), 0);
+  const units = COLORADO.reduce((total, row) => total + (row.units || 0), 0);
+  assert.equal(houses, 970872);
+  assert.equal(units, 2588951);
 });
 
 test('Colorado is a market of 143 places with hail in the default window', () => {

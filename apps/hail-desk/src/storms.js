@@ -241,7 +241,8 @@ export function sortStormDays(rows, key = 'date', dir = 'desc') {
  * @param {string} [input.state] a two-letter state code ('CO') or a state
  *   name ('Colorado'); empty or absent means every state
  * @returns {Array<{date: string, kind: 'both'|'reports'|'radar', radarDay: string,
- *   houses: number|null, tracts: number|null, radarPlaces: number|null,
+ *   houses: number|null, units: number|null, tracts: number|null,
+ *   radarPlaces: number|null,
  *   reports: number, severe: number, largest: number|null, places: number}>}
  */
 export function buildStormDays({ cities, swaths, state } = {}) {
@@ -294,12 +295,26 @@ export function buildStormDays({ cities, swaths, state } = {}) {
     if (!inState(row.k)) continue;
     let entry = radar.get(row.d);
     if (!entry) {
-      entry = { houses: 0, tracts: 0, places: new Set(), maxMm: 0 };
+      entry = {
+        houses: 0,
+        units: 0,
+        tracts: 0,
+        places: new Set(),
+        maxMm: 0,
+      };
       radar.set(row.d, entry);
     }
     // A tract with no housing units in it contributes no houses and still
     // counts as a tract: it is a place to work, with nobody living in it.
-    entry.houses += Number(row.u) || 0;
+    //
+    // `houses` is the APPORTIONED count - the share of the tract the hail
+    // covered, times the units in it - and `units` is the whole tract, which
+    // is the market and not a claim about houses. A storm that clipped two
+    // and a half percent of a 1,248 square kilometre tract did not put hail
+    // over 2,805 roofs, and a canvasser sent there on the raw number would
+    // spend a day knocking doors the hail never reached.
+    entry.houses += Number(row.h ?? row.u) || 0;
+    entry.units += Number(row.u) || 0;
     entry.tracts += 1;
     entry.places.add(String(row.k));
     const mm = Number(row.m) || 0;
@@ -322,6 +337,9 @@ export function buildStormDays({ cities, swaths, state } = {}) {
       // The radar's reach: null when the shard did not reach this state, not
       // zero, because zero would be a claim about the size of nothing.
       houses: shard ? shard.houses : null,
+      // The market: every housing unit in the tracts the hail reached, which
+      // is not a claim about houses and is beside the claim on purpose.
+      units: shard ? shard.units : null,
       tracts: shard ? shard.tracts : null,
       radarPlaces: shard ? shard.places.size : null,
       // The reports: the count of the hail reports filed that day, how many
