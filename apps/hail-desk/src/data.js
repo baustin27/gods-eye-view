@@ -215,6 +215,11 @@ export function indexFema(payload) {
 export function indexSwaths(payload) {
   const byPlaceDay = new Map();
   const byPlace = new Map();
+  // The days, and the counties in them. The desk's map draws ONE county's
+  // streets and tracts, and the county that matters is the one the storm
+  // fell in - not the biggest county in the state, which is a different
+  // place entirely and was drawn over the top of the storm.
+  const byDay = new Map();
   let firstDay = null;
   for (const row of payload.rows || []) {
     const key = `${row.k}:${row.d}`;
@@ -240,6 +245,25 @@ export function indexSwaths(payload) {
     }
     entry.tracts += 1;
     entry.houses += row.u || 0;
+    // The day's counties, by the houses in them. The county with the most
+    // houses under the hail is the county the map draws.
+    const day = String(row.d || '');
+    if (day) {
+      let dayEntry = byDay.get(day);
+      if (!dayEntry) {
+        dayEntry = { houses: 0, tracts: 0, counties: new Map() };
+        byDay.set(day, dayEntry);
+      }
+      dayEntry.houses += row.u || 0;
+      dayEntry.tracts += 1;
+      const county = String(row.g || '').slice(2, 5);
+      if (county) {
+        dayEntry.counties.set(
+          county,
+          (dayEntry.counties.get(county) || 0) + (row.u || 0),
+        );
+      }
+    }
     if (row.m > entry.maxMm) entry.maxMm = row.m;
     // The tract itself, kept. The counts above are for the town; a canvasser
     // works in a neighbourhood, and the row for each tract the radar reached
@@ -260,7 +284,7 @@ export function indexSwaths(payload) {
       (a, b) => b.units - a.units || b.maxMm - a.maxMm || a.geoid.localeCompare(b.geoid),
     );
   }
-  return { byPlaceDay, byPlace, firstDay };
+  return { byPlaceDay, byPlace, byDay, firstDay };
 }
 
 /**

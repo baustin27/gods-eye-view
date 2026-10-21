@@ -34,6 +34,7 @@ import {
 } from './viewport.js';
 import { createBasemap, ESRI_ATTRIBUTION } from './basemap.js';
 import { createStreetPainter } from './streets.js';
+import { createTractPainter } from './tracts.js';
 import { createSwathPainter } from './swath.js';
 
 /**
@@ -61,6 +62,9 @@ export function createMapPane(options) {
   let drawing = false;
 
   const basemap = createBasemap({ onTile: () => scheduleDraw() });
+  const tracts = createTractPainter({
+    onTile: () => scheduleDraw(),
+  });
   const streets = createStreetPainter({ onTile: () => scheduleDraw() });
   const swath = createSwathPainter();
   let viewport = options.viewport || createViewport();
@@ -102,7 +106,12 @@ export function createMapPane(options) {
       basemap.draw(ctx, viewport, tiles);
 
       const scope = options.scope?.() || {};
-      if (scope.state && scope.county) {
+      const inScope = Boolean(scope.state && scope.county);
+      if (inScope) {
+        // The houses, UNDER the hail. The fills are dimmed by the swath and
+        // that is the right way round: the hail is the subject.
+        tracts.useCounty(scope.state, scope.county);
+        tracts.draw(ctx, viewport, tiles, { ...scope, mode: 'fill' });
         streets.draw(ctx, viewport, tiles, {
           state: scope.state,
           county: scope.county,
@@ -111,6 +120,11 @@ export function createMapPane(options) {
 
       const bands = options.swath?.();
       if (bands && bands.length) swath.draw(ctx, viewport, bands);
+      if (inScope) {
+        // The neighbourhood boundaries, OVER the hail: a person zooming in
+        // is looking for the edges of the place they are going to work.
+        tracts.draw(ctx, viewport, tiles, { ...scope, mode: 'outline' });
+      }
       drawPlaces();
       drawAttribution();
     } finally {

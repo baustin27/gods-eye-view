@@ -462,6 +462,31 @@
         "apps/hail-desk/src/map/swath.js"
       ],
       "gate": "the drift of the point under the cursor is 0.000 metres, and every tile request is at a whole zoom"
+    },
+    {
+      "id": "D1.9",
+      "title": "the desk draws the tract house counts as a choropleth under the swath, in cyan, with the neighbourhood boundaries over it",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/map/tracts.js",
+        "apps/hail-desk/src/map/map.js",
+        "apps/hail-desk/src/map/tracts.test.mjs"
+      ],
+      "gate": "the tracts of the county the storm fell in are on the map, coloured by their housing units"
+    },
+    {
+      "id": "D1.10",
+      "title": "the map asks the tile routes for FIPS and not for postal codes, and it remembers the tiles that failed",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/src/map/streets.js",
+        "apps/hail-desk/src/map/tracts.js",
+        "apps/hail-desk/src/map/basemap.js"
+      ],
+      "gate": "the streets and the tracts are on the map, and a tile that is not there is asked for once and not sixty times a second"
     }
   ]
 }

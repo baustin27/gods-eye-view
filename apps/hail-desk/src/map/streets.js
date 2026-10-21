@@ -63,7 +63,15 @@ export async function loadStreetTile(
   const response = await fetchImpl(url, {
     headers: { accept: 'application/vnd.gev.street-tile' },
   });
-  if (!response.ok) return [];
+  // A 204 is an empty tile: there are no streets in it, and that is an
+  // answer. Any other failure THROWS, so the painter remembers the tile as
+  // failed instead of asking for it again on every frame - a county whose
+  // data is not here answered 404 sixty times a second and took the
+  // browser's renderer down.
+  if (response.status === 204) return [];
+  if (!response.ok) {
+    throw new Error(`street tile ${response.status} for ${url}`);
+  }
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!bytes.length) return [];
   return decodeStreetTile(bytes).lines;
@@ -81,6 +89,14 @@ export function createStreetPainter({
 } = {}) {
   const cache = createStreetCache();
   const pending = new Map();
+  // The tiles that FAILED, so they are not asked for again on every frame.
+  //
+  // A county whose data is not here answers 404, and a painter that forgets
+  // that asks again on the next frame, and the next, and the next - a
+  // request flood that took the browser's renderer down. A tile that is not
+  // there is not going to be there.
+  const failed = new Map();
+  const FAILED_TTL_MS = 60_000;
 
   /**
    * Draw the streets, once they are in.
@@ -101,6 +117,11 @@ export function createStreetPainter({
       const key = `${tile.z}/${tile.x}/${tile.y}`;
       const lines = cache.get(key);
       if (!lines) {
+        const dead = failed.get(key);
+        if (dead !== undefined) {
+          if (Date.now() - dead < FAILED_TTL_MS) continue;
+          failed.delete(key);
+        }
         // The same rule as the basemap: fetch in the background, draw what is
         // here. Awaiting the tiles emptied the map on every pan.
         if (!pending.has(key)) {
@@ -114,6 +135,7 @@ export function createStreetPainter({
                 return loaded;
               })
               .catch(() => {
+                failed.set(key, Date.now());
                 pending.delete(key);
                 return [];
               }),

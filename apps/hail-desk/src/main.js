@@ -586,21 +586,47 @@ function createTheMap() {
       ),
     swath: () => (state.mapBands || []).slice(),
     scope: () => {
-      // The street tiles are a county's, and the county comes from the state
-      // the market is in. A market that spans states has no single county, and
-      // the map says so rather than drawing one county's streets over
-      // another's.
-      const codes = new Set(
-        state.rows.map((row) => String(row.st || '')).filter(Boolean),
-      );
-      if (codes.size !== 1) return {};
-      const code = [...codes][0];
+      // The street tiles and the tract tiles are a COUNTY's, so the map has
+      // to name one.
+      //
+      // It used to take the county from the market's rows, which is empty in
+      // the storm view - so the storm view had no streets and no tracts on
+      // it at all - and then it took the biggest county in the state, which
+      // is a different place from the one the storm fell in.
+      //
+      // So: the county the SELECTED STORM fell in, and the biggest county in
+      // the state when there is no storm. The codec lower-cases the state,
+      // so it is upper-cased here.
+      const code = String(state.filters.state || '').toUpperCase();
+      if (!code) return {};
+      // The tile routes are in FIPS, not in postal codes: the state is two
+      // digits and the county is three. The desk was asking for 'CO' and
+      // '08031' and the route wanted '08' and '031', so the streets and the
+      // tracts were never drawn at all - and a 404 from a tile route is
+      // indistinguishable from an empty place.
       const counties = state.countyRows.filter((row) => row.st === code);
       if (!counties.length) return {};
+      const stateFips = String(counties[0].fips).slice(0, 2);
+      const day = state.shownDay
+        ? String(state.shownDay).split(':')[0]
+        : null;
+      const dayEntry = day ? state.swathIndex.byDay.get(day) : null;
+      if (dayEntry && dayEntry.counties.size) {
+        let best = null;
+        let bestHouses = -1;
+        for (const [county, houses] of dayEntry.counties) {
+          if (houses > bestHouses) {
+            best = county;
+            bestHouses = houses;
+          }
+        }
+        if (best) return { state: stateFips, county: best };
+      }
       // The biggest county in the state, which is the one a map of the state
       // is mostly about.
       counties.sort((a, b) => (b.units ?? 0) - (a.units ?? 0));
-      return { state: code, county: counties[0].fips };
+      const fips = String(counties[0].fips);
+      return { state: fips.slice(0, 2), county: fips.slice(2, 5) };
     },
     onPick: (row) => onCityClick(row),
   });
