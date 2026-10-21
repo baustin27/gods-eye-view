@@ -550,7 +550,7 @@
       "id": "D2.4",
       "title": "one shared mark style: the storm ramp is in one place and the globe, the desk, the artifact and the gallery all read it",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "4010570a",
       "files": [
         "src/data/stormRamp.js",
         "src/data/stormRamp.test.mjs",
