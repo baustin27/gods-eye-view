@@ -257,7 +257,7 @@
     },
     {
       "id": "B4.1",
-      "title": "the GEVS street tile format, and the shared tile projection",
+      "title": "the GEVS street tile format and the tile route - the shared projection is done (tileXAt, tileYAt and lonLatToTileLocal are exported and round-trip), the format and the route are not",
       "status": "open",
       "files": [
         "server/providers/deskTiles.js",
@@ -293,12 +293,14 @@
     {
       "id": "B4.4",
       "title": "the dev server and the built server answer from one handler module",
-      "status": "open",
+      "status": "done",
       "files": [
         "server/providers/deskApi.js",
-        "apps/hail-desk/vite.config.js"
+        "apps/hail-desk/vite.config.js",
+        "server/desk/server.mjs"
       ],
-      "gate": "the dev server has the desk's API, and it is the same code"
+      "gate": "the dev server has the desk's API, and it is the same code",
+      "commit": "d4e8f01"
     },
     {
       "id": "B5.1",

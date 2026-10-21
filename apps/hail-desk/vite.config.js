@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+import { deskApiPlugin } from '../../server/providers/deskApi.js';
 
 /**
  * The Hail Desk's own build.
@@ -27,6 +28,13 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 export default defineConfig({
   root,
+  plugins: [
+    // The desk's API, in the dev server. It used to have NONE, so every API
+    // call 404'd in development and the street list could only be worked on
+    // against the built server. The handler is the SAME one the built server
+    // calls, so the two cannot drift.
+    deskApiPlugin(),
+  ],
   base: './',
   server: {
     port: 5200,

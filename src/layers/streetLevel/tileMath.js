@@ -12,17 +12,50 @@ export function wrapLon(lon) {
   return ((((lon + 180) % 360) + 360) % 360) - 180;
 }
 
-/** Fractional tile column of a longitude in [-180, 180] at zoom z. */
-function tileXAt(lon, z) {
+/**
+ * Fractional tile column of a longitude in [-180, 180] at zoom z.
+ *
+ * EXPORTED, because the desk's map needs the FORWARD projection and the
+ * server needs it to put a street into a tile. There is one implementation of
+ * the maths and both sides use it; a second copy of the Web Mercator
+ * projection is a second set of answers.
+ */
+export function tileXAt(lon, z) {
   return ((lon + 180) / 360) * 2 ** z;
 }
 
-/** Fractional tile row of a latitude at zoom z. */
-function tileYAt(lat, z) {
+/**
+ * Fractional tile row of a latitude at zoom z.
+ *
+ * EXPORTED, for the same reason as {@link tileXAt}.
+ */
+export function tileYAt(lat, z) {
   const rad = (clampLat(lat) * Math.PI) / 180;
   return (
     ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * 2 ** z
   );
+}
+
+/**
+ * A longitude and a latitude, in TILE-LOCAL pixels.
+ *
+ * The inverse of `tileLocalToLonLat`, and the one function a tile SERVER
+ * needs: a street has to be quantised into the tile it belongs to, and the
+ * client has to un-quantise it back. Both use the same maths.
+ *
+ * @param {number} lon
+ * @param {number} lat
+ * @param {number} extent the tile's pixels across
+ * @param {number} x the tile's column
+ * @param {number} y the tile's row
+ * @param {number} z the zoom
+ * @returns {[number, number]} the pixel coordinates, y growing DOWN
+ */
+export function lonLatToTileLocal(lon, lat, extent, x, y, z) {
+  return [
+    (tileXAt(wrapLon(lon), z) - x) * extent,
+    (tileYAt(clampLat(lat), z) - y) * extent,
+  ];
 }
 
 export function lonToTileX(lon, z) {

@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 
-import { streetsPayload } from '../providers/hailStreets.js';
+import { runDeskApi } from '../providers/deskApi.js';
 
 const REPO = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -57,32 +57,15 @@ function send(res, status, body, type = 'text/plain; charset=utf-8') {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', 'http://localhost');
 
-  if (url.pathname === '/api/desk/streets') {
-    const state = String(url.searchParams.get('state') || '').trim();
-    const county = String(url.searchParams.get('county') || '').trim();
-    if (!/^\d{2}$/.test(state) || !/^\d{3}$/.test(county)) {
-      send(
-        res,
-        400,
-        JSON.stringify({ error: 'state and county are required' }),
-        TYPES['.json'],
-      );
+  // The desk's API, through the SAME handler the dev server uses. One
+  // implementation, two hosts: a route that cannot drift from the one the
+  // dev server runs.
+  if (url.pathname.startsWith('/api/desk/')) {
+    const result = await runDeskApi(url);
+    if (result) {
+      send(res, result.status, JSON.stringify(result.body), TYPES['.json']);
       return;
     }
-    try {
-      const payload = await streetsPayload({
-        state,
-        county,
-        zip: url.searchParams.get('zip') || '',
-        day: url.searchParams.get('day') || '',
-        thresholdMm: url.searchParams.get('thresholdMm') || '',
-        tract: url.searchParams.get('tract') || '',
-      });
-      send(res, 200, JSON.stringify(payload), TYPES['.json']);
-    } catch (error) {
-      send(res, 500, JSON.stringify({ error: error.message }), TYPES['.json']);
-    }
-    return;
   }
 
   // A static file, with the SPA fallback the desk's own routing needs.

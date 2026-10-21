@@ -199,8 +199,16 @@ export async function countyStreetList(state, county, options = {}) {
       a.from - b.from,
   );
 
+  // The GEOMETRY IS STRIPPED. The points are the server's own arithmetic -
+  // they are how a street is measured against the hail - and the client has no
+  // use for them. Leaving them in made one street list fourteen megabytes,
+  // because a county has hundreds of thousands of coordinates, and the desk
+  // was downloading all of them to draw four hundred rows. The map's tile
+  // route is where the geometry belongs.
+  const payload = kept.map(({ points, ...rest }) => rest);
+
   return {
-    streets: kept,
+    streets: payload,
     day,
     found: field ? field.found : false,
     cells: field ? field.cells.size : 0,
