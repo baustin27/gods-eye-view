@@ -467,7 +467,7 @@
       "id": "D1.9",
       "title": "the desk draws the tract house counts as a choropleth under the swath, in cyan, with the neighbourhood boundaries over it",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "97bb4647",
       "files": [
         "apps/hail-desk/src/map/tracts.js",
         "apps/hail-desk/src/map/map.js",
@@ -479,7 +479,7 @@
       "id": "D1.10",
       "title": "the map asks the tile routes for FIPS and not for postal codes, and it remembers the tiles that failed",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "97bb4647",
       "files": [
         "apps/hail-desk/src/main.js",
         "apps/hail-desk/src/map/streets.js",
