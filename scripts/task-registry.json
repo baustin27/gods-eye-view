@@ -585,7 +585,7 @@
       "id": "D2.7",
       "title": "the streets fade with the zoom and the tract fills are quieter, so a city grid at state zoom is not a solid block of blue",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "95eea83e",
       "files": [
         "apps/hail-desk/src/map/streets.js",
         "apps/hail-desk/src/map/tracts.js"
