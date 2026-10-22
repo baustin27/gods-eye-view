@@ -77,6 +77,9 @@ const state = {
   // The state outline, as rings of [lon, lat]. The map draws it so a storm
   // that crossed a state line can be seen to have crossed one.
   stateRings: null,
+  // City outlines for the current state, shown so the map can identify city
+  // boundaries instead of only marking city centroids.
+  cityOutlines: [],
   // The place the person last opened. It is what the ISOLATE control
   // isolates, and the drill-down's ISOLATE button isolates it too.
   lastPlace: null,
@@ -168,6 +171,35 @@ const el = {
 
 /** The columns for the current view. */
 const columns = () => (state.view === 'city' ? CITY_COLUMNS : COUNTY_COLUMNS);
+
+/** Fetch the selected state's city outlines and keep the decoded rings. */
+async function loadCityOutlines(postal) {
+  const code = String(postal || '').trim().toUpperCase();
+  if (!code) {
+    state.cityOutlines = [];
+    return;
+  }
+  try {
+    const response = await fetch(
+      `/api/desk/places?state=${encodeURIComponent(code)}`,
+    );
+    if (!response.ok) {
+      state.cityOutlines = [];
+      return;
+    }
+    const body = await response.json();
+    state.cityOutlines = (body?.places || [])
+      .map((place) =>
+        (place.rings || [])
+          .flatMap((polygon) => (Array.isArray(polygon) ? polygon : []))
+          .filter((ring) => Array.isArray(ring) && ring.length >= 3),
+      )
+      .filter((rings) => rings.length);
+  } catch {
+    state.cityOutlines = [];
+  }
+  drawMap();
+}
 
 /**
  * The state outline, fetched once per state.
@@ -797,6 +829,7 @@ function createTheMap() {
       ),
     swath: () => (state.mapBands || []).slice(),
     stateBoundary: () => state.stateRings,
+    cityOutlines: () => state.cityOutlines,
     scope: () => {
       // The street tiles and the tract tiles are a COUNTY's, so the map has
       // to name one.
@@ -914,6 +947,7 @@ function applyFilters(next) {
   // across the wrong country.
   if (stateChanged) {
     void loadStateOutline(state.filters.state);
+    void loadCityOutlines(state.filters.state);
   }
 }
 
@@ -2072,6 +2106,7 @@ async function main() {
     // The state line, before the first paint, so the map does not come up
     // without it and then get it a moment later.
     await loadStateOutline(state.filters.state);
+    await loadCityOutlines(state.filters.state);
     // OPEN ON A STORM.
     //
     // The desk's whole argument is that the storm is the map, and a desk

@@ -54,12 +54,13 @@ export function createStreetCache(limit = 60) {
  */
 export async function loadStreetTile(
   tile,
-  { state, county, fetchImpl = globalThis.fetch } = {},
+  { fetchImpl = globalThis.fetch } = {},
 ) {
-  // The county and the state are IN the path: a tile is a county's streets
-  // cut up, so the request has to say which county.
-  if (!state || !county) return [];
-  const url = `/api/desk/tiles/${state}/${county}/${tile.z}/${tile.x}/${tile.y}`;
+  // The county is NOT in the path. The county is a fact about the tile, and
+  // the server has the boundaries to work it out with - so the map can pan
+  // across a county line and keep its roads, instead of losing them at the
+  // line with nothing to say why.
+  const url = `/api/desk/tiles/${tile.z}/${tile.x}/${tile.y}`;
   const response = await fetchImpl(url, {
     headers: { accept: 'application/vnd.gev.street-tile' },
   });
@@ -107,7 +108,6 @@ export function createStreetPainter({
    @param {object} viewport
    */
   function draw(ctx, viewport, tiles, options = {}) {
-    const { state, county } = options;
     const scale = TILE_SIZE / GEVS_EXTENT;
     ctx.lineWidth = options.lineWidth ?? 1;
     // THE STREETS FADE WITH THE ZOOM.
@@ -137,7 +137,7 @@ export function createStreetPainter({
         if (!pending.has(key)) {
           pending.set(
             key,
-            loadStreetTile(tile, { state, county, fetchImpl })
+            loadStreetTile(tile, { fetchImpl })
               .then((loaded) => {
                 cache.set(key, loaded);
                 pending.delete(key);

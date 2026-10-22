@@ -35,6 +35,7 @@ import {
 import { createBasemap, ESRI_ATTRIBUTION } from './basemap.js';
 import { createStreetPainter } from './streets.js';
 import { createTractPainter } from './tracts.js';
+import { createCityPainter } from './cities.js';
 import { createSwathPainter } from './swath.js';
 
 /**
@@ -46,7 +47,7 @@ import { createSwathPainter } from './swath.js';
  * @param {(place: object) => void} [options.onPick] called with the place
  *   under a click
  * @param {() => Array<object>} [options.places] the places to draw
- * @param {() => object} [options.scope] `{state, county}` for the street tiles
+ * @param {() => object} [options.scope] `{state, county}` for the overlay scope
  */
 export function createMapPane(options) {
   const { canvas } = options;
@@ -65,6 +66,7 @@ export function createMapPane(options) {
   const tracts = createTractPainter({
     onTile: () => scheduleDraw(),
   });
+  const cities = createCityPainter();
   const streets = createStreetPainter({ onTile: () => scheduleDraw() });
   const swath = createSwathPainter();
   let viewport = options.viewport || createViewport();
@@ -110,13 +112,14 @@ export function createMapPane(options) {
       if (inScope) {
         // The houses, UNDER the hail. The fills are dimmed by the swath and
         // that is the right way round: the hail is the subject.
-        tracts.useCounty(scope.state, scope.county);
-        tracts.draw(ctx, viewport, tiles, { ...scope, mode: 'fill' });
-        streets.draw(ctx, viewport, tiles, {
-          state: scope.state,
-          county: scope.county,
-        });
+        tracts.draw(ctx, viewport, tiles, { mode: 'fill' });
+        streets.draw(ctx, viewport, tiles);
       }
+
+      // THE CITY LINES, over the imagery and under the hail. A canvasser
+      // working a storm that stopped on a city line has to be able to SEE
+      // the line: a dot for a city does not say where the city ends.
+      cities.draw(ctx, viewport, options.cityOutlines?.());
 
       // THE STATE LINE, under the hail. It is a frame for the storm: a storm
       // that crossed a state line is a storm in two markets, and the map

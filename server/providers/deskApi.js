@@ -40,6 +40,11 @@ const STORM_DIR = path.join(REPO, 'src/data/local_data/storm');
  * serves a Vite middleware and a `node:http` reply.
  */
 export const DESK_ROUTES = {
+  '/api/desk/places': async (url) => {
+    const { placesForState } = await import('./deskGeography.js');
+    const places = placesForState(url.searchParams.get('state') || '');
+    return { count: places.length, places };
+  },
   '/api/desk/state': async (url) => {
     const { stateOutline } = await import('./deskStates.js');
     const outline = stateOutline(url.searchParams.get('state') || '');
@@ -79,9 +84,10 @@ export const DESK_ROUTES = {
 /**
  * The street tile route.
  *
- * `/api/desk/tiles/{state}/{county}/{z}/{x}/{y}` - and the response is BINARY,
- * not JSON, because a tile is a tile. The handler below returns the bytes and
- * the route says so.
+ * `/api/desk/tiles/{z}/{x}/{y}` resolves its county from the tile centre;
+ * `/api/desk/tiles/{state}/{county}/{z}/{x}/{y}` remains for older callers.
+ * Both responses are BINARY, not JSON, because a tile is a tile. Geography
+ * resolved by the server is returned in `X-Gev-Geoid` for the tract index.
  *
  * BOTH TILE ROUTES SEND `X-Gev-Cache`, which says where the answer came from:
  * `memory` when the county's index was already in memory, and `index` when
@@ -94,9 +100,11 @@ const STREET_TILE_PATH =
 /**
  * The census tract routes.
  *
- * `/api/desk/tracts/{state}/{county}/{z}/{x}/{y}` - the tracts that touch the
- * tile, as a binary tile in the SAME format the street tiles use: a feature
- * is a closed ring, and its index is the tract's index in the county's list.
+ * `/api/desk/tracts/{z}/{x}/{y}` resolves the tile's county on the server;
+ * `/api/desk/tracts/{state}/{county}/{z}/{x}/{y}` remains for older callers.
+ * Both return a binary tile in the SAME format the street tiles use: a
+ * feature is a closed ring, and its index is the tract's index in the county's
+ * list.
  *
  * `/api/desk/tracts/{state}/{county}/index` - the county's tract LIST, in the
  * order the tiles index into. It is fetched ONCE per county and cached by the
@@ -111,6 +119,13 @@ const STREET_TILE_PATH =
  */
 const TRACT_TILE_PATH =
   /^\/api\/desk\/tracts\/(\d{2})\/(\d{3})\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/;
+// The same tiles, with the county left out: the county is the tile's own
+// geography, and a client that has to name it cannot pan across a county
+// line without the roads stopping.
+const STREET_TILE_BY_GEO_PATH =
+  /^\/api\/desk\/tiles\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/;
+const TRACT_TILE_BY_GEO_PATH =
+  /^\/api\/desk\/tracts\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/;
 const TRACT_INDEX_PATH = /^\/api\/desk\/tracts\/(\d{2})\/(\d{3})\/index$/;
 
 /**
@@ -186,8 +201,92 @@ export async function runDeskApi(url) {
     };
   }
 
+  const geoTileMatch = STREET_TILE_BY_GEO_PATH.exec(url.pathname);
+  if (geoTileMatch) {
+    const [, z, x, y] = geoTileMatch;
+    const { countyForTile } = await import('./deskGeography.js');
+    const county = countyForTile(Number(z), Number(x), Number(y));
+    if (!county) {
+      // A tile with no county under it - the ocean, or outside the Census's
+      // geography. There are no streets there, and saying so with a 204
+      // costs nothing.
+      return {
+        status: 204,
+        bytes: Buffer.alloc(0),
+        contentType: 'application/vnd.gev.street-tile',
+        count: 0,
+        cache: 'memory',
+      };
+    }
+    try {
+      const { bytes, count, cache } = await streetTile(
+        county.geoid.slice(0, 2),
+        county.geoid.slice(2, 5),
+        Number(z),
+        Number(x),
+        Number(y),
+      );
+      return {
+        status: count ? 200 : 204,
+        bytes,
+        contentType: 'application/vnd.gev.street-tile',
+        count,
+        cache,
+        geoid: county.geoid,
+      };
+    } catch (error) {
+      return {
+        status: 404,
+        body: { error: error?.message || 'the tile could not be built' },
+      };
+    }
+  }
+
+  const geoTractMatch = TRACT_TILE_BY_GEO_PATH.exec(url.pathname);
+  if (geoTractMatch) {
+    const [, z, x, y] = geoTractMatch;
+    const { countyForTile } = await import('./deskGeography.js');
+    const county = countyForTile(Number(z), Number(x), Number(y));
+    if (!county) {
+      return {
+        status: 204,
+        bytes: Buffer.alloc(0),
+        contentType: 'application/vnd.gev.tract-tile',
+        count: 0,
+        cache: 'memory',
+      };
+    }
+    try {
+      const { bytes, count, cache } = await tractTile(
+        county.geoid.slice(0, 2),
+        county.geoid.slice(2, 5),
+        Number(z),
+        Number(x),
+        Number(y),
+      );
+      return {
+        status: count ? 200 : 204,
+        bytes,
+        contentType: 'application/vnd.gev.tract-tile',
+        count,
+        cache,
+        geoid: county.geoid,
+      };
+    } catch (error) {
+      return {
+        status: 404,
+        body: { error: error?.message || 'the tract tile could not be built' },
+      };
+    }
+  }
+
   const tileMatch = STREET_TILE_PATH.exec(url.pathname);
   if (tileMatch) {
+    // THE COUNTY IS THE TILE'S, not the client's. The client used to name a
+    // county and the map could therefore only ever show ONE county's
+    // streets: pan across a county line and the roads stopped, with nothing
+    // to say why. The county is a fact about the tile, and the server has
+    // the boundaries to work it out with.
     const [, state, county, z, x, y] = tileMatch;
     try {
       const { bytes, count, cache } = await streetTile(
@@ -207,6 +306,7 @@ export async function runDeskApi(url) {
         contentType: 'application/vnd.gev.street-tile',
         count,
         cache,
+        geoid: `${state}${county}`,
       };
     } catch (error) {
       return {
@@ -235,6 +335,7 @@ export async function runDeskApi(url) {
         contentType: 'application/vnd.gev.tract-tile',
         count,
         cache,
+        geoid: `${state}${county}`,
       };
     } catch (error) {
       return {
@@ -300,6 +401,7 @@ export function deskApiPlugin() {
         // WHERE THE ANSWER CAME FROM: `memory` when the county's index was
         // already in memory, `index` when this request built it.
         if (result.cache) res.setHeader('x-gev-cache', result.cache);
+        if (result.geoid) res.setHeader('x-gev-geoid', result.geoid);
         if (result.bytes) {
           res.setHeader('content-type', result.contentType);
           res.setHeader('x-gev-tile-count', String(result.count ?? 0));

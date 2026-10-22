@@ -66,6 +66,7 @@ const server = http.createServer(async (req, res) => {
       // WHERE THE ANSWER CAME FROM: `memory` when the county's index was
       // already in memory, `index` when this request built it.
       if (result.cache) res.setHeader('x-gev-cache', result.cache);
+      if (result.geoid) res.setHeader('x-gev-geoid', result.geoid);
       if (result.bytes) {
         res.setHeader('content-type', result.contentType);
         res.setHeader('x-gev-tile-count', String(result.count ?? 0));

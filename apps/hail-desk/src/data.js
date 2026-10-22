@@ -30,12 +30,21 @@ import {
  * storm loader uses, so there is one decompression path in the project.
  *
  * @param {string} url
+ * @param {typeof fetch} [fetchImpl=globalThis.fetch]
  * @returns {Promise<object>}
  */
-export async function loadGzippedJson(url) {
-  const response = await fetch(url);
+export async function loadGzippedJson(url, fetchImpl = globalThis.fetch) {
+  const response = await fetchImpl(url);
   if (!response.ok) {
     throw new Error(`Hail Desk data: HTTP ${response.status} for ${url}`);
+  }
+  // Vite serves `.gz` files with Content-Encoding: gzip. Fetch transparently
+  // inflates those response bytes before JavaScript sees them, while the
+  // built desk server serves the same file as an opaque binary for this
+  // loader to inflate itself.
+  const contentEncoding = response.headers?.get('content-encoding');
+  if (contentEncoding && contentEncoding.toLowerCase() !== 'identity') {
+    return JSON.parse(await response.text());
   }
   // A server that answers a missing artifact with the app shell returns 200
   // and HTML. The magic number catches that, where a status check would not.

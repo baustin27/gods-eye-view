@@ -110,27 +110,31 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
    * Load and decode one tract tile.
    *
    * @param {{z: number, x: number, y: number}} tile
-   * @param {{state: string, county: string}} options
-   * @returns {Promise<Array<object>>}
+   * @returns {Promise<{geoid: string|null, lines: Array<object>}>}
    */
-  async function loadTractTile(tile, { state, county }) {
+  async function loadTractTile(tile) {
+    // The county is the tile's own, worked out by the server. The map used
+    // to be given one county and could therefore only ever show one
+    // county's tracts.
+    const url = `/api/desk/tracts/${tile.z}/${tile.x}/${tile.y}`;
     const response = await fetchImpl(
-      `/api/desk/tracts/${state}/${county}/${tile.z}/${tile.x}/${tile.y}`,
+      url,
       { headers: { accept: 'application/vnd.gev.tract-tile' } },
     );
     // A 204 is an empty tile - there are no tracts in it, and that is an
     // answer. Any other failure THROWS, so the painter remembers the tile
     // as failed: a county whose data is not here answered 404 sixty times a
     // second and took the browser's renderer down.
-    if (response.status === 204) return [];
+    if (response.status === 204) return { geoid: null, lines: [] };
     if (!response.ok) {
-      throw new Error(
-        `tract tile ${response.status} for ${state}/${county}/${tile.z}/${tile.x}/${tile.y}`,
-      );
+      throw new Error(`tract tile ${response.status} for ${url}`);
     }
+    const geoid = response.headers?.get('x-gev-geoid') || null;
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!bytes.length) return [];
-    return decodeStreetTile(bytes).lines;
+    return {
+      geoid,
+      lines: bytes.length ? decodeStreetTile(bytes).lines : [],
+    };
   }
 
   /**
@@ -144,18 +148,15 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
    * @param {object} viewport
    * @param {Array<{z: number, x: number, y: number}>} tiles
    * @param {object} options
-   * @param {string} options.state
-   * @param {string} options.county
    * @param {'fill'|'outline'} [options.mode]
    */
   function draw(ctx, viewport, tiles, options = {}) {
-    const { state, county, mode = 'fill' } = options;
-    if (!state || !county) return;
+    const { mode = 'fill' } = options;
     const scale = TILE_SIZE / GEVS_EXTENT;
     for (const tile of tiles) {
       const key = `${tile.z}/${tile.x}/${tile.y}`;
-      let rings = cache.get(key);
-      if (!rings) {
+      let tileData = cache.get(key);
+      if (!tileData) {
         // A tile that is not there is not going to be there, and asking for
         // it again on every frame is a request flood that takes the browser
         // down.
@@ -167,25 +168,35 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
         if (!pending.has(key)) {
           pending.set(
             key,
-            loadTractTile(tile, { state, county })
+            loadTractTile(tile)
               .then((loaded) => {
                 cache.set(key, loaded);
                 pending.delete(key);
-                if (loaded.length) onTile?.();
+                if (loaded.geoid && /^\d{5}$/.test(loaded.geoid)) {
+                  const state = loaded.geoid.slice(0, 2);
+                  const county = loaded.geoid.slice(2);
+                  loadIndex(state, county).then((list) => {
+                    if (list) {
+                      indexLists.set(loaded.geoid, list);
+                      onTile?.();
+                    }
+                  });
+                }
+                if (loaded.lines.length) onTile?.();
                 return loaded;
               })
               .catch(() => {
                 failed.set(key, Date.now());
                 pending.delete(key);
-                return [];
+                return { geoid: null, lines: [] };
               }),
           );
         }
         continue;
       }
-      if (!rings.length) continue;
+      if (!tileData.lines.length) continue;
       const origin = viewportPixel(tile, viewport, TILE_SIZE);
-      for (const ring of rings) {
+      for (const ring of tileData.lines) {
         if (!ring.points || ring.points.length < 3) continue;
         ctx.beginPath();
         for (let i = 0; i < ring.points.length; i += 1) {
@@ -201,7 +212,7 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
           ctx.lineWidth = 0.75;
           ctx.stroke();
         } else {
-          ctx.fillStyle = tractFill(unitsFor(ring.edgeIndex));
+          ctx.fillStyle = tractFill(unitsFor(tileData.geoid, ring.edgeIndex));
           // The even-odd rule, because the Census does not say which ring of
           // a tract is a hole: the holes are punched out by the rule, and a
           // flag that is not in the data cannot be invented.
@@ -214,11 +225,12 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
   /**
    * The housing units of a tract, by its index in the county's list.
    *
+   * @param {string|null} geoid
    * @param {number} edgeIndex
    * @returns {number|null}
    */
-  function unitsFor(edgeIndex) {
-    const list = indexLists.get(currentKey);
+  function unitsFor(geoid, edgeIndex) {
+    const list = indexLists.get(geoid);
     if (!list) return null;
     const tract = list[edgeIndex];
     return tract ? tract.units ?? null : null;
@@ -226,25 +238,5 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
 
   /** The tract lists, by county, resolved. */
   const indexLists = new Map();
-  /** The county being drawn. */
-  let currentKey = '';
-
-  /**
-   * Start the county's list, and redraw when it lands.
-   *
-   * The list is needed for the COLOUR of the fills, so the first paint of a
-   * county is quiet and the second one has the houses in it.
-   */
-  function useCounty(state, county) {
-    const key = `${state}/${county}`;
-    currentKey = key;
-    loadIndex(state, county).then((list) => {
-      if (list) {
-        indexLists.set(key, list);
-        onTile?.();
-      }
-    });
-  }
-
-  return { draw, useCounty, loadIndex };
+  return { draw, loadIndex };
 }
