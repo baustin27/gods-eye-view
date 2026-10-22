@@ -629,6 +629,25 @@ button.secondary {
 }
 
 /*
+ * The ISOLATE control sits beside the PLACES one, so the two buttons share
+ * a row at the top right of the map.
+ */
+.map-toggle-isolate {
+  right: 84px;
+}
+
+.map-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The drill-down's own ISOLATE button, beside the place's name. */
+.isolate-button {
+  margin-left: auto;
+  align-self: flex-start;
+}
+
+/*
  * THE INFO LINE: what is on the map, in one line, with the day convention
  * in it. A person looking at a map of a storm has to know which clock the
  * day is on before they can believe any of it.

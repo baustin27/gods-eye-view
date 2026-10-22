@@ -736,6 +736,35 @@
         "src/data/local_data/storm/storm_radar_hail_sub_2026-10-15.bin.gz"
       ],
       "gate": "2,113 sub-daily shards, 68.3 MB, and a frame on a 2022 day draws that frame's swath"
+    },
+    {
+      "id": "G1.1",
+      "title": "the state line on the desk's map, so a storm that crossed a state line can be seen to have crossed one",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "server/providers/deskStates.js",
+        "server/providers/deskStates.test.mjs",
+        "server/providers/deskApi.js",
+        "apps/hail-desk/src/map/map.js",
+        "apps/hail-desk/src/main.js"
+      ],
+      "gate": "Colorado's outline is on the desk's map, and the postal code is resolved inside the United States - 'CO' is Colorado and a province in Algeria"
+    },
+    {
+      "id": "G1.2",
+      "title": "the globe's ISOLATE, on the desk: one place, and only the storms that fell inside it",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "src/data/layerState.js",
+        "apps/hail-desk/src/state.js",
+        "apps/hail-desk/src/storms.js",
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/index.html",
+        "apps/hail-desk/styles.css"
+      ],
+      "gate": "isolating Colorado Springs narrows the storm list to its 75 days and the link carries it"
     }
   ]
 }

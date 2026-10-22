@@ -74,6 +74,12 @@ const state = {
   // Whether the place dots are drawn. Null means "the view decides": on for
   // the market views, off for the storm view, where the swath is the map.
   dots: null,
+  // The state outline, as rings of [lon, lat]. The map draws it so a storm
+  // that crossed a state line can be seen to have crossed one.
+  stateRings: null,
+  // The place the person last opened. It is what the ISOLATE control
+  // isolates, and the drill-down's ISOLATE button isolates it too.
+  lastPlace: null,
   // The day the map is showing, and the row it came from.
   shownDay: null,
   selectedDay: null,
@@ -146,6 +152,7 @@ const el = {
   frameChips: document.getElementById('frameChips'),
   scopeChips: document.getElementById('scopeChips'),
   dotsToggle: document.getElementById('dotsToggle'),
+  isolateToggle: document.getElementById('isolateToggle'),
   tableWrap: document.getElementById('tableWrap'),
   loading: document.getElementById('loading'),
   source: document.getElementById('source'),
@@ -162,6 +169,101 @@ const el = {
 /** The columns for the current view. */
 const columns = () => (state.view === 'city' ? CITY_COLUMNS : COUNTY_COLUMNS);
 
+/**
+ * The state outline, fetched once per state.
+ *
+ * The server sends one state's outline - four points for Colorado, four
+ * hundred for Texas - and the browser keeps it. It is the state line, and it
+ * is the difference between a map of a storm and a map of a storm in a state.
+ *
+ * @param {string} postal the two-letter code
+ * @returns {Promise<void>}
+ */
+async function loadStateOutline(postal) {
+  const code = String(postal || '').trim().toUpperCase();
+  if (!code) {
+    state.stateRings = null;
+    return;
+  }
+  try {
+    const response = await fetch(`/api/desk/state?state=${encodeURIComponent(code)}`);
+    if (!response.ok) {
+      state.stateRings = null;
+      return;
+    }
+    const body = await response.json();
+    state.stateRings = Array.isArray(body?.rings) ? body.rings : null;
+  } catch {
+    state.stateRings = null;
+  }
+  drawMap();
+}
+
+/**
+ * The ISOLATE chip's state.
+ *
+ * It is kept in one place because the chip can go stale two ways - the
+ * drill-down opens a place without a repaint, and the isolation changes
+ * without one either - and a chip that says "no place to isolate to" while
+ * the person is looking at a place is a lie with a button on it.
+ */
+function syncIsolateChip() {
+  if (!el.isolateToggle) return;
+  const isolated = state.filters.iso || '';
+  el.isolateToggle.disabled = !isolated && !state.lastPlace;
+  el.isolateToggle.setAttribute('aria-pressed', String(Boolean(isolated)));
+  el.isolateToggle.classList.toggle('active', Boolean(isolated));
+  el.isolateToggle.textContent = isolated ? 'ISOLATED' : 'ISOLATE';
+  el.isolateToggle.title = isolated
+    ? 'Stop showing only this place'
+    : state.lastPlace
+      ? `Show only the storms inside ${state.lastPlace.name}`
+      : 'No place to isolate to - open a city first';
+}
+
+/**
+ * Isolate the desk to one place, or to the whole market.
+ *
+ * The globe's ISOLATE: one area, and only what is inside it. Here it is one
+ * PLACE - a city - and the storm list narrows to the days that fell inside
+ * it. The link carries it, so an isolated desk is a link someone else can
+ * open.
+ *
+ * @param {string} placeId the place's id, or '' for the whole market
+ */
+function setIsolation(placeId) {
+  // The storm list is where an isolation is visible, so isolating lands
+  // there: the market table does not narrow, and leaving the person in a
+  // table that did not change would hide what the control just did.
+  state.view = 'storm';
+  applyFilters({ view: 'storm', iso: placeId || '', d: '' });
+  // The isolated place's own biggest storm is the day the map should show:
+  // the day the person is looking at is the one they isolated to.
+  const rows = sortStormDays(stormDays(), state.filters.dsort, state.filters.ddir);
+  const biggest = rows.reduce(
+    (best, row) => (row.houses !== null && (!best || row.houses > best.houses) ? row : best),
+    null,
+  );
+  if (biggest) {
+    applyFilters({ d: biggest.date });
+  }
+}
+
+/**
+ * The place the desk is isolated to, by name.
+ *
+ * @returns {{id: string, name: string}|null}
+ */
+function isolatedPlace() {
+  const id = String(state.filters.iso || '').trim();
+  if (!id) return null;
+  const place = (state.cityPayload?.cities || []).find(
+    (candidate) => String(candidate.id) === id,
+  );
+  if (!place) return null;
+  return { id, name: place.full || place.name || id };
+}
+
 /** Repaint from the current filters. */
 function render() {
   if (state.view === 'storm') renderStormView();
@@ -177,6 +279,7 @@ function render() {
   });
   el.dotsToggle.setAttribute('aria-pressed', String(dotsOn()));
   el.dotsToggle.classList.toggle('active', dotsOn());
+  syncIsolateChip();
   drawMap();
 }
 
@@ -227,7 +330,10 @@ function renderStormView() {
     onStormDayClick,
     (row) => row.date === state.filters.d,
   );
-  el.summary.textContent = stormSummary(rows);
+  const isolated = isolatedPlace();
+  el.summary.textContent = isolated
+    ? `isolated to ${isolated.name} — ${stormSummary(rows)}`
+    : stormSummary(rows);
   // The scope chips are the storm list's own filter, so they are only
   // meaningful in the storm view.
   el.scopeChips.hidden = false;
@@ -268,13 +374,18 @@ let stormDayCache = { key: '', rows: [] };
 
 function stormDays() {
   const key = state.filters.state || '';
-  if (stormDayCache.key !== key) {
+  const isolated = state.filters.iso || '';
+  if (stormDayCache.key !== key || stormDayCache.isolated !== isolated) {
     stormDayCache = {
       key,
+      isolated,
       rows: buildStormDays({
         cities: state.cityPayload,
         swaths: state.swathPayload,
         state: key,
+        // THE ISOLATED PLACE. The globe's ISOLATE, on the desk: one place,
+        // and only what fell inside it.
+        placeId: isolated,
       }),
     };
   }
@@ -685,6 +796,7 @@ function createTheMap() {
         0,
       ),
     swath: () => (state.mapBands || []).slice(),
+    stateBoundary: () => state.stateRings,
     scope: () => {
       // The street tiles and the tract tiles are a COUNTY's, so the map has
       // to name one.
@@ -784,6 +896,8 @@ function drawMap() {
 }
 
 function applyFilters(next) {
+  const stateChanged =
+    next.state !== undefined && next.state !== state.filters.state;
   state.filters = { ...state.filters, ...next };
   // The drill-down is about a particular place in a particular list. Change the
   // list and it is about nothing, so the stack is emptied rather than left
@@ -796,6 +910,11 @@ function applyFilters(next) {
   }
   syncControls();
   render();
+  // A new state means a new state line, and the old one would be a line
+  // across the wrong country.
+  if (stateChanged) {
+    void loadStateOutline(state.filters.state);
+  }
 }
 
 /** Put the filters back into the controls. */
@@ -1053,11 +1172,33 @@ function renderDrill() {
   el.detail.hidden = false;
   el.drillTitle.textContent = top.title;
   el.drillBack.hidden = drillStack.length < 2;
+  // THE ISOLATE BUTTON, in the place's own panel. The globe's ISOLATE is a
+  // chip in the layer's toolbar; on the desk the place IS the thing you
+  // isolate, so the button belongs beside the place's name.
+  if (top.isolate) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'link-button isolate-button';
+    const on = state.filters.iso === top.isolate.id;
+    button.textContent = on ? 'SHOW EVERYTHING' : 'ISOLATE THIS PLACE';
+    button.title = on
+      ? 'Stop showing only this place'
+      : `Show only the storms inside ${top.isolate.name}`;
+    button.addEventListener('click', () => {
+      setIsolation(on ? '' : top.isolate.id);
+    });
+    el.drillTitle.after(button);
+  }
   top.render(el.drillBody);
   el.detail.scrollIntoView({ block: 'nearest' });
 }
 
 async function onCityClick(row) {
+  // The place the person opened, which is what the ISOLATE control
+  // isolates. It is remembered because the control lives on the map, and the
+  // map does not know which place the drill-down is showing.
+  state.lastPlace = { id: String(row.id), name: row.full || row.name || '' };
+  syncIsolateChip();
   const reported = cityStorms(state.cityIndex, row.id, state.filters);
   const radar = radarDays(state.swathIndex, row.id, state.filters);
   // The union of the two. A day the radar reached but nobody reported is not
@@ -1088,6 +1229,9 @@ async function onCityClick(row) {
   drawMap();
   pushDrill({
     title: `${row.full || row.name}, ${row.st || ''}`,
+    // The ISOLATE button lives in the drill-down, next to the place it
+    // isolates, so nobody has to go looking for it on the map.
+    isolate: { id: String(row.id), name: row.full || row.name || '' },
     render: (panel) => {
   const summary = document.createElement('p');
   summary.className = 'detail-summary';
@@ -1925,6 +2069,9 @@ async function main() {
     fillStates(state.cityIndex.cities, 'st');
     syncControls();
     render();
+    // The state line, before the first paint, so the map does not come up
+    // without it and then get it a moment later.
+    await loadStateOutline(state.filters.state);
     // OPEN ON A STORM.
     //
     // The desk's whole argument is that the storm is the map, and a desk
@@ -2024,6 +2171,14 @@ async function main() {
   el.drillClose.addEventListener('click', () => {
     drillStack.length = 0;
     renderDrill();
+  });
+  el.isolateToggle.addEventListener('click', () => {
+    const on = state.filters.iso || '';
+    if (on) {
+      setIsolation('');
+      return;
+    }
+    if (state.lastPlace) setIsolation(state.lastPlace.id);
   });
   el.dotsToggle.addEventListener('click', () => {
     state.dots = !dotsOn();

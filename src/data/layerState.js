@@ -558,6 +558,9 @@ const OPTION_GROUPS = Object.freeze({
       },
     ),
     enumOption('ddir', 'E', 'desc', ['asc', 'desc'], { asc: 'a', desc: 'd' }),
+    // THE ISOLATED PLACE. The globe's ISOLATE, on the desk: the storm list
+    // shows only what fell inside one place, and the link carries it.
+    stringOption('iso', 'i', ''),
     // WHICH SPINE the storm list shows: every day, the days somebody called
     // in, or the days the radar reached and NOBODY DID.
     //

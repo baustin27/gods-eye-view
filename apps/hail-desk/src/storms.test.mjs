@@ -127,6 +127,44 @@ test('2025-07-07 in Colorado is 17,750 houses in 24 tracts', () => {
   assert.equal(row.radarPlaces, 3);
 });
 
+test('the list can be ISOLATED to one place', () => {
+  // The globe's ISOLATE, on the desk: one place, and only what fell inside
+  // it. The narrowing has to be real - Colorado Springs is a fraction of
+  // the state, and the houses in reach with it.
+  const place = CITIES.cities.find(
+    (candidate) =>
+      candidate.st === 'CO' && /Colorado Springs/.test(candidate.full || ''),
+  );
+  assert.ok(place, 'Colorado Springs is in the places');
+  const isolated = buildStormDays({
+    cities: CITIES,
+    swaths: SWATHS,
+    state: 'CO',
+    placeId: place.id,
+  });
+  assert.ok(isolated.length, 'the isolated place has storm days');
+  assert.ok(
+    isolated.length < COLORADO.length,
+    `${isolated.length} days isolated against ${COLORADO.length} for the state`,
+  );
+  // And every day in it is a day the place was actually hit.
+  const stateDays = new Set(COLORADO.map((row) => row.date));
+  for (const row of isolated) {
+    assert.ok(stateDays.has(row.date), `${row.date} is a Colorado day`);
+  }
+  // The houses in reach narrow with it, and by a lot more than the days do:
+  // a city is a fraction of a state's hail.
+  const isolatedHouses = isolated.reduce(
+    (total, row) => total + (row.houses || 0),
+    0,
+  );
+  const stateHouses = COLORADO.reduce(
+    (total, row) => total + (row.houses || 0),
+    0,
+  );
+  assert.ok(isolatedHouses < stateHouses);
+});
+
 test('the houses in reach are never more than the market, and usually far less', () => {
   // The apportioned count is the claim and the unit count is the market, and
   // the claim is always the smaller of the two - a number that claimed more

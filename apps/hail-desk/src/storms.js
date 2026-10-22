@@ -240,13 +240,20 @@ export function sortStormDays(rows, key = 'date', dir = 'desc') {
  * @param {object} input.swaths the parsed swaths artifact
  * @param {string} [input.state] a two-letter state code ('CO') or a state
  *   name ('Colorado'); empty or absent means every state
+ * @param {string} [input.placeId] the place to ISOLATE to; empty or absent
+ *   means the whole state
  * @returns {Array<{date: string, kind: 'both'|'reports'|'radar', radarDay: string,
  *   houses: number|null, units: number|null, tracts: number|null,
  *   radarPlaces: number|null,
  *   reports: number, severe: number, largest: number|null, places: number}>}
  */
-export function buildStormDays({ cities, swaths, state } = {}) {
+export function buildStormDays({ cities, swaths, state, placeId } = {}) {
   const wanted = String(state ?? '').trim().toUpperCase();
+  // THE ISOLATED PLACE. The globe's ISOLATE: one place, and only what fell
+  // inside it. The filter is on the PLACE, so both spines narrow - the
+  // reports filed from that place and the radar reaching that place's
+  // tracts.
+  const isolated = String(placeId ?? '').trim();
   const places = requireArray(cities?.cities, 'cities.cities');
   const days = requireArray(cities?.cityDays, 'cities.cityDays');
   const swathRows = requireArray(swaths?.rows, 'swaths.rows');
@@ -267,6 +274,13 @@ export function buildStormDays({ cities, swaths, state } = {}) {
     if (!place) return false;
     return place.code === wanted || place.name === wanted;
   };
+  // The isolated place, when there is one. A radar row is the TRACT's row
+  // and it carries the place the tract sits in, so a tract that is not in the
+  // isolated place is not in the isolation.
+  const inIsolation = (placeGeoid) => {
+    if (!isolated) return true;
+    return String(placeGeoid) === isolated;
+  };
 
   // The REPORT spine: a day somebody measured a stone inside a town.
   const reports = new Map();
@@ -276,6 +290,7 @@ export function buildStormDays({ cities, swaths, state } = {}) {
     // those would put wind storms in a hail list and inflate the place count.
     if (!(Number(row.n) > 0)) continue;
     if (!inState(row.geoid)) continue;
+    if (!inIsolation(row.geoid)) continue;
     let entry = reports.get(row.d);
     if (!entry) {
       entry = { reports: 0, severe: 0, places: new Set(), max: 0 };
@@ -293,6 +308,7 @@ export function buildStormDays({ cities, swaths, state } = {}) {
   const radar = new Map();
   for (const row of swathRows) {
     if (!inState(row.k)) continue;
+    if (!inIsolation(row.k)) continue;
     let entry = radar.get(row.d);
     if (!entry) {
       entry = {

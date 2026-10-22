@@ -58,6 +58,9 @@ export const DEFAULT_FILTERS = Object.freeze({
   // Which spine the storm list shows. 'all' is the whole story; 'prospect'
   // is the lead list - the days the radar reached and nobody called in.
   dscope: 'all',
+  // The place the desk is ISOLATED to, or '' for the whole market. The
+  // globe's ISOLATE: one place, and only what fell inside it.
+  iso: '',
   // Which view the desk opens on. The storm list is the centre, so this is
   // the default, and a link that names a market view says so.
   view: 'storm',

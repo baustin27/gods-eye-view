@@ -40,6 +40,14 @@ const STORM_DIR = path.join(REPO, 'src/data/local_data/storm');
  * serves a Vite middleware and a `node:http` reply.
  */
 export const DESK_ROUTES = {
+  '/api/desk/state': async (url) => {
+    const { stateOutline } = await import('./deskStates.js');
+    const outline = stateOutline(url.searchParams.get('state') || '');
+    if (!outline) {
+      return { error: 'no outline for that state' };
+    }
+    return outline;
+  },
   '/api/desk/address': async (url) => {
     const { addressPayload } = await import('./deskAddress.js');
     return addressPayload({

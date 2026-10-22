@@ -118,6 +118,11 @@ export function createMapPane(options) {
         });
       }
 
+      // THE STATE LINE, under the hail. It is a frame for the storm: a storm
+      // that crossed a state line is a storm in two markets, and the map
+      // cannot say that without the line on it.
+      drawStateBoundary(ctx, viewport, options.stateBoundary?.());
+
       const bands = options.swath?.();
       if (bands && bands.length) swath.draw(ctx, viewport, bands);
       if (inScope) {
@@ -169,6 +174,41 @@ export function createMapPane(options) {
       ctx.lineWidth = 1;
       ctx.stroke();
     }
+  }
+
+  /**
+   * The state outline, as a line.
+   *
+   * The rings come from the Natural Earth admin-1 pack, decoded on the
+   * server, so what arrives here is points. They are projected with the
+   * viewport's own projection, so the line lands on the same pixels as the
+   * imagery under it.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {object} viewport
+   * @param {Array<Array<Array<number>>>} rings the rings, as [lon, lat]
+   */
+  function drawStateBoundary(ctx, viewport, rings) {
+    if (!Array.isArray(rings) || !rings.length) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(165, 243, 252, 0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    for (const polygon of rings) {
+      for (const ring of polygon) {
+        if (!ring || ring.length < 2) continue;
+        ctx.beginPath();
+        for (let i = 0; i < ring.length; i += 1) {
+          const [lon, lat] = ring[i];
+          const point = project(lon, lat, viewport);
+          if (i === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        }
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   /**

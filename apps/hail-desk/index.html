@@ -129,6 +129,23 @@
           PLACES
         </button>
         <!--
+          THE ISOLATE CONTROL, the globe's, on the desk. It shows only the
+          storms that fell inside one place, and the link carries it. It is
+          disabled rather than hidden when no place is open, because a chip
+          that is always live and does nothing is worse than one that says it
+          has nothing to isolate.
+        -->
+        <button
+          type="button"
+          id="isolateToggle"
+          class="map-toggle map-toggle-isolate"
+          aria-pressed="false"
+          disabled
+          title="No place to isolate to - open a city first"
+        >
+          ISOLATE
+        </button>
+        <!--
           THE INFO LINE. What is on the map, in one line, with the day
           convention in it - because a person looking at a map of a storm has
           to know which clock the day is on before they can believe any of it.
