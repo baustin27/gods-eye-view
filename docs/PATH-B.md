@@ -76,7 +76,7 @@ is genuinely enough to knock, but it is not enough to dial.
 
 ## 3. The work, in order
 
-### 3.1 Address lookup — the missing centrepiece *(do first)*
+### 3.1 Address lookup — the missing centrepiece — **done**
 
 `GET /api/desk/address?q=…` → geocode → the fine radar cell → the days and
 frames the hail was over it → the street, the tract, the ACS household count,
@@ -87,6 +87,13 @@ reverse geocode plus a point-in-cell test plus the archive join. This is the
 feature that makes the product usable *in the field*, and it is the one every
 competitor's reviews praise.
 
+**It is built.** `GET /api/desk/address?q=123 Main St, Colorado Springs` →
+the house number interpolated by distance along the street's own range, the
+cell under that point, and the days the hail was over **that cell** — which
+is the exact answer and not the tract's, and the difference is the whole
+product in the rural case. The reports within five kilometres come with it,
+and when nothing fell there the desk says so.
+
 ### 3.2 The per-storm artifact — the thing you can attach to a claim
 
 Render one storm's swath as a **banded PNG**: the 1 km cells coloured by the
@@ -96,15 +103,30 @@ date. Every input already exists; this is a renderer plus a stable share URL.
 This is also the *proof* of Path B: an adjuster can attach it, and it is
 citable because it is reproducible.
 
-### 3.3 Close the history gap
+### 3.3 Close the history gap — **done, and not to twelve years**
 
-The fine 1 km field starts 2024-01-01, so the house counts are 2.8 years old.
-The MRMS MESH archive reaches back to 2014. Rebuilding 2014 → 2023 at 1 km is
-the same build we already ran (32 min per 2.8 years → ~2 hours, ~130 MB) and
-takes the house-count history to **12 years**, matching Hail Recon and beating
-HailTrace.
+The fine 1 km field used to start 2024-01-01, so the house counts were 2.8
+years old. It now starts **2021-01-02**: 2,103 shards, 17.6 million cells,
+64 MB, and Colorado's storm list goes from 276 days to **390**.
 
-This is a long build that can run unattended while the rest is done.
+**The brief said twelve years, and that is not what the archive has.** The
+pre-2020-10 archive holds the same product at **half a degree** — a 50
+kilometre cell — and the 1 km daily maximum simply does not exist before
+**14 October 2020**. So the honest figure is **six years**, not twelve, and
+the claim to match Hail Recon's window needs checking before it is written
+down rather than after.
+
+Two things the archive taught us, both now in the builder:
+
+- The daily maximum was produced several times a day before 2020-10-14, and
+  the stamp in the filename is the **production time**. The day has to be
+  looked up in the bucket and the file nearest midnight taken, or the two
+  eras are not comparable and the shards are not one series.
+- The **day index epoch** moves with it (2021-01-01 → 2020-10-14). The
+  shards themselves do not change — the day is in the file name, not in the
+  record — so the reader never notices.
+
+The retention window is the operator's call and is now six years.
 
 ### 3.0 What has since been BUILT (the registry is the record)
 

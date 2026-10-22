@@ -233,6 +233,29 @@ Validation target:
 
 ---
 
+### The address lookup needs a place, because the street ranges are a county's
+Status: Open (by design)
+
+Context:
+- The TIGER address ranges are per county, so an address query has to name
+  one. "123 Main St, Colorado Springs" finds the place, the place finds the
+  county, and the county's ranges find the street. A bare "123 Main St" falls
+  back to the state's biggest county, which is right most of the time and
+  wrong quietly the rest — and the desk says which county it used.
+- A place that straddles a county line is resolved to the county holding its
+  centre, which is the county a canvasser knocking there is knocking in.
+- The lookup reports the days the hail was over the **cell** under the
+  address, not over the tract. For an address in a 4,000 km2 rural tract that
+  is the difference between "the hail crossed this tract thirty times" and
+  "the hail never reached this spot" — and the second one is the true one
+  most of the time.
+
+Validation target:
+- `server/providers/deskAddress.js`
+- `server/providers/deskAddress.test.mjs`
+
+---
+
 ### The desk's map draws ONE county's streets and tracts
 Status: Open (by design)
 

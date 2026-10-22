@@ -669,6 +669,62 @@
         ".opencode/plans/DESK-REBUILD.md"
       ],
       "gate": "the docs say what was measured, including the claim that was wrong"
+    },
+    {
+      "id": "F2.1",
+      "title": "the build reads the pre-2021 archive: the same product under unsupported/, with the day's file selected by production time",
+      "status": "done",
+      "commit": "95c331e0",
+      "files": [
+        "scripts/build-storm-radar-snapshots.mjs",
+        "scripts/lib/storm-fetch.mjs"
+      ],
+      "gate": "a 2021 day and a 2020 day both ingest, and the two eras agree where they overlap"
+    },
+    {
+      "id": "F2.2",
+      "title": "the fine field runs from 2021-01-02, so the house-count history is six years and not two and a half",
+      "status": "done",
+      "commit": "95c331e0",
+      "files": [
+        "src/data/local_data/storm/storm-radar-fine-sources.json",
+        "src/data/local_data/storm/storm_radar_hail_fine_2021-01-02.bin.gz",
+        "src/data/local_data/storm/storm_radar_hail_fine_2026-10-15.bin.gz"
+      ],
+      "gate": "the fine shards cover 2021-01-02 to 2026-10-15 and the Colorado storm list covers the years in between: 390 days, not 276"
+    },
+    {
+      "id": "F2.3",
+      "title": "the swaths artifact and the desk's storm list are rebuilt over the longer history",
+      "status": "done",
+      "commit": "95c331e0",
+      "files": [
+        "apps/hail-desk/public/data/swaths.json.gz",
+        "apps/hail-desk/src/storms.test.mjs"
+      ],
+      "gate": "the Colorado list has the years 2021 to 2026 and the apportioned house counts still agree with the street path"
+    },
+    {
+      "id": "F1.1",
+      "title": "the address lookup: a reverse geocode off the TIGER address ranges, and the storm days that were over that spot",
+      "status": "done",
+      "commit": "c482e40e",
+      "files": [
+        "server/providers/deskAddress.js",
+        "server/providers/deskApi.js"
+      ],
+      "gate": "an address in El Paso County returns the days the hail was over it, the tract, the houses and the frames"
+    },
+    {
+      "id": "F1.2",
+      "title": "the desk searches an address as well as a place, and says what the storm days over that address were",
+      "status": "done",
+      "commit": "c482e40e",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/index.html"
+      ],
+      "gate": "typing a house number and a street with a place finds the storms that were over it, and says so when there were none"
     }
   ]
 }
