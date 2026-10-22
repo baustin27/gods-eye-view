@@ -279,6 +279,23 @@ Validation target:
 
 ---
 
+### The server parses the whole tract pack to serve one county
+Status: Open (a cost, not a defect)
+
+Context:
+- The tract pack is 31 MB of JSON and the desk's server parses the WHOLE of
+  it to answer for one county, which is 135 MB of objects in a process that
+  serves a desk on a LAN. The measured cost is acceptable and the desk runs
+  on it comfortably, so this is a note rather than a complaint.
+- A per-county pack, or the same geometry in the binary format the tiles
+  already use, would make it smaller. Neither is a bug and neither is urgent.
+
+Validation target:
+- `server/providers/deskTracts.js`
+- `server/providers/tracts.js`
+
+---
+
 ### The desk's map draws ONE county's streets and tracts
 Status: Open (by design)
 
