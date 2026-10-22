@@ -741,7 +741,7 @@
       "id": "G1.1",
       "title": "the state line on the desk's map, so a storm that crossed a state line can be seen to have crossed one",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "21b9c1d6",
       "files": [
         "server/providers/deskStates.js",
         "server/providers/deskStates.test.mjs",
@@ -755,7 +755,7 @@
       "id": "G1.2",
       "title": "the globe's ISOLATE, on the desk: one place, and only the storms that fell inside it",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "21b9c1d6",
       "files": [
         "src/data/layerState.js",
         "apps/hail-desk/src/state.js",
