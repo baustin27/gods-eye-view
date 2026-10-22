@@ -252,10 +252,7 @@ Census's own land area instead.
   around a city - which the desk's place filters do in a different way.
 - The **phone layout** has never been checked. The desk is a desktop product
   and it says so, and nobody has looked at it on a small screen.
-- **Alaska has no 1 km field.** The archive has an `ALASKA/` prefix beside
-  the CONUS one, with the same products, and the report archive reaches
-  Alaska - so Alaska's storms have reports and no radar footprint, and the
-  desk cannot draw them.
+
 - The desk's map draws **one county's** streets and tracts, and the 500k
   cartographic boundary file DROPS the small urban tracts, so a rural county
   draws almost no houses. Both are in `docs/KNOWN-ISSUES.md`.

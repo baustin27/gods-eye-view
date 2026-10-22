@@ -262,23 +262,6 @@ Validation target:
 
 ---
 
-### Alaska has no 1 km field, and no storm days
-Status: Open (a data gap, and a real one)
-
-Context:
-- The 1 km MRMS MESH field the desk draws is the **CONUS** product. The
-  archive has an `ALASKA/` prefix beside it, with the same products, and
-  Alaska has 177 tracts with housing counts — so Alaska's storms are simply
-  absent from the desk rather than wrong.
-- The report archive does reach Alaska, so a storm there has reports and no
-  radar footprint, which is the half of the list that cannot be drawn.
-
-Validation target:
-- `scripts/build-storm-radar-snapshots.mjs`
-- `src/data/local_data/storm/README.md`
-
----
-
 ### The server parses the whole tract pack to serve one county
 Status: Open (a cost, not a defect)
 
