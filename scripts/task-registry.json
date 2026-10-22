@@ -809,6 +809,23 @@
         "apps/hail-desk/src/data.test.mjs"
       ],
       "gate": "the desk boots in dev with Vite-decoded gzip responses and still inflates opaque gzip artifacts"
+    },
+    {
+      "id": "G3.1",
+      "title": "desk-level state isolation hides every layer outside the selected state and replaces the city-isolation controls",
+      "status": "done",
+      "commit": "dad14351",
+      "files": [
+        "apps/hail-desk/index.html",
+        "apps/hail-desk/styles.css",
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/src/state.js",
+        "apps/hail-desk/src/desk.test.mjs",
+        "apps/hail-desk/src/map/map.js",
+        "apps/hail-desk/src/map/isolation.js",
+        "apps/hail-desk/src/map/isolation.test.mjs"
+      ],
+      "gate": "the desk-control toggle clips imagery, hail and overlays to the state's polygons, follows state changes, survives a shared link, and ALL clears it"
     }
   ]
 }
