@@ -37,6 +37,7 @@ import { createStreetPainter } from './streets.js';
 import { createTractPainter } from './tracts.js';
 import { createCityPainter } from './cities.js';
 import { createSwathPainter } from './swath.js';
+import { clipToState, tilesInState } from './isolation.js';
 
 /**
  * The map pane.
@@ -104,36 +105,45 @@ export function createMapPane(options) {
       ctx.fillStyle = '#05080b';
       ctx.fillRect(0, 0, viewport.width, viewport.height);
 
-      const tiles = visibleTiles(viewport);
-      basemap.draw(ctx, viewport, tiles);
+      const isolated = options.isolated?.();
+      const boundary = options.stateBoundary?.();
+      const visible = visibleTiles(viewport);
+      const tiles = isolated ? tilesInState(visible, boundary) : visible;
+      ctx.save();
+      try {
+        if (isolated) clipToState(ctx, viewport, boundary);
+        basemap.draw(ctx, viewport, tiles);
 
-      const scope = options.scope?.() || {};
-      const inScope = Boolean(scope.state && scope.county);
-      if (inScope) {
-        // The houses, UNDER the hail. The fills are dimmed by the swath and
-        // that is the right way round: the hail is the subject.
-        tracts.draw(ctx, viewport, tiles, { mode: 'fill' });
-        streets.draw(ctx, viewport, tiles);
+        const scope = options.scope?.() || {};
+        const inScope = Boolean(scope.state && scope.county);
+        if (inScope) {
+          // The houses, UNDER the hail. The fills are dimmed by the swath and
+          // that is the right way round: the hail is the subject.
+          tracts.draw(ctx, viewport, tiles, { mode: 'fill' });
+          streets.draw(ctx, viewport, tiles);
+        }
+
+        // THE CITY LINES, over the imagery and under the hail. A canvasser
+        // working a storm that stopped on a city line has to be able to SEE
+        // the line: a dot for a city does not say where the city ends.
+        cities.draw(ctx, viewport, options.cityOutlines?.());
+
+        // THE STATE LINE, under the hail. It is a frame for the storm: a storm
+        // that crossed a state line is a storm in two markets, and the map
+        // cannot say that without the line on it.
+        drawStateBoundary(ctx, viewport, boundary);
+
+        const bands = options.swath?.();
+        if (bands && bands.length) swath.draw(ctx, viewport, bands);
+        if (inScope) {
+          // The neighbourhood boundaries, OVER the hail: a person zooming in
+          // is looking for the edges of the place they are going to work.
+          tracts.draw(ctx, viewport, tiles, { mode: 'outline' });
+        }
+        drawPlaces();
+      } finally {
+        ctx.restore();
       }
-
-      // THE CITY LINES, over the imagery and under the hail. A canvasser
-      // working a storm that stopped on a city line has to be able to SEE
-      // the line: a dot for a city does not say where the city ends.
-      cities.draw(ctx, viewport, options.cityOutlines?.());
-
-      // THE STATE LINE, under the hail. It is a frame for the storm: a storm
-      // that crossed a state line is a storm in two markets, and the map
-      // cannot say that without the line on it.
-      drawStateBoundary(ctx, viewport, options.stateBoundary?.());
-
-      const bands = options.swath?.();
-      if (bands && bands.length) swath.draw(ctx, viewport, bands);
-      if (inScope) {
-        // The neighbourhood boundaries, OVER the hail: a person zooming in
-        // is looking for the edges of the place they are going to work.
-        tracts.draw(ctx, viewport, tiles, { ...scope, mode: 'outline' });
-      }
-      drawPlaces();
       drawAttribution();
       drawScaleBar();
     } finally {

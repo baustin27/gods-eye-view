@@ -14,6 +14,14 @@ import {
 import { csvFilename, toCsv } from './csv.js';
 import { DEFAULT_FILTERS, filtersFromHash, hashFromFilters } from './state.js';
 
+test('state isolation round-trips with the selected state and stays off for ALL', () => {
+  const restored = filtersFromHash(hashFromFilters({ ...DEFAULT_FILTERS, state: 'TX', iso: 'state' }));
+  assert.equal(restored.state.toUpperCase(), 'TX');
+  assert.equal(restored.iso, 'state');
+  assert.equal(filtersFromHash(hashFromFilters({ ...DEFAULT_FILTERS, state: '', iso: 'state' })).iso, '');
+  assert.equal(filtersFromHash(hashFromFilters({ ...DEFAULT_FILTERS, iso: '0816000' })).iso, '');
+});
+
 /**
  * Tests for the Hail Desk's data layer.
  *
@@ -499,4 +507,3 @@ test('every sort key a header offers survives a link', () => {
     assert.equal(filtersFromHash(hash).sort, key, `the sort key ${key} round-trips`);
   }
 });
-

@@ -629,11 +629,15 @@ button.secondary {
 }
 
 /*
- * The ISOLATE control sits beside the PLACES one, so the two buttons share
- * a row at the top right of the map.
+ * State isolation belongs with the state picker, so its target is visible
+ * beside the control rather than being inferred from a map drill-down.
  */
-.map-toggle-isolate {
-  right: 84px;
+.state-isolate {
+  margin-top: 8px;
+}
+.state-isolate.active {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .map-toggle:disabled {

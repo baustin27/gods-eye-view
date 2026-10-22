@@ -58,8 +58,8 @@ export const DEFAULT_FILTERS = Object.freeze({
   // Which spine the storm list shows. 'all' is the whole story; 'prospect'
   // is the lead list - the days the radar reached and nobody called in.
   dscope: 'all',
-  // The place the desk is ISOLATED to, or '' for the whole market. The
-  // globe's ISOLATE: one place, and only what fell inside it.
+  // 'state' hides every map layer outside the selected state. Empty keeps
+  // its surroundings visible; the reserved link token stays the same.
   iso: '',
   // Which view the desk opens on. The storm list is the centre, so this is
   // the default, and a link that names a market view says so.
@@ -85,7 +85,10 @@ export function filtersFromHash(hash) {
   const tokens = (params.get('lo') || '').split('_').filter(Boolean);
   const options = decodeOwnerOptions(OWNER, OWNER_TOKEN, tokens);
   if (!Object.keys(options).length) return { ...DEFAULT_FILTERS };
-  return { ...DEFAULT_FILTERS, ...options };
+  const filters = { ...DEFAULT_FILTERS, ...options };
+  if (filters.state === 'all') filters.state = '';
+  filters.iso = filters.state && filters.iso === 'state' ? 'state' : '';
+  return filters;
 }
 
 /**
@@ -104,7 +107,13 @@ export function hashFromFilters(filters) {
   // identifies itself. The desk's token is not one the globe can enable, and
   // does not need to be: the globe reads the OPTIONS out of the same string.
   params.set('l', OWNER_TOKEN);
-  const tokens = encodeOwnerOptions(OWNER, OWNER_TOKEN, filters);
+  const tokens = encodeOwnerOptions(OWNER, OWNER_TOKEN, {
+    ...filters,
+    // An omitted state means the desk's default Colorado. ALL must therefore
+    // have an explicit value or reloading an unisolated national view changes it.
+    state: filters.state === '' ? 'all' : filters.state,
+    iso: filters.state && filters.iso === 'state' ? 'state' : '',
+  });
   if (tokens.length) params.set('lo', tokens.join('_'));
   return `#${params.toString()}`;
 }

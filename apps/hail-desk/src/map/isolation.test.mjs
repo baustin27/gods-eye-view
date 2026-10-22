@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { clipToState, tilesInState } from './isolation.js';
+import { createViewport } from './viewport.js';
+
+const colorado = [
+  [
+    [
+      [-109.05, 37],
+      [-102.05, 37],
+      [-102.05, 41],
+      [-109.05, 41],
+    ],
+  ],
+];
+
+test('isolation rejects tiles wholly outside the state but keeps edge tiles', () => {
+  const tiles = [
+    { z: 6, x: 12, y: 24 },
+    { z: 6, x: 13, y: 24 },
+    { z: 6, x: 14, y: 24 },
+  ];
+  assert.deepEqual(tilesInState(tiles, colorado), tiles.slice(0, 2));
+  assert.deepEqual(tilesInState(tiles, null), []);
+});
+
+test('isolation clips all polygons and holes in one even-odd path', () => {
+  const calls = [];
+  const ctx = {
+    beginPath() {
+      calls.push('begin');
+    },
+    moveTo() {
+      calls.push('move');
+    },
+    lineTo() {},
+    closePath() {
+      calls.push('close');
+    },
+    clip(rule) {
+      calls.push(rule);
+    },
+  };
+  clipToState(ctx, createViewport(), colorado);
+  assert.deepEqual(calls, ['begin', 'move', 'close', 'evenodd']);
+});
+
+test('a missing outline fails closed rather than revealing the world', () => {
+  let clipped = false;
+  clipToState(
+    {
+      beginPath() {},
+      clip() {
+        clipped = true;
+      },
+    },
+    createViewport(),
+    null,
+  );
+  assert.equal(clipped, true);
+});
+
+test('tile filtering preserves small islands and excludes tiles entirely inside holes', () => {
+  const tile = { z: 6, x: 12, y: 24 };
+  const island = [[[[-110, 38], [-109, 38], [-109, 39], [-110, 39]]]];
+  assert.deepEqual(tilesInState([tile], island), [tile]);
+  const withHole = [[
+    [[-130, 20], [-90, 20], [-90, 50], [-130, 50]],
+    [[-114, 35], [-105, 35], [-105, 43], [-114, 43]],
+  ]];
+  assert.deepEqual(tilesInState([tile], withHole), []);
+});

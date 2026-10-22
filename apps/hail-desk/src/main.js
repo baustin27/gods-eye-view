@@ -80,9 +80,6 @@ const state = {
   // City outlines for the current state, shown so the map can identify city
   // boundaries instead of only marking city centroids.
   cityOutlines: [],
-  // The place the person last opened. It is what the ISOLATE control
-  // isolates, and the drill-down's ISOLATE button isolates it too.
-  lastPlace: null,
   // The day the map is showing, and the row it came from.
   shownDay: null,
   selectedDay: null,
@@ -183,11 +180,13 @@ async function loadCityOutlines(postal) {
     const response = await fetch(
       `/api/desk/places?state=${encodeURIComponent(code)}`,
     );
+    if (String(state.filters.state || '').toUpperCase() !== code) return;
     if (!response.ok) {
       state.cityOutlines = [];
       return;
     }
     const body = await response.json();
+    if (String(state.filters.state || '').toUpperCase() !== code) return;
     state.cityOutlines = (body?.places || [])
       .map((place) =>
         (place.rings || [])
@@ -196,6 +195,7 @@ async function loadCityOutlines(postal) {
       )
       .filter((rings) => rings.length);
   } catch {
+    if (String(state.filters.state || '').toUpperCase() !== code) return;
     state.cityOutlines = [];
   }
   drawMap();
@@ -213,87 +213,76 @@ async function loadCityOutlines(postal) {
  */
 async function loadStateOutline(postal) {
   const code = String(postal || '').trim().toUpperCase();
+  state.stateRings = null;
+  drawMap();
   if (!code) {
     state.stateRings = null;
     return;
   }
   try {
     const response = await fetch(`/api/desk/state?state=${encodeURIComponent(code)}`);
+    if (String(state.filters.state || '').toUpperCase() !== code) return;
     if (!response.ok) {
       state.stateRings = null;
       return;
     }
     const body = await response.json();
+    if (String(state.filters.state || '').toUpperCase() !== code) return;
     state.stateRings = Array.isArray(body?.rings) ? body.rings : null;
   } catch {
+    if (String(state.filters.state || '').toUpperCase() !== code) return;
     state.stateRings = null;
   }
+  if (state.filters.iso === 'state') fitIsolatedState();
   drawMap();
 }
 
 /**
- * The ISOLATE chip's state.
- *
- * It is kept in one place because the chip can go stale two ways - the
- * drill-down opens a place without a repaint, and the isolation changes
- * without one either - and a chip that says "no place to isolate to" while
- * the person is looking at a place is a lie with a button on it.
+ * The desk's isolation follows its selected state, in every view.
  */
 function syncIsolateChip() {
   if (!el.isolateToggle) return;
-  const isolated = state.filters.iso || '';
-  el.isolateToggle.disabled = !isolated && !state.lastPlace;
+  const isolated = state.filters.iso === 'state';
+  const code = String(state.filters.state || '').toUpperCase();
+  el.isolateToggle.disabled = !code;
   el.isolateToggle.setAttribute('aria-pressed', String(Boolean(isolated)));
   el.isolateToggle.classList.toggle('active', Boolean(isolated));
-  el.isolateToggle.textContent = isolated ? 'ISOLATED' : 'ISOLATE';
+  el.isolateToggle.textContent = isolated ? `ISOLATED · ${code}` : 'ISOLATE STATE';
   el.isolateToggle.title = isolated
-    ? 'Stop showing only this place'
-    : state.lastPlace
-      ? `Show only the storms inside ${state.lastPlace.name}`
-      : 'No place to isolate to - open a city first';
+    ? `Show the surroundings of ${code}`
+    : code ? `Hide everything outside ${code}` : 'Choose a state first';
 }
 
 /**
- * Isolate the desk to one place, or to the whole market.
- *
- * The globe's ISOLATE: one area, and only what is inside it. Here it is one
- * PLACE - a city - and the storm list narrows to the days that fell inside
- * it. The link carries it, so an isolated desk is a link someone else can
- * open.
- *
- * @param {string} placeId the place's id, or '' for the whole market
+ * Keep the current view and day when isolation changes: this is a map scope,
+ * not a request to switch to a city's storm list.
  */
-function setIsolation(placeId) {
-  // The storm list is where an isolation is visible, so isolating lands
-  // there: the market table does not narrow, and leaving the person in a
-  // table that did not change would hide what the control just did.
-  state.view = 'storm';
-  applyFilters({ view: 'storm', iso: placeId || '', d: '' });
-  // The isolated place's own biggest storm is the day the map should show:
-  // the day the person is looking at is the one they isolated to.
-  const rows = sortStormDays(stormDays(), state.filters.dsort, state.filters.ddir);
-  const biggest = rows.reduce(
-    (best, row) => (row.houses !== null && (!best || row.houses > best.houses) ? row : best),
-    null,
-  );
-  if (biggest) {
-    applyFilters({ d: biggest.date });
+function setIsolation(enabled) {
+  applyFilters({ iso: enabled && state.filters.state ? 'state' : '' });
+  if (enabled) {
+    fitIsolatedState();
+    drawMap();
   }
 }
 
-/**
- * The place the desk is isolated to, by name.
- *
- * @returns {{id: string, name: string}|null}
- */
-function isolatedPlace() {
-  const id = String(state.filters.iso || '').trim();
-  if (!id) return null;
-  const place = (state.cityPayload?.cities || []).find(
-    (candidate) => String(candidate.id) === id,
+function fitIsolatedState() {
+  const points = (state.stateRings || []).flat(2);
+  if (!points.length) return;
+  const lons = points.map(([lon]) => lon);
+  const lats = points.map(([, lat]) => lat);
+  createTheMap().fitBounds(
+    Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats),
   );
-  if (!place) return null;
-  return { id, name: place.full || place.name || id };
+}
+
+/**
+ * The state the desk is isolated to, for the list summary.
+ *
+ * @returns {{name: string}|null}
+ */
+function isolatedState() {
+  if (state.filters.iso !== 'state' || !state.filters.state) return null;
+  return { name: String(state.filters.state).toUpperCase() };
 }
 
 /** Repaint from the current filters. */
@@ -312,7 +301,25 @@ function render() {
   el.dotsToggle.setAttribute('aria-pressed', String(dotsOn()));
   el.dotsToggle.classList.toggle('active', dotsOn());
   syncIsolateChip();
+  renderSource();
   drawMap();
+}
+
+/** National inventory counts would contradict an isolated state's scope. */
+function renderSource() {
+  const code = state.filters.iso === 'state'
+    ? String(state.filters.state || '').toUpperCase() : '';
+  const cityCount = code
+    ? state.cityIndex.cities.filter((city) =>
+      city.st === code && state.cityIndex.byYear.has(city.id)).length
+    : state.cityIndex.byYear.size;
+  const countyCount = code
+    ? state.countyRows.filter((county) => county.st === code).length
+    : state.countyRows.length;
+  el.source.textContent =
+    `${code ? `${code} · ` : ''}${cityCount.toLocaleString()} places with hail · ` +
+    `${countyCount.toLocaleString()} counties · ` +
+    `ACS ${state.cityPayload.meta?.housingVintage ?? ''} housing units`;
 }
 
 /** The market views: the places, and the counties. */
@@ -362,7 +369,7 @@ function renderStormView() {
     onStormDayClick,
     (row) => row.date === state.filters.d,
   );
-  const isolated = isolatedPlace();
+  const isolated = isolatedState();
   el.summary.textContent = isolated
     ? `isolated to ${isolated.name} — ${stormSummary(rows)}`
     : stormSummary(rows);
@@ -402,22 +409,17 @@ function renderStormView() {
  * 35,018 swath rows, and a person switching filters should not pay for it
  * again.
  */
-let stormDayCache = { key: '', rows: [] };
+let stormDayCache = { key: null, rows: [] };
 
 function stormDays() {
   const key = state.filters.state || '';
-  const isolated = state.filters.iso || '';
-  if (stormDayCache.key !== key || stormDayCache.isolated !== isolated) {
+  if (stormDayCache.key !== key) {
     stormDayCache = {
       key,
-      isolated,
       rows: buildStormDays({
         cities: state.cityPayload,
         swaths: state.swathPayload,
         state: key,
-        // THE ISOLATED PLACE. The globe's ISOLATE, on the desk: one place,
-        // and only what fell inside it.
-        placeId: isolated,
       }),
     };
   }
@@ -829,6 +831,7 @@ function createTheMap() {
       ),
     swath: () => (state.mapBands || []).slice(),
     stateBoundary: () => state.stateRings,
+    isolated: () => state.filters.iso === 'state',
     cityOutlines: () => state.cityOutlines,
     scope: () => {
       // The street tiles and the tract tiles are a COUNTY's, so the map has
@@ -932,6 +935,11 @@ function applyFilters(next) {
   const stateChanged =
     next.state !== undefined && next.state !== state.filters.state;
   state.filters = { ...state.filters, ...next };
+  if (!state.filters.state) state.filters.iso = '';
+  if (stateChanged) {
+    state.stateRings = null;
+    state.cityOutlines = [];
+  }
   // The drill-down is about a particular place in a particular list. Change the
   // list and it is about nothing, so the stack is emptied rather than left
   // pointing at a row that may not be there any more.
@@ -1206,33 +1214,11 @@ function renderDrill() {
   el.detail.hidden = false;
   el.drillTitle.textContent = top.title;
   el.drillBack.hidden = drillStack.length < 2;
-  // THE ISOLATE BUTTON, in the place's own panel. The globe's ISOLATE is a
-  // chip in the layer's toolbar; on the desk the place IS the thing you
-  // isolate, so the button belongs beside the place's name.
-  if (top.isolate) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'link-button isolate-button';
-    const on = state.filters.iso === top.isolate.id;
-    button.textContent = on ? 'SHOW EVERYTHING' : 'ISOLATE THIS PLACE';
-    button.title = on
-      ? 'Stop showing only this place'
-      : `Show only the storms inside ${top.isolate.name}`;
-    button.addEventListener('click', () => {
-      setIsolation(on ? '' : top.isolate.id);
-    });
-    el.drillTitle.after(button);
-  }
   top.render(el.drillBody);
   el.detail.scrollIntoView({ block: 'nearest' });
 }
 
 async function onCityClick(row) {
-  // The place the person opened, which is what the ISOLATE control
-  // isolates. It is remembered because the control lives on the map, and the
-  // map does not know which place the drill-down is showing.
-  state.lastPlace = { id: String(row.id), name: row.full || row.name || '' };
-  syncIsolateChip();
   const reported = cityStorms(state.cityIndex, row.id, state.filters);
   const radar = radarDays(state.swathIndex, row.id, state.filters);
   // The union of the two. A day the radar reached but nobody reported is not
@@ -1263,9 +1249,6 @@ async function onCityClick(row) {
   drawMap();
   pushDrill({
     title: `${row.full || row.name}, ${row.st || ''}`,
-    // The ISOLATE button lives in the drill-down, next to the place it
-    // isolates, so nobody has to go looking for it on the map.
-    isolate: { id: String(row.id), name: row.full || row.name || '' },
     render: (panel) => {
   const summary = document.createElement('p');
   summary.className = 'detail-summary';
@@ -2129,11 +2112,7 @@ async function main() {
     createTheMap();
   drawMap();
   el.loading.remove();
-    const cityCount = state.cityIndex.byYear.size;
-    el.source.textContent =
-      `${cityCount.toLocaleString()} places with hail · ` +
-      `${state.countyRows.length.toLocaleString()} counties · ` +
-      `ACS ${citiesPayload.meta?.housingVintage ?? ''} housing units`;
+    renderSource();
   } catch (error) {
     el.loading.textContent = `Could not load the county data: ${error.message}`;
     el.loading.className = 'loading error';
@@ -2208,12 +2187,7 @@ async function main() {
     renderDrill();
   });
   el.isolateToggle.addEventListener('click', () => {
-    const on = state.filters.iso || '';
-    if (on) {
-      setIsolation('');
-      return;
-    }
-    if (state.lastPlace) setIsolation(state.lastPlace.id);
+    setIsolation(state.filters.iso !== 'state');
   });
   el.dotsToggle.addEventListener('click', () => {
     state.dots = !dotsOn();
@@ -2241,12 +2215,7 @@ async function main() {
     }, 2000);
   });
   window.addEventListener('hashchange', () => {
-    state.filters = {
-      ...DEFAULT_FILTERS,
-      ...filtersFromHash(window.location.hash),
-    };
-    syncControls();
-    render();
+    applyFilters(filtersFromHash(window.location.hash));
   });
 }
 

@@ -43,6 +43,7 @@
         <div class="field state-field">
           <label id="state-label">State</label>
           <div class="data-toggle-controls" id="stateChips" role="group" aria-labelledby="state-label"></div>
+          <button type="button" id="isolateToggle" class="state-isolate" aria-pressed="false" title="Hide everything outside the selected state">ISOLATE STATE</button>
           <div class="state-menu" id="stateMenu" hidden aria-label="Every state in the market"></div>
           <select id="state" name="state" class="visually-hidden" aria-hidden="true" tabindex="-1">
             <option value="">All states</option>
@@ -127,23 +128,6 @@
           title="Show the places as dots on the map"
         >
           PLACES
-        </button>
-        <!--
-          THE ISOLATE CONTROL, the globe's, on the desk. It shows only the
-          storms that fell inside one place, and the link carries it. It is
-          disabled rather than hidden when no place is open, because a chip
-          that is always live and does nothing is worse than one that says it
-          has nothing to isolate.
-        -->
-        <button
-          type="button"
-          id="isolateToggle"
-          class="map-toggle map-toggle-isolate"
-          aria-pressed="false"
-          disabled
-          title="No place to isolate to - open a city first"
-        >
-          ISOLATE
         </button>
         <!--
           THE INFO LINE. What is on the map, in one line, with the day
