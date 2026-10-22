@@ -730,7 +730,7 @@
       "id": "F2.4",
       "title": "the sub-daily frames cover the longer history too, so the frame chips work on the older days",
       "status": "done",
-      "commit": "PENDING",
+      "commit": "48da3d62",
       "files": [
         "src/data/local_data/storm/storm_radar_hail_sub_2021-01-02.bin.gz",
         "src/data/local_data/storm/storm_radar_hail_sub_2026-10-15.bin.gz"
