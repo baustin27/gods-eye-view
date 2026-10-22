@@ -765,6 +765,50 @@
         "apps/hail-desk/styles.css"
       ],
       "gate": "isolating Colorado Springs narrows the storm list to its 75 days and the link carries it"
+    },
+    {
+      "id": "G2.1",
+      "title": "the Census place outlines, so the map can show where a city ends instead of only marking its centre",
+      "status": "done",
+      "commit": "961f962e",
+      "files": [
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/src/map/map.js",
+        "apps/hail-desk/src/map/cities.js",
+        "apps/hail-desk/src/map/cities.test.mjs",
+        "server/providers/deskApi.js",
+        "server/providers/deskGeography.js",
+        "server/providers/deskGeography.test.mjs"
+      ],
+      "gate": "the state-scoped places route returns Census rings and the map draws each as a closed gold outline"
+    },
+    {
+      "id": "G2.2",
+      "title": "street and tract tiles resolve their county from their own geography, so the map keeps drawing across county lines",
+      "status": "done",
+      "commit": "961f962e",
+      "files": [
+        "apps/hail-desk/src/map/map.js",
+        "apps/hail-desk/src/map/streets.js",
+        "apps/hail-desk/src/map/tracts.js",
+        "apps/hail-desk/src/map/tracts.test.mjs",
+        "server/desk/server.mjs",
+        "server/providers/deskApi.js",
+        "server/providers/deskGeography.js",
+        "server/providers/deskGeography.test.mjs"
+      ],
+      "gate": "adjacent tiles return their own county GEOIDs and the tract painter loads each tile's matching index"
+    },
+    {
+      "id": "G2.3",
+      "title": "the desk's Vite dev server transparently decodes its compressed data files before the app reads them",
+      "status": "done",
+      "commit": "961f962e",
+      "files": [
+        "apps/hail-desk/src/data.js",
+        "apps/hail-desk/src/data.test.mjs"
+      ],
+      "gate": "the desk boots in dev with Vite-decoded gzip responses and still inflates opaque gzip artifacts"
     }
   ]
 }
