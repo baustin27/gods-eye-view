@@ -142,8 +142,10 @@ The retention window is the operator's call and is now six years.
   that is a chip row (with a MORE chip for the rest), the table windowed
   rather than copied, every sort header a control, and the places carrying
   their centres.
-- **The desk's MAP** — a canvas, Web Mercator, Esri's imagery, and the
-  county's own streets from a new tile API, in the `GEVS` format.
+- **The desk's MAP** — a canvas, Web Mercator, Esri's imagery, the
+  county's own streets from a new tile API in the `GEVS` format, the tracts
+  as a choropleth of their housing units, the **state line** (Natural Earth
+  admin-1, decoded on the server), and the **ISOLATE** control.
 - **The per-storm artifact** — one storm as a picture, with its sources on it.
 
 ### 3.4 The workflow layer
@@ -245,11 +247,9 @@ Census's own land area instead.
   the tract row itself.
 - The globe's storm layers were confirmed working on a clean boot of the
   production build (`:4173`): OFF → ON, all five storm assets 200, no errors.
-- The **ISOLATE** control (the globe's "show me only this storm") has not
-  been ported as a control, because the desk already has its equivalents: the
-  selected day draws its swath and nothing else, and the drill-down shows one
-  place's storms. What is missing is the globe's *place* isolation - a box
-  around a city - which the desk's place filters do in a different way.
+- The **ISOLATE** control is **on the desk** now: a place, and only the
+  storms that fell inside it. The storm list narrows, the map shows that
+  place's biggest storm, and the link carries the isolation.
 - The **phone layout** has never been checked. The desk is a desktop product
   and it says so, and nobody has looked at it on a small screen.
 

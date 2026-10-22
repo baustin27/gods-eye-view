@@ -487,6 +487,13 @@ the tract's, and the difference is the whole product in the rural case. The
 reports within five kilometres come with it, and when nothing fell there the
 desk says so.
 
+**G — the state line and the ISOLATE.** The desk now draws the state's
+outline (Natural Earth admin-1, decoded on the server, resolved *inside* the
+United States — "CO" is Colorado and a province in Algeria), and the globe's
+ISOLATE control is on the desk: a place, and only the storms that fell
+inside it. The chip is disabled rather than hidden when there is no place to
+isolate to, and the isolation is in the link.
+
 **F2 — the history.** The fine 1 km field starts **2021-01-02** now, not
 2024-01-01: 2,103 shards, 17.6 million cells, 64 MB, and Colorado's storm
 list goes from 276 days to 390. Two things the archive taught the builder:
