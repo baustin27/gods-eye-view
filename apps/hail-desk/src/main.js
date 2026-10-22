@@ -820,6 +820,183 @@ function onSort(key) {
  * the list a canvasser actually works from.
  */
 /**
+ * Whether a query is an address rather than a place.
+ *
+ * A house number and a street name. Not a ZIP (that is a place question),
+ * not a street name on its own (there are a hundred Main Streets in a
+ * county and the county has to be named).
+ *
+ * @param {string} query
+ * @returns {boolean}
+ */
+function looksLikeAddress(query) {
+  return /^\s*\d+\s+\S/.test(String(query || ''));
+}
+
+/**
+ * Look an address up and show what fell on it.
+ *
+ * @param {string} query
+ * @returns {Promise<void>}
+ */
+async function searchAddress(query) {
+  const params = new URLSearchParams({ q: query });
+  // The place in the query names the county; the state's filter narrows the
+  // search when the query does not name one.
+  if (state.filters.state) params.set('state', state.filters.state);
+  let result = null;
+  let failure = null;
+  try {
+    const response = await fetch(`/api/desk/address?${params}`);
+    result = await response.json();
+    if (!response.ok || result.error) {
+      failure = result.error || response.status;
+    }
+  } catch (error) {
+    failure = error.message;
+  }
+  if (failure) {
+    pushDrill({
+      title: 'The address',
+      render: (panel) => {
+        const note = document.createElement('p');
+        note.className = 'detail-summary';
+        note.textContent = `The address could not be looked up: ${failure}`;
+        panel.append(note);
+      },
+    });
+    return;
+  }
+  showAddress(result);
+}
+
+/**
+ * What fell on an address.
+ *
+ * The panel leads with the day that matters: the hail was over THIS cell on
+ * these days. The days the radar reached the TRACT are also here, because
+ * the difference between the two is the whole product in the rural case - a
+ * tract can be four thousand square kilometres, and the hail can have
+ * crossed one cell of it.
+ */
+function showAddress(result) {
+  const address = result.address || {};
+  const days = result.days || [];
+  const over = days.filter((day) => day.over);
+  pushDrill({
+    title: address.street
+      ? `${address.street}, ${address.zip || ''}`.trim()
+      : 'The address',
+    render: (panel) => {
+      const note = document.createElement('p');
+      note.className = 'detail-summary';
+      const parts = [];
+      if (address.from !== undefined) {
+        parts.push(`the house numbers ${address.from} to ${address.to}`);
+      }
+      if (result.tract) {
+        parts.push(`census tract ${result.tract.name || result.tract.geoid}`);
+        if (result.tract.units !== null && result.tract.units !== undefined) {
+          parts.push(`${result.tract.units.toLocaleString()} housing units`);
+        }
+      }
+      parts.push(
+        over.length
+          ? `the hail was over this spot on ${over.length} of the days the radar reached the tract`
+          : 'the hail never reached this spot on any of the days the radar reached the tract',
+      );
+      note.textContent = `${parts.join('. ')}.`;
+      panel.append(note);
+
+      if (days.length) {
+        const table = document.createElement('table');
+        table.className = 'desk-table storm-table';
+        const head = document.createElement('thead');
+        const hr = document.createElement('tr');
+        for (const [label, title] of [
+          ['Day', 'The day the radar reached the tract.'],
+          [
+            'Over this spot',
+            'Whether the hail was over the kilometre the address is in, and not merely over the tract.',
+          ],
+          ['Hail', 'The largest reading in the tract that day, in inches.'],
+          ['Houses', 'The houses under the hail in the tract.'],
+        ]) {
+          const th = document.createElement('th');
+          th.scope = 'col';
+          th.textContent = label;
+          th.title = title;
+          hr.appendChild(th);
+        }
+        head.appendChild(hr);
+        table.appendChild(head);
+        const body = document.createElement('tbody');
+        for (const day of days) {
+          const tr = document.createElement('tr');
+          if (day.over) tr.classList.add('selected');
+          for (const value of [
+            day.day,
+            day.over ? 'YES' : 'no',
+            day.maxMm ? `${(day.maxMm / 25.4).toFixed(2)}"` : '—',
+            day.houses.toLocaleString(),
+          ]) {
+            const td = document.createElement('td');
+            td.textContent = String(value);
+            tr.appendChild(td);
+          }
+          body.appendChild(tr);
+        }
+        table.appendChild(body);
+        panel.append(table);
+      }
+
+      const reports = result.reports || [];
+      if (reports.length) {
+        const list = document.createElement('p');
+        list.className = 'detail-summary';
+        list.textContent = `${reports.length} severe reports within five kilometres of the address:`;
+        panel.append(list);
+        const reportTable = document.createElement('table');
+        reportTable.className = 'desk-table storm-table';
+        const head = document.createElement('thead');
+        const hr = document.createElement('tr');
+        for (const [label, title] of [
+          ['Date', 'The day the report was filed.'],
+          ['Size', 'The reported size, in inches.'],
+          ['Away', 'How far the report was from the address, in kilometres.'],
+          ['What was reported', 'The report as it was filed.'],
+        ]) {
+          const th = document.createElement('th');
+          th.scope = 'col';
+          th.textContent = label;
+          th.title = title;
+          hr.appendChild(th);
+        }
+        head.appendChild(hr);
+        reportTable.appendChild(head);
+        const body = document.createElement('tbody');
+        for (const report of reports) {
+          const tr = document.createElement('tr');
+          for (const value of [
+            report.date,
+            report.magnitude ? `${(report.magnitude / 100).toFixed(2)}"` : '—',
+            `${report.km} km`,
+            report.comment,
+          ]) {
+            const td = document.createElement('td');
+            td.textContent = String(value);
+            tr.appendChild(td);
+          }
+          body.appendChild(tr);
+        }
+        reportTable.appendChild(body);
+        panel.append(reportTable);
+      }
+    },
+  });
+}
+
+/**
  * The drill-down stack.
  *
  * The desk had THREE panels - the storms, the tracts, the streets - as
@@ -1790,6 +1967,18 @@ async function main() {
     searchTimer = setTimeout(() => {
       searchTimer = null;
       const value = el.q.value;
+      // AN ADDRESS is a different kind of query: a house number and a street
+      // is not a place, and the answer is not a filtered list but the storms
+      // that were over that spot.
+      //
+      // It is checked FIRST, because an address often names a city and the
+      // city name contains a state name - "123 Main St, Colorado Springs"
+      // is an address, and a state filter would have swallowed it and
+      // cleared the box.
+      if (looksLikeAddress(value)) {
+        void searchAddress(value);
+        return;
+      }
       // A query that names a state filters to that state, and the place
       // search carries on inside it.
       const named = stateForQuery(value);

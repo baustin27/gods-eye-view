@@ -40,6 +40,15 @@ const STORM_DIR = path.join(REPO, 'src/data/local_data/storm');
  * serves a Vite middleware and a `node:http` reply.
  */
 export const DESK_ROUTES = {
+  '/api/desk/address': async (url) => {
+    const { addressPayload } = await import('./deskAddress.js');
+    return addressPayload({
+      q: url.searchParams.get('q') || '',
+      place: url.searchParams.get('place') || '',
+      state: url.searchParams.get('state') || '',
+      county: url.searchParams.get('county') || '',
+    });
+  },
   '/api/desk/streets': async (url) => {
     const state = String(url.searchParams.get('state') || '').trim();
     const county = String(url.searchParams.get('county') || '').trim();
