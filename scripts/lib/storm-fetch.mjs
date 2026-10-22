@@ -76,6 +76,39 @@ export async function fetchJson(url) {
 }
 
 /**
+ * The keys under a prefix in the NOAA MRMS bucket.
+ *
+ * The archive is not uniform. From 2020-10-14 the daily maximum is one file
+ * per day, stamped at midnight; before that the same product was produced
+ * several times a day, and the stamp in the filename is the PRODUCTION TIME
+ * rather than the day. So a day before the change has to be LOOKED UP rather
+ * than addressed, and the file nearest midnight is the one that means the
+ * same thing as the file at midnight after it.
+ *
+ * The listing is S3's REST XML, and the only thing in it this needs is the
+ * key of each entry - so it is read with a pattern rather than a parser, and
+ * the pattern is deliberately narrow: a key inside a tag, and nothing else.
+ *
+ * @param {string} prefix the key prefix, e.g. `CONUS/MESH_Max_1440min_00.50/20201014/`
+ * @param {object} [options]
+ * @param {number} [options.maxKeys] the page size
+ * @returns {Promise<string[]>} the keys, in the order the bucket gave them
+ */
+export async function listBucketKeys(prefix, { maxKeys = 1000 } = {}) {
+  const url = `https://noaa-mrms-pds.s3.amazonaws.com/?list-type=2&max-keys=${maxKeys}&prefix=${encodeURIComponent(prefix)}`;
+  const res = await fetch(url, { headers: { 'user-agent': USER_AGENT } });
+  if (!res.ok) {
+    throw new Error(`bucket listing ${res.status} for ${prefix}`);
+  }
+  const text = await res.text();
+  const keys = [];
+  for (const match of text.matchAll(/<Key>([^<]*)<\/Key>/g)) {
+    keys.push(match[1]);
+  }
+  return keys;
+}
+
+/**
  * Poll an async task until it returns a truthy value, with a bounded wait.
  * @template T
  * @param {() => Promise<T|null>} task

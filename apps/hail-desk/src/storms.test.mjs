@@ -61,20 +61,23 @@ test('the list is the union of the two spines', () => {
   const reportDays = NATIONAL.filter((row) => row.kind !== 'radar');
   const radarDays = NATIONAL.filter((row) => row.kind !== 'reports');
   assert.equal(reportDays.length, 1248, 'the report days');
-  assert.equal(radarDays.length, 782, 'the radar days');
-  assert.equal(NATIONAL.length, 1477, 'and the union of them');
+  assert.equal(radarDays.length, 1586, 'the radar days');
+  assert.equal(NATIONAL.length, 1708, 'and the union of them');
   assert.deepEqual(span(reportDays), ['2021-01-06', '2026-10-13']);
-  assert.deepEqual(span(radarDays), ['2024-01-05', '2026-10-15']);
+  assert.deepEqual(span(radarDays), ['2021-01-02', '2026-10-15']);
 });
 
 test('the days that are on both spines are counted on both spines', () => {
-  assert.equal(ofKind(NATIONAL, 'both').length, 553);
-  assert.equal(ofKind(NATIONAL, 'reports').length, 695);
-  assert.equal(ofKind(NATIONAL, 'radar').length, 229);
+  assert.equal(ofKind(NATIONAL, 'both').length, 1126);
+  assert.equal(ofKind(NATIONAL, 'reports').length, 122);
+  assert.equal(ofKind(NATIONAL, 'radar').length, 460);
   // A day with reports and no radar reach, and a day with radar reach and no
   // reports, are the two halves of the list that only the UNION can show.
-  assert.deepEqual(span(ofKind(NATIONAL, 'reports')), ['2021-01-06', '2026-10-08']);
-  assert.deepEqual(span(ofKind(NATIONAL, 'radar')), ['2024-01-05', '2026-10-15']);
+  // The first report day is no longer the first REPORT-ONLY day: with six
+  // years of radar behind it, 6 January 2021 is a day the radar reached as
+  // well as a day somebody called in.
+  assert.deepEqual(span(ofKind(NATIONAL, 'reports')), ['2021-01-24', '2026-10-08']);
+  assert.deepEqual(span(ofKind(NATIONAL, 'radar')), ['2021-01-02', '2026-10-15']);
 });
 
 test('a day is on the list once', () => {
@@ -90,28 +93,28 @@ test('a day is on the list once', () => {
  * radar reached.
  * ====================================================================== */
 
-test('the biggest Colorado radar day is 2024-06-01', () => {
+test('the biggest Colorado radar day is 2023-06-22', () => {
   const biggest = COLORADO.reduce((best, row) =>
     row.houses !== null && (!best || row.houses > best.houses) ? row : best,
   null);
   assert.ok(biggest, 'Colorado has radar days');
-  assert.equal(biggest.radarDay, '2024-06-01', 'and it is the shard of that day');
+  assert.equal(biggest.radarDay, '2023-06-23', 'and it is the shard of that day');
   // The row is dated the day the reports were filed, and the shard that
   // covers that day is the one that measured the hail - which is why the
   // biggest number in the list is on the row before it.
-  assert.equal(biggest.date, '2024-05-31', 'the row is the day before the shard');
+  assert.equal(biggest.date, '2023-06-22', 'the row is the day before the shard');
   // THE HOUSES IN REACH are the houses that were UNDER THE HAIL: the share
   // of each tract the 1 km field covered, times the units in it. The market
   // size - every unit in the tracts the hail touched - is beside it.
-  assert.equal(biggest.houses, 209072, '209,072 houses under the hail');
-  assert.equal(biggest.units, 323867, 'out of 323,867 housing units');
-  assert.equal(biggest.tracts, 165, 'across 165 tracts');
-  assert.equal(biggest.radarPlaces, 22, 'and 22 places');
+  assert.equal(biggest.houses, 274771, '274,771 houses under the hail');
+  assert.equal(biggest.units, 437840, 'out of 437,840 housing units');
+  assert.equal(biggest.tracts, 247, 'across 247 tracts');
+  assert.equal(biggest.radarPlaces, 37, 'and 37 places');
   assert.ok(
-    Math.abs(biggest.largest - 86.4 / 25.4) < 1e-12,
+    Math.abs(biggest.largest - 62.6 / 25.4) < 1e-9,
     'the largest reading, in inches',
   );
-  assert.ok(Math.abs(biggest.largest - 3.4) < 0.005, 'which reads as 3.40 inches');
+  assert.ok(Math.abs(biggest.largest - 2.46) < 0.005, 'which reads as 2.46 inches');
 });
 
 test('2025-07-07 in Colorado is 17,750 houses in 24 tracts', () => {
@@ -140,8 +143,8 @@ test('the houses in reach are never more than the market, and usually far less',
   // market, because most of the tracts the hail reached were only clipped.
   const houses = COLORADO.reduce((total, row) => total + (row.houses || 0), 0);
   const units = COLORADO.reduce((total, row) => total + (row.units || 0), 0);
-  assert.equal(houses, 970872);
-  assert.equal(units, 2588951);
+  assert.equal(houses, 2227005);
+  assert.equal(units, 5543260);
 });
 
 test('Colorado is a market of 143 places with hail in the default window', () => {
@@ -189,25 +192,32 @@ test('the Colorado list is the state, and not the country', () => {
   }
 });
 
-test('Colorado has 175 report days and 160 radar days', () => {
+test('Colorado has 175 report days and 302 radar days', () => {
   // The two spines, measured per state: the days people filed hail in
-  // Colorado, and the days the radar reached something in it.
+  // Colorado, and the days the radar reached something in it. The radar
+  // spine grew when the field went back to 2021, and it is the larger of the
+  // two now, which is the point of a field that goes back further than the
+  // report archive.
   const reportDays = COLORADO.filter((row) => row.kind !== 'radar');
   const radarDays = COLORADO.filter((row) => row.kind !== 'reports');
   assert.equal(reportDays.length, 175);
-  assert.equal(radarDays.length, 160);
+  assert.equal(radarDays.length, 302);
 });
 
-test('38% of the Colorado report days have a radar reach', () => {
-  // 67 of 175. It is the number the day pairing was chosen on: the +1 offset
-  // covers more than twice as many report days as any other offset, and it is
-  // the coverage the desk shows - a row with no radar reach is a row with no
-  // footprint to draw.
+test('73% of the Colorado report days have a radar reach', () => {
+  // 128 of 175, where it was 67 of 175 when the field only went back to
+  // 2024. The +1 offset is the pairing - it covers more than twice as many
+  // report days as any other offset - and the coverage grows as the field
+  // reaches further back, because a report day in 2021 was on the radar too.
+  //
+  // The number that matters is the one that did NOT grow: the 47 report days
+  // with no radar reach are days before the 1 km field starts, and no amount
+  // of history changes them.
   const reportDays = COLORADO.filter((row) => row.kind !== 'radar');
   const covered = reportDays.filter((row) => row.houses !== null);
-  assert.equal(covered.length, 67);
-  assert.ok(covered.length / reportDays.length > 0.37);
-  assert.ok(covered.length / reportDays.length < 0.39);
+  assert.equal(covered.length, 128);
+  assert.ok(covered.length / reportDays.length > 0.72);
+  assert.ok(covered.length / reportDays.length < 0.74);
 });
 
 /* ======================================================================

@@ -62,6 +62,7 @@ import {
 } from './lib/grib2.mjs';
 import {
   fetchBuffer,
+  listBucketKeys,
   setRefresh,
   writeGeoJsonl,
   step,
@@ -288,7 +289,18 @@ export const HAIL_RETAIN_MM_FINE = 19;
  * The index is a `uint16`, so it addresses 65,536 days — the year 2199 — from
  * here. That is a limit worth stating rather than discovering.
  */
-export const DAY_INDEX_EPOCH = '2021-01-01';
+// The epoch the day indices count from.
+//
+// It is where the 1 km daily maximum starts, and it is where the fine field
+// starts, and the two have to be the same place: a day before the epoch has
+// no index, and the field cannot hold it.
+//
+// It was 2021-01-01 because the archive's layout changed there and the
+// builder only knew about the layout after it. The 1 km daily maximum
+// actually reaches back to 2020-10-14 under the same product name, and the
+// files before the change are stamped with their PRODUCTION TIME rather than
+// with the day, so the builder has to look them up.
+export const DAY_INDEX_EPOCH = '2020-10-14';
 
 /** Guard against a pathological day materialising every CONUS cell. */
 const MAX_CELLS = 40000;
@@ -418,7 +430,11 @@ export function cellIJFine(index) {
  * bundled snapshot exactly, so the committed artefact is never the product of
  * "whatever window someone happened to pass".
  */
-const ARCHIVE_START = '2021-01-01';
+// The 1 km daily maximum begins here. The archive before it holds the same
+// product at HALF A DEGREE - a 50 kilometre cell, which is a market-sizing
+// layer and not a work list - so the fine field starts where the 1 km field
+// starts.
+const ARCHIVE_START = '2020-10-14';
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -622,6 +638,67 @@ export function ingestMeshGz(gzipped, ymd, cellsByYear, options = {}) {
 }
 
 /**
+ * The key of the daily maximum for one day.
+ *
+ * THE ARCHIVE CHANGED ITS MIND. From 2020-10-14 the daily maximum is one
+ * file per day, stamped at midnight, and the key is the obvious one. Before
+ * that the same product was produced several times a day, and the stamp in
+ * the filename is the PRODUCTION TIME, so the day has to be looked up in the
+ * bucket and the file nearest midnight is the one that means the same thing
+ * as the file at midnight after it.
+ *
+ * The two eras have to be comparable, because the shards are one series and
+ * the desk joins a report day to the shard that covers it. Taking the wrong
+ * file of a day would put a storm on the wrong day, which is the exact
+ * failure the archive's day naming exists to prevent.
+ *
+ * @param {string} ymd the day, `YYYYMMDD`
+ * @returns {Promise<string>} the key, relative to the bucket
+ */
+async function dailyMaxKey(ymd) {
+  const direct = `${PRODUCT}/${ymd}/MRMS_MESH_Max_1440min_00.50_${ymd}-000000.grib2.gz`;
+  try {
+    await fetchBuffer(`${BUCKET}/${direct}`);
+    return direct;
+  } catch {
+    // No midnight file: this is one of the days the product was produced on a
+    // schedule, and the day's files have to be looked up.
+  }
+  const prefix = `${PRODUCT}/${ymd}/`;
+  const keys = await listBucketKeys(prefix);
+  if (!keys.length) {
+    throw new Error(`no daily maximum for ${ymd} in the archive`);
+  }
+  // The file whose production stamp is nearest midnight. The stamp is the
+  // last six digits of the file name, and the day it belongs to is the one
+  // in the name, so the comparison is on the time of day alone.
+  const stamped = keys
+    .map((key) => {
+      const match = key.match(/_(\d{8})-(\d{6})\.grib2\.gz$/);
+      return match ? { key, time: match[2] } : null;
+    })
+    .filter(Boolean);
+  if (!stamped.length) {
+    throw new Error(`the archive has files for ${ymd} but none with a stamp`);
+  }
+  const minutes = (stamp) =>
+    Number(stamp.slice(0, 2)) * 60 + Number(stamp.slice(2, 4));
+  const midnight = 0;
+  stamped.sort((a, b) => {
+    // The distance to midnight, with the hours either side of it: a file
+    // stamped at 23:50 is 10 minutes from midnight and a file at 00:10 is
+    // also 10 minutes from it, and the later one covers the later part of
+    // the day, so it is the one to take.
+    const distance = (entry) => {
+      const m = minutes(entry.time);
+      return m <= 720 ? m : 1440 - m;
+    };
+    return distance(a) - distance(b) || a.time.localeCompare(b.time);
+  });
+  return stamped[0].key;
+}
+
+/**
  * Fetch one day and fold it into that day's year bucket.
  * @param {string} ymd
  * @param {Map<number, Map<string, object>>} cellsByYear
@@ -630,7 +707,7 @@ export function ingestMeshGz(gzipped, ymd, cellsByYear, options = {}) {
  * @returns {Promise<{ymd:string, ok:boolean, points:number, error?:string}>}
  */
 async function ingestDay(ymd, cellsByYear, options = {}) {
-  const key = `${PRODUCT}/${ymd}/MRMS_MESH_Max_1440min_00.50_${ymd}-000000.grib2.gz`;
+  const key = await dailyMaxKey(ymd);
   try {
     const body = await fetchBuffer(`${BUCKET}/${key}`);
     const result = ingestMeshGz(body, ymd, cellsByYear, options);

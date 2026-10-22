@@ -852,12 +852,13 @@ test('every field of the per-day encoding fits a uint16, and the writer says so'
 });
 
 test('dayIndex counts from the archive start, not from the window start', () => {
-  assert.equal(DAY_INDEX_EPOCH, '2021-01-01');
-  assert.equal(dayIndex('20210101'), 0, 'day zero is the epoch itself');
-  assert.equal(dayIndex('20210102'), 1);
-  assert.equal(dayIndex('20210615'), 165, 'the 2021-06-15 fixture day');
-  assert.equal(dayIndex('20241015'), 1383);
-  assert.equal(dayIndex('20261015'), 2113, 'the end of the committed window');
+  assert.equal(DAY_INDEX_EPOCH, '2020-10-14');
+  assert.equal(dayIndex('20201014'), 0, 'day zero is the epoch itself');
+  assert.equal(dayIndex('20201015'), 1);
+  assert.equal(dayIndex('20210101'), 79, 'the 2021-01-01 day');
+  assert.equal(dayIndex('20210615'), 244, 'the 2021-06-15 fixture day');
+  assert.equal(dayIndex('20241015'), 1462);
+  assert.equal(dayIndex('20261015'), 2192, 'the end of the committed window');
   // The epoch is fixed to the archive, so extending the window end does not
   // move an earlier day's index. That is the whole reason it is not the window
   // start: a moving epoch re-dates the whole artifact on the next rebuild.
@@ -947,7 +948,7 @@ test('per-day records respect the kept-cell set', () => {
   );
   assert.deepEqual(
     records.map((r) => r.dayIndex),
-    [165, 165, 166],
+    [dayIndex('20210615'), dayIndex('20210615'), dayIndex('20210616')],
     'every cell-day of every kept cell is present',
   );
 });
@@ -1005,7 +1006,7 @@ test(
 test('the per-day sidecar states the epoch, the scale and the geometry', () => {
   const meta = perDayMeta({
     builtAt: '2026-10-16T00:00:00.000Z',
-    window: { from: '2021-01-01', to: '2026-10-15', days: 2125 },
+    window: { from: '2020-10-14', to: '2026-10-15', days: 2193 },
     unavailableDays: [],
     recordCount: 253016,
     cellCount: 21947,
@@ -1025,7 +1026,7 @@ test('the per-day sidecar states the epoch, the scale and the geometry', () => {
   // honour, which is why this is a separate shape.
   assert.equal(radarMeta({
     builtAt: 'x',
-    window: { from: '2021-01-01', to: '2026-10-15', days: 2125 },
+    window: { from: '2020-10-14', to: '2026-10-15', days: 2193 },
     unavailableDays: [],
     cellCount: 1,
     corePointCount: 1,
@@ -1060,7 +1061,7 @@ test('a day index round-trips through its epoch', () => {
   for (const ymd of ['20210101', '20211231', '20220101', '20240229', '20261015']) {
     assert.equal(dayFromIndex(dayIndex(ymd)), ymd);
   }
-  assert.equal(dayFromIndex(0), '20210101', 'day zero is the epoch');
+  assert.equal(dayFromIndex(0), '20201014', 'day zero is the epoch');
   assert.throws(
     () => dayFromIndex(70_000),
     RangeError,
@@ -1368,7 +1369,7 @@ test('the fine manifest records the geometry, the floor, and every day', () => {
   assert.equal(meta.geometry.rowBase, 2100);
   assert.equal(meta.geometry.colBase, -12500);
   assert.equal(meta.retainMm, 19);
-  assert.equal(meta.dayIndexEpoch, '2021-01-01');
+  assert.equal(meta.dayIndexEpoch, '2020-10-14');
   assert.equal(meta.encoding.cellIndexBits, 32, 'and the index width is declared');
   assert.equal(meta.encoding.bytesPerRecord, FINE_DAY_RECORD_BYTES);
   assert.equal(meta.encoding.dayIndexInFilename, true);
