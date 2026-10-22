@@ -403,10 +403,22 @@ async function showStormDay(row) {
   if (state.shownDay === key && state.mapBands.length) return;
   state.shownDay = key;
   state.mapDay = row.radarDay;
-  state.mapBands =
-    frame === null
-      ? await loadSwathBands(row.radarDay)
-      : await loadFrameBands(row.radarDay, frame);
+  if (frame === null) {
+    state.mapBands = await loadSwathBands(row.radarDay);
+  } else {
+    const bands = await loadFrameBands(row.radarDay, frame);
+    if (bands.length) {
+      state.mapBands = bands;
+    } else {
+      // NO FRAME FOR THIS DAY, so the map keeps the whole day rather than
+      // going blank. A day whose frames were never published - the sub-daily
+      // archive is a window like every other - still has its day, and a map
+      // that empties itself because a finer answer is missing is worse than
+      // a map with the coarser one.
+      state.frame = null;
+      state.mapBands = await loadSwathBands(row.radarDay);
+    }
+  }
   fitToSwath(state.mapBands);
   drawMap();
   renderMapInfo(row);

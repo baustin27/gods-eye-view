@@ -153,10 +153,16 @@ Context:
   the map can be tens of metres from the true boundary of the tract, so a
   property line drawn from it is a line the Census drew, not a survey.
 - The housing-unit count is the ACS 5-year B25001 estimate, and the artifact
-  covers 52 states, DC and Puerto Rico. Arizona's tracts and the four US
-  territories (60, 66, 69, 78) have no count, and 141 tracts across the
-  territories and New York have no row. The desk reports that as NO ESTIMATE
-  (`units: null`) and never as zero: a zero is a number, and an absence is not.
+  covers the 52 states and territories the Census publishes: the 50 states,
+  DC and Puerto Rico. The four US territories (60, 66, 69, 78) have no count
+  and 141 tracts across the territories and New York have no row. The desk
+  reports that as NO ESTIMATE (`units: null`) and never as zero: a zero is a
+  number, and an absence is not.
+  - An earlier draft of this entry said Arizona had no count. It does —
+  1,765 tracts — and the FIPS codes 03 and 07, which look like missing
+  states, are simply the codes the Census never assigned. The gap is the
+  territories, and the territories have no hail either, because the 1 km
+    field is a CONUS product.
 - The count is a SAMPLE estimate and carries a margin of error. The margin
   travels with it in the tract list (`moe`), and a number without its margin is
   a claim the data does not support.
@@ -253,6 +259,23 @@ Context:
 Validation target:
 - `server/providers/deskAddress.js`
 - `server/providers/deskAddress.test.mjs`
+
+---
+
+### Alaska has no 1 km field, and no storm days
+Status: Open (a data gap, and a real one)
+
+Context:
+- The 1 km MRMS MESH field the desk draws is the **CONUS** product. The
+  archive has an `ALASKA/` prefix beside it, with the same products, and
+  Alaska has 177 tracts with housing counts — so Alaska's storms are simply
+  absent from the desk rather than wrong.
+- The report archive does reach Alaska, so a storm there has reports and no
+  radar footprint, which is the half of the list that cannot be drawn.
+
+Validation target:
+- `scripts/build-storm-radar-snapshots.mjs`
+- `src/data/local_data/storm/README.md`
 
 ---
 
