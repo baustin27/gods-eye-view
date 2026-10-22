@@ -267,6 +267,18 @@ function biggestCounty(state) {
 }
 
 /**
+ * The names of the county's streets, lower-cased.
+ *
+ * @param {string} state the two-digit FIPS
+ * @param {string} county the three-digit FIPS
+ * @returns {Promise<Set<string>>}
+ */
+async function streetNames(state, county) {
+  const edges = await countyEdges(state, county);
+  return new Set(edges.map((edge) => String(edge.name || '').toLowerCase()));
+}
+
+/**
  * The point on a street that a house number falls at.
  *
  * The range is an interval of house numbers along the segment, and the
@@ -527,9 +539,17 @@ export async function addressPayload(query = {}) {
     street: parsed.street,
   });
   if (!candidates.length) {
+    // TWO DIFFERENT FAILURES, and they are told apart: the street is not
+    // there, or the street is there and the number is not on it. "No street
+    // matches" when the street does match is a message that sends the reader
+    // looking in the wrong place.
+    const streets = await streetNames(state, county);
+    const streetIsThere = streets.has(parsed.street.trim().toLowerCase());
     return {
       ok: false,
-      error: `no street in county ${state}${county} matches "${parsed.street}"`,
+      error: streetIsThere
+        ? `the street is there, but no house number ${parsed.number} is on it in county ${state}${county}`
+        : `no street in county ${state}${county} matches "${parsed.street}"`,
     };
   }
   const best = candidates[0];
