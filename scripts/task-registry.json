@@ -725,6 +725,17 @@
         "apps/hail-desk/index.html"
       ],
       "gate": "typing a house number and a street with a place finds the storms that were over it, and says so when there were none"
+    },
+    {
+      "id": "F2.4",
+      "title": "the sub-daily frames cover the longer history too, so the frame chips work on the older days",
+      "status": "done",
+      "commit": "PENDING",
+      "files": [
+        "src/data/local_data/storm/storm_radar_hail_sub_2021-01-02.bin.gz",
+        "src/data/local_data/storm/storm_radar_hail_sub_2026-10-15.bin.gz"
+      ],
+      "gate": "2,113 sub-daily shards, 68.3 MB, and a frame on a 2022 day draws that frame's swath"
     }
   ]
 }
