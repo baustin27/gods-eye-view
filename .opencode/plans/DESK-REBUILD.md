@@ -476,6 +476,32 @@ units in it, with the market size beside it.
 
 ---
 
+## 5c. Two more waves, landed (F1 the address, F2 the history)
+
+**F1 — the address lookup.** The desk could find a place by name; it could
+not find an address, and an address is what a canvasser has. The house
+number is interpolated by DISTANCE along the street's own TIGER range, the
+cell under that point is looked up in the 1 km field, and the days the hail
+was over **that cell** are the answer — which is the exact answer, and not
+the tract's, and the difference is the whole product in the rural case. The
+reports within five kilometres come with it, and when nothing fell there the
+desk says so.
+
+**F2 — the history.** The fine 1 km field starts **2021-01-02** now, not
+2024-01-01: 2,103 shards, 17.6 million cells, 64 MB, and Colorado's storm
+list goes from 276 days to 390. Two things the archive taught the builder:
+the daily maximum was produced several times a day before 2020-10-14 and
+the stamp in the filename is the production time, so the day's file has to
+be looked up; and the day-index epoch moves with the field (2021-01-01 →
+2020-10-14) because a day before the epoch has no index.
+
+**The brief said twelve years and that is not what the archive has.** The
+pre-2020-10 archive holds the same product at half a degree, so the honest
+figure is six, and the claim to match Hail Recon's window has to be
+checked before it is written down rather than after.
+
+---
+
 ## 6. Two decisions I will make unless you say otherwise
 
 1. **The date list is built on REPORT days**, with the houses under the hail
