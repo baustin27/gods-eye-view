@@ -135,34 +135,40 @@ export function createMapPane(options) {
       },
     },
     layers: [
+      { id: 'desk-background', type: 'background', paint: { 'background-color': '#0b1220' } },
       {
         id: 'esri-dark',
         type: 'raster',
         source: 'esri-dark',
+        paint: { 'raster-fade-duration': 0 },
         layout: { visibility: 'none' },
       },
       {
         id: 'esri-satellite',
         type: 'raster',
         source: 'esri-satellite',
+        paint: { 'raster-fade-duration': 0 },
         layout: { visibility: 'visible' },
       },
       {
         id: 'esri-dark-ref',
         type: 'raster',
         source: 'esri-dark-ref',
+        paint: { 'raster-fade-duration': 0 },
         layout: { visibility: 'none' },
       },
       {
         id: 'esri-transportation',
         type: 'raster',
         source: 'esri-transportation',
+        paint: { 'raster-fade-duration': 0 },
         layout: { visibility: 'visible' },
       },
       {
         id: 'esri-labels',
         type: 'raster',
         source: 'esri-labels',
+        paint: { 'raster-fade-duration': 0 },
         layout: { visibility: 'visible' },
       },
     ],
@@ -180,6 +186,7 @@ export function createMapPane(options) {
       pitchWithRotate: false,
       dragRotate: false,
       attributionControl: false,
+      fadeDuration: 0,
       renderWorldCopies: true,
     });
     mapContainer.setAttribute(
@@ -339,7 +346,7 @@ export function createMapPane(options) {
         focusedTractPolygons = null;
       }
       updateIsolationBounds();
-      const tileViewport = { ...viewport, zoom: clampZoom(viewport.zoom) };
+      const tileViewport = { ...viewport, zoom: Math.floor(clampZoom(viewport.zoom)) };
       const visible = visibleTiles(tileViewport);
       const tiles = isolated ? tilesInState(visible, boundary) : visible;
       if (isolated) drawOutsideState(ctx, viewport, boundary);
@@ -350,10 +357,14 @@ export function createMapPane(options) {
         // Always draw the raster basemap when MapLibre is absent or still loading,
         // ensuring the map canvas NEVER appears black in headless Chrome or while
         // vector tiles are in flight.
-        const needsRasterBase =
-          !map ||
-          (typeof map.isStyleLoaded === 'function' && !map.isStyleLoaded()) ||
-          (typeof map.loaded === 'function' && !map.loaded());
+        // WHY ONLY WHEN THERE IS NO MAPLIBRE. This canvas sits ABOVE the
+        // MapLibre canvas, and the fallback paints an opaque slate fill. It
+        // used to run whenever `map.loaded()` was false - which is true during
+        // every zoom while tiles stream in - so the real imagery was painted
+        // over with black and fractional-zoom raster tiles: the map seemed to
+        // "split apart" on every wheel tick. MapLibre keeps parent tiles on
+        // screen while children load; the overlay must never hide them.
+        const needsRasterBase = !map;
         if (needsRasterBase) {
           fallbackBasemap.draw(ctx, viewport, tiles, basemapMode);
         }
