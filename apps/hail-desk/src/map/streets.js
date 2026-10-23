@@ -154,13 +154,14 @@ export function createStreetPainter({
         continue;
       }
       if (!lines.length) continue;
+      const tileScale = (2 ** ((viewport.zoom ?? tile.z) - tile.z)) * scale;
       const origin = viewportPixel(tile, viewport, TILE_SIZE);
       ctx.beginPath();
       for (const line of lines) {
         for (let i = 0; i < line.points.length; i += 1) {
           const [lx, ly] = line.points[i];
-          const x = origin.x + lx * scale;
-          const y = origin.y + ly * scale;
+          const x = origin.x + lx * tileScale;
+          const y = origin.y + ly * tileScale;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }

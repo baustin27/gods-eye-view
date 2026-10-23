@@ -196,14 +196,15 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
         continue;
       }
       if (!tileData.lines.length) continue;
+      const tileScale = (2 ** ((viewport.zoom ?? tile.z) - tile.z)) * scale;
       const origin = viewportPixel(tile, viewport, TILE_SIZE);
       for (const ring of tileData.lines) {
         if (!ring.points || ring.points.length < 3) continue;
         ctx.beginPath();
         for (let i = 0; i < ring.points.length; i += 1) {
           const [lx, ly] = ring.points[i];
-          const x = origin.x + lx * scale;
-          const y = origin.y + ly * scale;
+          const x = origin.x + lx * tileScale;
+          const y = origin.y + ly * tileScale;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }

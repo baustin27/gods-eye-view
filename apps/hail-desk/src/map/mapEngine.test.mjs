@@ -220,6 +220,7 @@ test('createMapPane draws subtle swath tract grid when bands are present and sho
     mapContainer,
     swath: () => swathBands,
     showTracts: () => showTractsVal,
+    swathGrid: () => true,
   });
 
   pane.draw();

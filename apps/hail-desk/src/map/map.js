@@ -445,11 +445,10 @@ export function createMapPane(options) {
         const showTracts = options.showTracts?.() !== false;
         const showStreets = options.showStreets?.() !== false;
 
-        // Census tracts: draw when enabled, in scope, and at zoom >= 10
-        if (showTracts && inScope && viewport.zoom >= 10) {
-          // The houses, UNDER the hail: the hail remains the subject.
+        // Census tracts: draw clean boundary outlines when enabled, in scope, and zoomed to neighborhood level (zoom >= 13)
+        if (showTracts && inScope && viewport.zoom >= 13) {
           tracts.draw(ctx, viewport, tiles, {
-            mode: 'fill',
+            mode: 'outline',
             highlightedGeoid: options.focusedTract?.(),
           });
         }
@@ -482,7 +481,7 @@ export function createMapPane(options) {
           } else {
             updateMaplibreSwath(bands);
           }
-          if (showTracts) {
+          if (options.swathGrid?.()) {
             drawSwathTractGrid(bands);
           }
         } else if (map) {
