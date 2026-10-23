@@ -2174,11 +2174,12 @@ function setWorkspaceMode(mode) {
   state.mode = mode;
   if (layoutController) {
     layoutController.setMode(mode);
-  }
-  if (mode === 'knock') {
-    renderKnockHub();
-  } else if (mode === 'dossier') {
-    renderDossierCard();
+  } else {
+    if (mode === 'knock') {
+      renderKnockHub();
+    } else if (mode === 'dossier') {
+      renderDossierCard();
+    }
   }
 }
 
@@ -2452,6 +2453,14 @@ async function main() {
   }
 
   el.filters.addEventListener('submit', (event) => event.preventDefault());
+  if (el.modes) {
+    el.modes.addEventListener('click', (event) => {
+      const btn = event.target.closest('button[data-mode]');
+      if (btn && btn.dataset.mode) {
+        setWorkspaceMode(btn.dataset.mode);
+      }
+    });
+  }
   el.filters.addEventListener('change', (event) => {
     const target = event.target;
     if (target === el.state) applyFilters({ state: el.state.value });

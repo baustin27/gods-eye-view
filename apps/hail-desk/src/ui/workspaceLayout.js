@@ -228,9 +228,12 @@ export function createWorkspaceLayout(options = {}) {
     }
 
     // 4. Update mode switcher buttons state if present in DOM
-    if (container.querySelectorAll) {
+    const buttonScope =
+      container.ownerDocument ||
+      (typeof document !== 'undefined' ? document : container);
+    if (buttonScope && buttonScope.querySelectorAll) {
       for (const m of WORKSPACE_MODES) {
-        const btns = container.querySelectorAll(
+        const btns = buttonScope.querySelectorAll(
           `#mode-${m}, [data-mode="${m}"], [data-mode-target="${m}"]`,
         );
         btns.forEach((btn) => {
@@ -258,9 +261,12 @@ export function createWorkspaceLayout(options = {}) {
   }
 
   // Bind click listeners on mode buttons if present
-  if (container.querySelectorAll) {
+  const buttonScope =
+    container.ownerDocument ||
+    (typeof document !== 'undefined' ? document : container);
+  if (buttonScope && buttonScope.querySelectorAll) {
     for (const m of WORKSPACE_MODES) {
-      const btns = container.querySelectorAll(
+      const btns = buttonScope.querySelectorAll(
         `#mode-${m}, [data-mode="${m}"], [data-mode-target="${m}"]`,
       );
       btns.forEach((btn) => {
