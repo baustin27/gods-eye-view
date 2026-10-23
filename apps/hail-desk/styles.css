@@ -600,11 +600,26 @@ main.workspace-main {
 .map-base {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 0;
+  cursor: grab;
 }
-
+.map-base:active {
+  cursor: grabbing;
+}
 .maplibregl-map {
   font: 12px/1.4 system-ui, sans-serif;
+  width: 100% !important;
+  height: 100% !important;
+}
+.maplibregl-canvas {
+  width: 100% !important;
+  height: 100% !important;
+  cursor: grab;
+}
+.maplibregl-canvas:active {
+  cursor: grabbing;
 }
 
 canvas#mapCanvas {
@@ -1498,8 +1513,15 @@ tr:hover td {
   border-collapse: collapse;
 }
 
-.highlighted-row {
-  background: rgba(8, 145, 178, 0.15);
+.knock-table tr.highlighted-row {
+  background: rgba(6, 182, 212, 0.16) !important;
+  border-left: 2px solid #06b6d4;
+}
+.knock-table tr.clickable-row {
+  cursor: pointer;
+}
+.knock-table tr.clickable-row:hover {
+  background: rgba(30, 41, 59, 0.5);
 }
 
 .knock-status-select {

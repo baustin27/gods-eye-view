@@ -34,7 +34,17 @@ import {
   zoomAround,
 } from './viewport.js';
 import { pointInRingDegrees } from '../../../../src/data/stormArtwork.js';
-import { createBasemap, ESRI_ATTRIBUTION } from './basemap.js';
+import {
+  CARTO_DARK_MATTER,
+  ESRI_ATTRIBUTION,
+  ESRI_DARK_GRAY_BASE,
+  ESRI_DARK_GRAY_REF,
+  ESRI_WORLD_BOUNDARIES,
+  ESRI_WORLD_IMAGERY,
+  ESRI_WORLD_STREETS,
+  ESRI_WORLD_TRANSPORTATION,
+  createBasemap,
+} from './basemap.js';
 import { createStreetPainter } from './streets.js';
 import { createTractPainter } from './tracts.js';
 import { createCityPainter } from './cities.js';
@@ -57,6 +67,10 @@ setWorkerUrl(mapLibreWorkerUrl);
  */
 export function createMapPane(options) {
   const { canvas, mapContainer } = options;
+  if (mapContainer && mapContainer.style) {
+    mapContainer.style.width = '100%';
+    mapContainer.style.height = '100%';
+  }
   const ctx = canvas.getContext('2d');
   let frame = null;
   let drawing = false;
@@ -72,17 +86,92 @@ export function createMapPane(options) {
   let focusedTractId = null;
   let focusedTractPolygons = null;
   let pixelRatio = Math.max(1, globalThis.devicePixelRatio || 1);
-  let basemapMode = options.basemap?.() === 'satellite' ? 'satellite' : 'road';
+  let basemapMode = options.basemap?.() || 'hybrid';
+  if (basemapMode !== 'satellite' && basemapMode !== 'road') {
+    basemapMode = 'hybrid';
+  }
   let isolationBoundsKey = '';
   let map = null;
   let dragging = null;
   let moved = 0;
   let zoomTarget = viewport.zoom;
   const fallbackBasemap = createBasemap({ onTile: () => scheduleDraw() });
+
+  // Esri multi-layer raster style:
+  // - esri-satellite: World Imagery
+  // - esri-transportation: Highways and roads overlay
+  // - esri-labels: Administrative boundaries and place names
+  // - esri-dark: World Dark Gray Base canvas
+  // - esri-dark-ref: World Dark Gray Reference street and city labels
+  const esriRasterStyle = {
+    version: 8,
+    sources: {
+      'esri-satellite': {
+        type: 'raster',
+        tiles: [ESRI_WORLD_IMAGERY],
+        tileSize: 256,
+        attribution: ESRI_ATTRIBUTION,
+      },
+      'esri-transportation': {
+        type: 'raster',
+        tiles: [ESRI_WORLD_TRANSPORTATION],
+        tileSize: 256,
+      },
+      'esri-labels': {
+        type: 'raster',
+        tiles: [ESRI_WORLD_BOUNDARIES],
+        tileSize: 256,
+      },
+      'esri-dark': {
+        type: 'raster',
+        tiles: [ESRI_DARK_GRAY_BASE],
+        tileSize: 256,
+        attribution: ESRI_ATTRIBUTION,
+      },
+      'esri-dark-ref': {
+        type: 'raster',
+        tiles: [ESRI_DARK_GRAY_REF],
+        tileSize: 256,
+      },
+    },
+    layers: [
+      {
+        id: 'esri-dark',
+        type: 'raster',
+        source: 'esri-dark',
+        layout: { visibility: 'none' },
+      },
+      {
+        id: 'esri-satellite',
+        type: 'raster',
+        source: 'esri-satellite',
+        layout: { visibility: 'visible' },
+      },
+      {
+        id: 'esri-dark-ref',
+        type: 'raster',
+        source: 'esri-dark-ref',
+        layout: { visibility: 'none' },
+      },
+      {
+        id: 'esri-transportation',
+        type: 'raster',
+        source: 'esri-transportation',
+        layout: { visibility: 'visible' },
+      },
+      {
+        id: 'esri-labels',
+        type: 'raster',
+        source: 'esri-labels',
+        layout: { visibility: 'visible' },
+      },
+    ],
+  };
+
   try {
     map = new MapLibreMap({
       container: mapContainer,
-      style: 'https://tiles.openfreemap.org/styles/liberty',
+      style: esriRasterStyle,
       center: [viewport.centre.lon, viewport.centre.lat],
       zoom: viewport.zoom,
       minZoom: MIN_ZOOM,
@@ -91,11 +180,11 @@ export function createMapPane(options) {
       pitchWithRotate: false,
       dragRotate: false,
       attributionControl: false,
-      renderWorldCopies: false,
+      renderWorldCopies: true,
     });
     mapContainer.setAttribute(
       'aria-label',
-      'Labeled road map. Drag or use arrow keys to pan; scroll or use plus and minus to zoom.',
+      'Tactical basemap. Drag or use arrow keys to pan; scroll or use plus and minus to zoom.',
     );
   } catch (error) {
     // WebGL2 is unavailable in some headless and older browsers. Keep the
@@ -104,6 +193,16 @@ export function createMapPane(options) {
     mapContainer.hidden = true;
     canvas.parentElement?.classList.add('map-fallback');
     options.onFallback?.(error);
+  }
+
+  let resizeObserver = null;
+  if (typeof ResizeObserver !== 'undefined' && mapContainer) {
+    resizeObserver = new ResizeObserver(() => {
+      resize();
+      map?.resize();
+      scheduleDraw();
+    });
+    resizeObserver.observe(mapContainer);
   }
 
   function syncViewport() {
@@ -116,14 +215,22 @@ export function createMapPane(options) {
     };
   }
 
+  let isResizing = false;
   function resize() {
-    pixelRatio = Math.max(1, globalThis.devicePixelRatio || 1);
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.round(rect.width * pixelRatio);
-    canvas.height = Math.round(rect.height * pixelRatio);
-    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    viewport = { ...viewport, width: rect.width, height: rect.height };
-    syncViewport();
+    if (isResizing) return;
+    isResizing = true;
+    try {
+      pixelRatio = Math.max(1, globalThis.devicePixelRatio || 1);
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.round(rect.width * pixelRatio);
+      canvas.height = Math.round(rect.height * pixelRatio);
+      ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      viewport = { ...viewport, width: rect.width, height: rect.height };
+      map?.resize();
+      syncViewport();
+    } finally {
+      isResizing = false;
+    }
   }
 
   function isolationBounds() {
@@ -161,27 +268,15 @@ export function createMapPane(options) {
     );
   }
 
-  function ensureSatelliteLayer() {
-    if (map.getSource('desk-satellite')) return;
-    map.addSource('desk-satellite', {
-      type: 'raster',
-      tiles: [
-        'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      ],
-      tileSize: 256,
-      attribution: 'Imagery © Esri, Maxar, Earthstar Geographics, and GIS User Community',
-    });
-    const firstLabel = map.getStyle().layers.find((layer) => layer.type === 'symbol')?.id;
-    map.addLayer({
-      id: 'desk-satellite',
-      type: 'raster',
-      source: 'desk-satellite',
-      layout: { visibility: 'none' },
-    }, firstLabel);
-  }
-
   function setBasemap(mode) {
-    basemapMode = mode === 'satellite' ? 'satellite' : 'road';
+    if (mode === 'satellite') {
+      basemapMode = 'satellite';
+    } else if (mode === 'road') {
+      basemapMode = 'road';
+    } else {
+      basemapMode = 'hybrid';
+    }
+
     if (!map) {
       options.onBasemapChange?.(basemapMode);
       scheduleDraw();
@@ -191,12 +286,33 @@ export function createMapPane(options) {
       map.once('load', () => setBasemap(basemapMode));
       return;
     }
-    ensureSatelliteLayer();
-    map.setLayoutProperty(
-      'desk-satellite',
-      'visibility',
-      basemapMode === 'satellite' ? 'visible' : 'none',
-    );
+
+    const setVisibility = (layerId, visible) => {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
+      }
+    };
+
+    if (basemapMode === 'hybrid') {
+      setVisibility('esri-satellite', true);
+      setVisibility('esri-transportation', true);
+      setVisibility('esri-labels', true);
+      setVisibility('esri-dark', false);
+      setVisibility('esri-dark-ref', false);
+    } else if (basemapMode === 'road') {
+      setVisibility('esri-dark', true);
+      setVisibility('esri-dark-ref', true);
+      setVisibility('esri-transportation', true);
+      setVisibility('esri-satellite', false);
+      setVisibility('esri-labels', false);
+    } else if (basemapMode === 'satellite') {
+      setVisibility('esri-satellite', true);
+      setVisibility('esri-transportation', false);
+      setVisibility('esri-labels', false);
+      setVisibility('esri-dark', false);
+      setVisibility('esri-dark-ref', false);
+    }
+
     options.onBasemapChange?.(basemapMode);
     scheduleDraw();
   }
@@ -581,7 +697,8 @@ export function createMapPane(options) {
       if (!Number.isFinite(pin.lat) || !Number.isFinite(pin.lon)) continue;
       const point = project(pin.lon, pin.lat, viewport);
       const dist = Math.hypot(point.x - x, point.y - y);
-      const hitRadius = (pin.selected ? 13 : 7) + 6;
+      // Generous 18px click radius for quick, forgiving pin selection
+      const hitRadius = Math.max(18, (pin.selected ? 13 : 7) + 6);
       if (dist <= hitRadius && dist < bestDist) {
         bestDist = dist;
         best = pin;
@@ -818,7 +935,7 @@ export function createMapPane(options) {
       scheduleDraw();
     });
     map.on('resize', () => {
-      resize();
+      syncViewport();
       scheduleDraw();
     });
     map.on('load', () => {
@@ -829,12 +946,14 @@ export function createMapPane(options) {
       scheduleDraw();
     });
     map.on('click', (event) => {
-      const pin = pickKnockPin(event.point.x, event.point.y);
+      const px = event.point ? event.point.x : (event.offsetX ?? 0);
+      const py = event.point ? event.point.y : (event.offsetY ?? 0);
+      const pin = pickKnockPin(px, py);
       if (pin) {
         options.onKnockPinPick?.(pin);
         return;
       }
-      const place = pick(event.point.x, event.point.y);
+      const place = pick(px, py);
       if (place) {
         options.onPick?.(place);
         return;
@@ -1040,11 +1159,11 @@ export function createMapPane(options) {
     },
     setBasemap,
     /** Move the map to a place. */
-    goTo(lon, lat, zoom) {
+    goTo(lon, lat, zoom = 16) {
       if (map) {
-        map.flyTo({ center: [lon, lat], zoom: zoom ?? map.getZoom(), duration: 650 });
+        map.flyTo({ center: [lon, lat], zoom, duration: 800 });
       } else {
-        viewport = { ...viewport, centre: { lon, lat }, zoom: zoom ?? viewport.zoom };
+        viewport = { ...viewport, centre: { lon, lat }, zoom };
         scheduleDraw();
       }
     },

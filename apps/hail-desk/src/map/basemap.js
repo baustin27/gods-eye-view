@@ -1,11 +1,13 @@
 /**
- * The basemap: Esri's World Imagery, as raster tiles on a canvas.
+ * The basemap: Esri's World Imagery, World Transportation, and Canvas services
+ * rendered as multi-layer raster tiles on a canvas.
  *
- * WHY ESRI AND NOT OSM. The OSMF tile usage policy forbids offline use of
+ * WHY ESRI AND NOT OSM / CARTO. The OSMF tile usage policy forbids offline use of
  * the public tile servers and requires an identifying User-Agent - and a
  * browser cannot set its own, so the tiles come back `x-blocked: Access
- * denied`. Esri's public World Imagery endpoint needs no key, no referer and
- * no user agent, and it sends `Access-Control-Allow-Origin: *`.
+ * denied`. CartoDB's public dark-matter server stamps an API-KEY-REQUIRED watermark
+ * across tiles. Esri's public World Imagery, Reference, and Canvas endpoints need no
+ * key, no referer, and send `Access-Control-Allow-Origin: *`.
  *
  * WHY `crossOrigin` IS SET BEFORE `src`. A canvas that has drawn a cross
  * origin image is TAINTED, and every read of its pixels throws a
@@ -19,11 +21,25 @@
  * drawn on the map rather than hidden behind a toggle.
  */
 
-/** The tile URL template. Note the ORDER: the REST path is level/row/column. */
 import { viewportPixel } from './viewport.js';
 
 export const ESRI_WORLD_IMAGERY =
   'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
+export const ESRI_WORLD_TRANSPORTATION =
+  'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}';
+
+export const ESRI_WORLD_BOUNDARIES =
+  'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}';
+
+export const ESRI_WORLD_STREETS =
+  'https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+
+export const ESRI_DARK_GRAY_BASE =
+  'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+
+export const ESRI_DARK_GRAY_REF =
+  'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}';
 
 export const CARTO_DARK_MATTER =
   'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
@@ -35,7 +51,7 @@ export const ESRI_ATTRIBUTION =
 /**
  * A cache of loaded tiles.
  *
- * The tiles are small - 256 pixels of JPEG, a few tens of kilobytes - and a
+ * The tiles are small - 256 pixels of JPEG or PNG, a few tens of kilobytes - and a
  * pan across a county touches a dozen of them, so a map that fetched them
  * again on every frame would be unusable.
  */
@@ -85,20 +101,47 @@ export function createTileCache(limit = 240) {
 /**
  * Load one basemap tile.
  *
+ * Supports satellite (imagery only), hybrid (imagery + transportation + boundaries),
+ * and road (dark gray base + dark gray reference/labels) multi-layer basemaps.
+ *
  * @param {{z: number, x: number, y: number}} tile
  * @param {object} [options]
  * @param {typeof Image} [options.ImageImpl]
- * @param {'satellite'|'road'} [options.mode]
+ * @param {'satellite'|'hybrid'|'road'|'carto'} [options.mode]
+ * @param {'base'|'roads'|'labels'} [options.layerType='base']
  * @returns {Promise<HTMLImageElement|null>} null when the tile is not there
  */
 export function loadBasemapTile(
   tile,
-  { ImageImpl = globalThis.Image, mode = 'satellite' } = {},
+  { ImageImpl = globalThis.Image, mode = 'satellite', layerType = 'base' } = {},
 ) {
   if (typeof ImageImpl !== 'function') return Promise.resolve(null);
-  const isRoad = mode === 'road';
-  const template = isRoad ? CARTO_DARK_MATTER : ESRI_WORLD_IMAGERY;
-  const url = isRoad
+
+  let template;
+  if (mode === 'carto') {
+    template = CARTO_DARK_MATTER;
+  } else if (mode === 'hybrid') {
+    if (layerType === 'roads') {
+      template = ESRI_WORLD_TRANSPORTATION;
+    } else if (layerType === 'labels') {
+      template = ESRI_WORLD_BOUNDARIES;
+    } else {
+      template = ESRI_WORLD_IMAGERY;
+    }
+  } else if (mode === 'road') {
+    if (layerType === 'labels' || layerType === 'roads') {
+      template = ESRI_DARK_GRAY_REF;
+    } else {
+      template = ESRI_DARK_GRAY_BASE;
+    }
+  } else {
+    // Default to satellite
+    template = ESRI_WORLD_IMAGERY;
+  }
+
+  // Esri REST service URLs format tiles as /{z}/{y}/{x} (level/row/column).
+  // Carto tiles use standard /{z}/{x}/{y} format.
+  const url = template.includes('{x}/{y}')
     ? template
         .replace('{z}', String(tile.z))
         .replace('{x}', String(tile.x))
@@ -141,13 +184,13 @@ export function createBasemap({ ImageImpl = globalThis.Image, onTile } = {}) {
    * @param {CanvasRenderingContext2D} ctx
    * @param {object} viewport
    * @param {import('./viewport.js').visibleTiles} tiles
-   * @param {'satellite'|'road'} [mode='satellite']
+   * @param {'satellite'|'hybrid'|'road'} [mode='satellite']
    */
   function draw(ctx, viewport, tiles, mode = 'satellite') {
     // Before drawing tiles, draw a subtle dark slate canvas background (#090d16)
     // with a crisp 48px tactical grid (rgba(30, 41, 59, 0.45)) and major coordinate
     // crosshairs so the map canvas looks like a tactical radar screen instead of a
-    // black void.
+    // black void while tiles stream in or during pan.
     ctx.save();
     ctx.fillStyle = '#090d16';
     ctx.fillRect(0, 0, viewport.width, viewport.height);
@@ -177,46 +220,53 @@ export function createBasemap({ ImageImpl = globalThis.Image, onTile } = {}) {
     ctx.stroke();
     ctx.restore();
 
-    // WHY SATELLITE ONLY FOR RASTER TILES. CartoDB's public dark-matter server
-    // now stamps "API KEY REQUIRED carto.com/basemaps/apikey" across tiles when
-    // fetched without a key. In 'road' mode, we do NOT draw watermarked raster tiles;
-    // instead, the clean #090d16 tactical radar grid, state/city boundaries,
-    // census tracts, street vectors, and radar swaths render cleanly without
-    // third-party watermarks. Satellite mode uses ESRI_WORLD_IMAGERY which requires
-    // no key and has no watermark.
-    if (mode !== 'satellite') {
-      return;
-    }
+    // Determine the layers to render in composite order:
+    // - hybrid: base satellite imagery, then roads/highways, then place/boundary labels
+    // - road: dark gray base, then street and place reference labels so the street map
+    //         is NEVER black and has real streets, highways, and place labels.
+    // - satellite: base satellite imagery
+    const layers =
+      mode === 'hybrid'
+        ? ['base', 'roads', 'labels']
+        : mode === 'road'
+          ? ['base', 'labels']
+          : ['base'];
 
     const size = 256;
-    for (const tile of tiles || []) {
-      const key = `${tile.z}/${tile.x}/${tile.y}`;
-      const image = cache.get(key);
-      if (!image) {
-        // Start the fetch and CARRY ON. The tile arrives later and asks for a
-        // redraw. Awaiting it here meant the canvas was cleared and left
-        // BLANK until the network came back, so every pan emptied the map and
-        // refilled it a moment later, and dragging felt like dragging a hole.
-        if (!pending.has(key)) {
-          pending.set(
-            key,
-            loadBasemapTile(tile, { ImageImpl, mode: 'satellite' }).then((loaded) => {
-              if (loaded) cache.set(key, loaded);
-              else cache.fail(key);
-              pending.delete(key);
-              if (loaded) onTile?.();
-              return loaded;
-            }),
-          );
+    for (const layerType of layers) {
+      for (const tile of tiles || []) {
+        // Satellite and hybrid base imagery share the backward-compatible key "{z}/{x}/{y}"
+        // so cached satellite imagery is reused between modes and existing tests pass.
+        const key =
+          layerType === 'base' && (mode === 'satellite' || mode === 'hybrid')
+            ? `${tile.z}/${tile.x}/${tile.y}`
+            : `${mode}:${layerType}:${tile.z}/${tile.x}/${tile.y}`;
+
+        const image = cache.get(key);
+        if (!image) {
+          // Start the fetch and CARRY ON. The tile arrives later and asks for a
+          // redraw. Awaiting it here meant the canvas was cleared and left
+          // BLANK until the network came back, so every pan emptied the map and
+          // refilled it a moment later, and dragging felt like dragging a hole.
+          if (!pending.has(key)) {
+            pending.set(
+              key,
+              loadBasemapTile(tile, { ImageImpl, mode, layerType }).then((loaded) => {
+                if (loaded) cache.set(key, loaded);
+                else cache.fail(key);
+                pending.delete(key);
+                if (loaded) onTile?.();
+                return loaded;
+              }),
+            );
+          }
+          continue;
         }
-        continue;
+        const origin = viewportPixel(tile, viewport, size);
+        ctx.drawImage(image, origin.x, origin.y, size, size);
       }
-      const origin = viewportPixel(tile, viewport, size);
-      ctx.drawImage(image, origin.x, origin.y, size, size);
     }
   }
 
   return { draw, cache };
 }
-
-

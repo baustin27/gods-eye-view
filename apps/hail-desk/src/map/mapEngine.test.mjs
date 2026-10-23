@@ -64,6 +64,7 @@ function createMockCanvas(ctx) {
     parentElement: { classList: { add() {} } },
   };
   const mapContainer = {
+    style: {},
     setAttribute: () => {},
     replaceChildren: () => {},
     hidden: false,
@@ -229,3 +230,38 @@ test('createMapPane draws subtle swath tract grid when bands are present and sho
   );
   assert.ok(cyanGridStroke, 'Cyan swath tract grid stroke was applied');
 });
+
+test('createMapPane sizes container, supports goTo default zoom 16, and switches basemaps', () => {
+  const { ctx } = createMockContext();
+  const { canvas, mapContainer } = createMockCanvas(ctx);
+
+  let currentBasemap = null;
+  const pane = createMapPane({
+    canvas,
+    mapContainer,
+    onBasemapChange: (mode) => {
+      currentBasemap = mode;
+    },
+  });
+
+  // mapContainer is sized to 100% width and 100% height
+  assert.equal(mapContainer.style.width, '100%');
+  assert.equal(mapContainer.style.height, '100%');
+
+  // goTo defaults to zoom = 16 and updates centre
+  pane.goTo(-105.01, 39.74);
+  assert.equal(pane.viewport.zoom, 16);
+  assert.equal(pane.viewport.centre.lon, -105.01);
+  assert.equal(pane.viewport.centre.lat, 39.74);
+
+  // Basemap switching between hybrid, road, and satellite
+  pane.setBasemap('road');
+  assert.equal(currentBasemap, 'road');
+
+  pane.setBasemap('satellite');
+  assert.equal(currentBasemap, 'satellite');
+
+  pane.setBasemap('hybrid');
+  assert.equal(currentBasemap, 'hybrid');
+});
+

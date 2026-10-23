@@ -79,7 +79,7 @@ const state = {
   // Whether the place dots are drawn. Null means "the view decides": on for
   // the market views, off for the storm view, where the swath is the map.
   dots: null,
-  basemap: 'road',
+  basemap: 'hybrid',
   mapFallback: false,
   focusedTract: null,
   // The state outline, as rings of [lon, lat]. The map draws it so a storm
@@ -212,6 +212,7 @@ const el = {
   mapCanvas: document.getElementById('mapCanvas'),
   mapAttribution: document.getElementById('mapAttribution'),
   basemapToggle: document.getElementById('basemapToggle'),
+  basemapToggleText: document.getElementById('basemapToggleText'),
   zoomIn: document.getElementById('zoomIn'),
   zoomOut: document.getElementById('zoomOut'),
   mapCaption: document.getElementById('mapCaption'),
@@ -364,16 +365,25 @@ function syncIsolateChip() {
 
 function syncBasemapControl() {
   if (!el.basemapToggle) return;
-  const satellite = state.basemap === 'satellite';
+  const isHybrid = state.basemap === 'hybrid';
+  const isSat = state.basemap === 'satellite';
+  const isRoad = state.basemap === 'road';
+  const isActive = isHybrid || isSat;
   el.basemapToggle.disabled = false;
-  el.basemapToggle.setAttribute('aria-pressed', String(satellite));
-  el.basemapToggle.classList.toggle('active', satellite);
-  el.basemapToggle.title = satellite ? 'Show the labeled road map' : 'Show satellite imagery';
-  const label = satellite ? 'Road Map' : 'Satellite';
-  const icon = `<svg class="w-3.5 h-3.5 text-emerald" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064"/></svg> `;
-  el.basemapToggle.innerHTML = `${icon}${label}`;
+  el.basemapToggle.setAttribute('aria-pressed', String(isActive));
+  el.basemapToggle.classList.toggle('active', isActive);
+  el.basemapToggle.title = 'Switch basemap: Hybrid, Road, Satellite';
+
+  const label = isHybrid ? 'Hybrid' : isRoad ? 'Road Map' : 'Satellite';
+  const textEl = el.basemapToggleText || document.getElementById('basemapToggleText');
+  if (textEl) {
+    textEl.textContent = label;
+  } else {
+    const icon = `<svg class="w-3.5 h-3.5 text-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064"/></svg> `;
+    el.basemapToggle.innerHTML = `${icon}<span id="basemapToggleText">${label}</span>`;
+  }
   if (el.mapAttribution) {
-    el.mapAttribution.textContent = satellite
+    el.mapAttribution.textContent = (isHybrid || isSat)
       ? 'Imagery © Esri, Maxar, Earthstar Geographics, and GIS User Community'
       : 'OpenFreeMap © OpenMapTiles · © OpenStreetMap contributors';
   }
@@ -1245,6 +1255,53 @@ function renderRankedList() {
  * market. The dots are sized and coloured by the number of severe reports,
  * which is the column the table is sorted by.
  */
+/**
+ * Selects a property lead in the canvassing hub or map, focuses camera on the home,
+ * updates active dossier state, highlights the row, and refreshes the map pin marker.
+ *
+ * @param {object} record - Knock list record with address, lon, lat, radarHailInches, status
+ * @param {object} [street] - Active street segment context
+ */
+function selectHome(record, street) {
+  if (!record) return;
+  const targetStreet = street || state.activeKnockStreet;
+  state.activeDossierTarget = {
+    address: record.address,
+    lon: record.lon,
+    lat: record.lat,
+    city: targetStreet?.city || 'Denver',
+    state: targetStreet?.state || state.filters.state || 'CO',
+    zip: targetStreet?.zip || '80222',
+    tractGeoid: targetStreet?.tract || '08031006801',
+    tractName: `TRACT ${targetStreet?.tract || '08031006801'}`,
+    tigerRange: targetStreet?.from ? `${targetStreet.from} – ${targetStreet.to}` : '2800 – 2898 (Even)',
+    lossDate: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01',
+    radarEvents: [
+      { date: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01', maxMm: (record.radarHailInches || 2.25) * 25.4, over: true },
+      { date: '2023-06-22', maxMm: 44.45, over: true },
+    ],
+    spotterReports: [
+      { date: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01', hailInches: record.radarHailInches || 2.25, distanceKm: 1.2, comments: 'NOAA storm spotter verified severe hail' },
+      { date: '2023-06-22', hailInches: 1.75, distanceKm: 3.4, comments: 'Ground spotter verified severe hail' },
+    ],
+  };
+
+  if (record.lon && record.lat && mapPane?.goTo) {
+    mapPane.goTo(record.lon, record.lat, 16);
+  }
+
+  const rows = document.querySelectorAll('.knock-table tr');
+  rows.forEach((r) => {
+    if (r.dataset.address === record.address) {
+      r.classList.add('highlighted-row');
+    } else {
+      r.classList.remove('highlighted-row');
+    }
+  });
+
+  drawMap();
+}
+
 let mapPane = null;
 let focusRequestId = 0;
 
@@ -1258,36 +1315,22 @@ function createTheMap() {
     showPlaces: () => dotsOn(),
     knockPins: () => buildKnockPins(),
     onKnockPinPick: (pin) => {
-      if (pin && pin.address) {
-        const record = state.activeKnockRecords.find((r) => r.address === pin.address) || {
-          address: pin.address,
-          radarHailInches: pin.hailLabel ? parseFloat(pin.hailLabel) : 2.25,
-        };
-        state.activeDossierTarget = {
-          address: pin.address,
-          city: state.activeKnockStreet?.city || 'Denver',
-          state: state.activeKnockStreet?.state || state.filters.state || 'CO',
-          zip: state.activeKnockStreet?.zip || '80222',
-          tractGeoid: state.activeKnockStreet?.tract || '08031006801',
-          tractName: `TRACT ${state.activeKnockStreet?.tract || '08031006801'}`,
-          tigerRange: state.activeKnockStreet?.from ? `${state.activeKnockStreet.from} – ${state.activeKnockStreet.to}` : '2800 – 2898 (Even)',
-          lossDate: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01',
-          radarEvents: [
-            { date: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01', maxMm: (record.radarHailInches || 2.25) * 25.4, over: true },
-            { date: '2023-06-22', maxMm: 44.45, over: true },
-          ],
-          spotterReports: [
-            { date: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01', hailInches: record.radarHailInches || 2.25, distanceKm: 1.2, comments: 'NOAA storm spotter verified severe hail' },
-            { date: '2023-06-22', hailInches: 1.75, distanceKm: 3.4, comments: 'Ground spotter verified severe hail' },
-          ],
-        };
-        switchTab('dossier');
-        drawMap();
+      if (!pin) return;
+      const record = (state.activeKnockRecords || []).find((r) => r.address === pin.address);
+      if (record) {
+        selectHome(record, state.activeKnockStreet);
+      }
+      if (state.mode === 'dossier' || state.activeTab === 'dossier') {
+        renderDossierCard();
+      } else if (state.mode === 'knock' || state.activeTab === 'knock') {
+        const row = document.querySelector(`.knock-table tr[data-address="${pin.address}"]`);
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          document.querySelectorAll('.knock-table tr').forEach((r) => r.classList.remove('highlighted-row'));
+          row.classList.add('highlighted-row');
+        }
       }
     },
-    // The place dots are a LAYER now, and the storm view leaves them off: the
-    // map is the swath, and a dot for every place in a market of thousands is
-    // not a map of anything.
     places: () => (dotsOn() ? state.rows : []),
     // The worst severe count in the market, so the dots are sized by RANK and
     // do not all resize every time the list is filtered.
@@ -2818,7 +2861,13 @@ function renderKnockHub() {
   records.forEach((record) => {
     const isTarget = state.activeDossierTarget?.address === record.address;
     const tr = document.createElement('tr');
-    if (isTarget) tr.className = 'highlighted-row';
+    tr.dataset.address = record.address;
+    tr.className = isTarget ? 'highlighted-row clickable-row' : 'clickable-row';
+
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('select') || e.target.closest('button')) return;
+      selectHome(record, street);
+    });
 
     // Address
     const addrTd = document.createElement('td');
@@ -2886,26 +2935,8 @@ function renderKnockHub() {
     dossierBtn.className = 'link-btn-cyan';
     dossierBtn.textContent = 'Dossier';
     dossierBtn.addEventListener('click', () => {
-      state.activeDossierTarget = {
-        address: record.address,
-        city: street.city || 'Denver',
-        state: street.state || state.filters.state || 'CO',
-        zip: street.zip || '80222',
-        tractGeoid: street.tract || '08031006801',
-        tractName: `TRACT ${street.tract || '08031006801'}`,
-        tigerRange: street.from ? `${street.from} – ${street.to}` : '2800 – 2898 (Even)',
-        lossDate: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01',
-        radarEvents: [
-          { date: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01', maxMm: (record.radarHailInches || 2.25) * 25.4, over: true },
-          { date: '2023-06-22', maxMm: 44.45, over: true },
-        ],
-        spotterReports: [
-          { date: state.shownDay ? String(state.shownDay).split(':')[0] : '2024-06-01', hailInches: record.radarHailInches || 2.25, distanceKm: 1.2, comments: 'NOAA storm spotter verified severe hail' },
-          { date: '2023-06-22', hailInches: 1.75, distanceKm: 3.4, comments: 'Ground spotter verified severe hail' },
-        ],
-      };
+      selectHome(record, street);
       switchTab('dossier');
-      drawMap();
     });
     actionTd.appendChild(dossierBtn);
     tr.appendChild(actionTd);
@@ -3448,7 +3479,8 @@ async function main() {
     setIsolation(state.filters.iso !== 'state');
   });
   el.basemapToggle.addEventListener('click', () => {
-    state.basemap = state.basemap === 'satellite' ? 'road' : 'satellite';
+    const next = state.basemap === 'hybrid' ? 'road' : state.basemap === 'road' ? 'satellite' : 'hybrid';
+    state.basemap = next;
     syncBasemapControl();
     mapPane.setBasemap(state.basemap);
   });
