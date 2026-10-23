@@ -1339,7 +1339,7 @@ function createTheMap() {
         (max, row) => Math.max(max, Number(row.severe) || 0),
         0,
       ),
-    swath: () => (state.mapBands || []).slice(),
+    swath: () => state.mapBands,
     stateBoundary: () => state.stateRings,
     isolated: () => state.filters.iso === 'state',
     basemap: () => state.basemap,
@@ -2690,6 +2690,7 @@ function switchTab(tabId) {
   }
 }
 window.switchTab = switchTab;
+window.__state = state;
 
 let isSettingMode = false;
 

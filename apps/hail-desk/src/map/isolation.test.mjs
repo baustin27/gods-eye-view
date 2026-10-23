@@ -90,3 +90,29 @@ test('tile filtering preserves small islands and excludes tiles entirely inside 
   ]];
   assert.deepEqual(tilesInState([tile], withHole), []);
 });
+
+test('drawOutsideState and clipToState support custom projectFn', () => {
+  const points = [];
+  const ctx = {
+    save() {},
+    restore() {},
+    beginPath() {},
+    rect() {},
+    moveTo(x, y) { points.push(['move', x, y]); },
+    lineTo(x, y) { points.push(['line', x, y]); },
+    closePath() {},
+    fill() {},
+    clip() {},
+  };
+  const poly = [[[[-105, 39], [-104, 39], [-104, 40]]]];
+  const proj = (lon, lat) => ({ x: lon * 10, y: lat * 10 });
+
+  drawOutsideState(ctx, createViewport(), poly, '#000000', proj);
+  assert.equal(points[0][1], -1050);
+  assert.equal(points[0][2], 390);
+
+  points.length = 0;
+  clipToState(ctx, createViewport(), poly, proj);
+  assert.equal(points[0][1], -1050);
+  assert.equal(points[0][2], 390);
+});

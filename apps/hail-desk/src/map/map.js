@@ -50,6 +50,7 @@ import { createTractPainter } from './tracts.js';
 import { createCityPainter } from './cities.js';
 import { createSwathPainter } from './swath.js';
 import { clipToState, drawOutsideState, tilesInState } from './isolation.js';
+import { swathBandsToGeoJson, stateOutlineToMaskGeoJson } from './maplibreData.js';
 
 setWorkerUrl(mapLibreWorkerUrl);
 
@@ -133,6 +134,14 @@ export function createMapPane(options) {
         tiles: [ESRI_DARK_GRAY_REF],
         tileSize: 256,
       },
+      'desk-isolation-mask': {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      },
+      'desk-swaths': {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      },
     },
     layers: [
       { id: 'desk-background', type: 'background', paint: { 'background-color': '#0b1220' } },
@@ -165,6 +174,34 @@ export function createMapPane(options) {
         layout: { visibility: 'visible' },
       },
       {
+        id: 'desk-isolation-mask-layer',
+        type: 'fill',
+        source: 'desk-isolation-mask',
+        paint: {
+          'fill-color': '#05080b',
+          'fill-opacity': 0.94,
+        },
+      },
+      {
+        id: 'desk-swaths-fill',
+        type: 'fill',
+        source: 'desk-swaths',
+        paint: {
+          'fill-color': ['coalesce', ['get', 'color'], '#6d28d9'],
+          'fill-opacity': 0.50,
+        },
+      },
+      {
+        id: 'desk-swaths-outline',
+        type: 'line',
+        source: 'desk-swaths',
+        paint: {
+          'line-color': ['coalesce', ['get', 'outline'], '#fdf4ff'],
+          'line-width': 1.5,
+          'line-opacity': 0.88,
+        },
+      },
+      {
         id: 'esri-labels',
         type: 'raster',
         source: 'esri-labels',
@@ -193,6 +230,7 @@ export function createMapPane(options) {
       'aria-label',
       'Tactical basemap. Drag or use arrow keys to pan; scroll or use plus and minus to zoom.',
     );
+    mapContainer._maplibre = map;
   } catch (error) {
     // WebGL2 is unavailable in some headless and older browsers. Keep the
     // desk usable there with its raster base instead of leaving a blank pane.
@@ -218,8 +256,28 @@ export function createMapPane(options) {
     viewport = {
       ...viewport,
       centre: { lon: centre.lng, lat: centre.lat },
-      zoom: map.getZoom(),
+      zoom: map.getZoom() + 1,
     };
+  }
+
+  function projectPoint(lon, lat) {
+    if (map) {
+      const p = map.project([lon, lat]);
+      return { x: p.x, y: p.y };
+    }
+    return project(lon, lat, viewport);
+  }
+
+  let lastSwathBands = null;
+  let pendingSwathBands = null;
+  function updateMaplibreSwath(bands) {
+    if (!map) return;
+    pendingSwathBands = bands;
+    const source = map.getSource('desk-swaths');
+    if (!source) return;
+    if (bands === lastSwathBands) return;
+    lastSwathBands = bands;
+    source.setData(swathBandsToGeoJson(bands || []));
   }
 
   let isResizing = false;
@@ -260,8 +318,17 @@ export function createMapPane(options) {
     return Number.isFinite(west) ? { west, south, east, north } : null;
   }
 
+  let lastMaskBoundary = undefined;
   function updateIsolationBounds() {
     if (!map) return;
+    const currentPolys = options.isolated?.() ? options.stateBoundary?.() : null;
+    if (currentPolys !== lastMaskBoundary) {
+      const maskSource = map.getSource('desk-isolation-mask');
+      if (maskSource) {
+        lastMaskBoundary = currentPolys;
+        maskSource.setData(stateOutlineToMaskGeoJson(currentPolys));
+      }
+    }
     const bounds = isolationBounds();
     const key = bounds
       ? `${bounds.west},${bounds.south},${bounds.east},${bounds.north}`
@@ -320,6 +387,10 @@ export function createMapPane(options) {
       setVisibility('esri-dark-ref', false);
     }
 
+    setVisibility('desk-swaths-fill', true);
+    setVisibility('desk-swaths-outline', true);
+    setVisibility('desk-isolation-mask-layer', true);
+
     options.onBasemapChange?.(basemapMode);
     scheduleDraw();
   }
@@ -349,10 +420,10 @@ export function createMapPane(options) {
       const tileViewport = { ...viewport, zoom: Math.floor(clampZoom(viewport.zoom)) };
       const visible = visibleTiles(tileViewport);
       const tiles = isolated ? tilesInState(visible, boundary) : visible;
-      if (isolated) drawOutsideState(ctx, viewport, boundary);
+      if (isolated) drawOutsideState(ctx, viewport, boundary, '#05080b', (lon, lat) => projectPoint(lon, lat));
       ctx.save();
       try {
-        if (isolated) clipToState(ctx, viewport, boundary);
+        if (isolated) clipToState(ctx, viewport, boundary, (lon, lat) => projectPoint(lon, lat));
 
         // Always draw the raster basemap when MapLibre is absent or still loading,
         // ensuring the map canvas NEVER appears black in headless Chrome or while
@@ -397,7 +468,7 @@ export function createMapPane(options) {
         // THE CITY LINES, over the imagery and under the hail. A canvasser
         // working a storm that stopped on a city line has to be able to SEE
         // the line: a dot for a city does not say where the city ends.
-        cities.draw(ctx, viewport, options.cityOutlines?.());
+        cities.draw(ctx, viewport, options.cityOutlines?.(), (lon, lat) => projectPoint(lon, lat));
 
         // THE STATE LINE, under the hail. It is a frame for the storm: a storm
         // that crossed a state line is a storm in two markets, and the map
@@ -406,12 +477,16 @@ export function createMapPane(options) {
 
         const bands = options.swath?.();
         if (bands && bands.length) {
-          swath.draw(ctx, viewport, bands);
-          // Subtle cyan tract grid cells/contours inside the swath so tracts are
-          // visually discernible even at regional zoom
+          if (!map) {
+            swath.draw(ctx, viewport, bands);
+          } else {
+            updateMaplibreSwath(bands);
+          }
           if (showTracts) {
             drawSwathTractGrid(bands);
           }
+        } else if (map) {
+          updateMaplibreSwath([]);
         }
 
         if (focusedTractPolygons) drawFocusedTract(focusedTractPolygons);
@@ -436,7 +511,7 @@ export function createMapPane(options) {
     ctx.beginPath();
     if (isFlat) {
       for (let i = 0; i + 1 < points.length; i += 2) {
-        const point = project(points[i], points[i + 1], viewport);
+        const point = projectPoint(points[i], points[i + 1]);
         if (i === 0) ctx.moveTo(point.x, point.y);
         else ctx.lineTo(point.x, point.y);
       }
@@ -444,7 +519,7 @@ export function createMapPane(options) {
       points.forEach((pt, i) => {
         const lon = pt.lon ?? pt[0];
         const lat = pt.lat ?? pt[1];
-        const point = project(lon, lat, viewport);
+        const point = projectPoint(lon, lat);
         if (i === 0) ctx.moveTo(point.x, point.y);
         else ctx.lineTo(point.x, point.y);
       });
@@ -483,7 +558,7 @@ export function createMapPane(options) {
         if (ring.length < 3) continue;
         ctx.beginPath();
         ring.forEach(([lon, lat], index) => {
-          const point = project(lon, lat, viewport);
+          const point = projectPoint(lon, lat);
           if (index === 0) ctx.moveTo(point.x, point.y);
           else ctx.lineTo(point.x, point.y);
         });
@@ -523,7 +598,7 @@ export function createMapPane(options) {
           const lon = pt.lon ?? pt[0];
           const lat = pt.lat ?? pt[1];
           if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
-          const p = project(lon, lat, viewport);
+          const p = projectPoint(lon, lat);
           if (i === 0) ctx.moveTo(p.x, p.y);
           else ctx.lineTo(p.x, p.y);
         }
@@ -556,7 +631,7 @@ export function createMapPane(options) {
         const lon = pt.lon ?? pt[0];
         const lat = pt.lat ?? pt[1];
         if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
-        const p = project(lon, lat, viewport);
+        const p = projectPoint(lon, lat);
         if (i === 0) ctx.moveTo(p.x, p.y);
         else ctx.lineTo(p.x, p.y);
       }
@@ -569,7 +644,7 @@ export function createMapPane(options) {
           const lon = pt.lon ?? pt[0];
           const lat = pt.lat ?? pt[1];
           if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
-          const p = project(lon, lat, viewport);
+          const p = projectPoint(lon, lat);
           if (i === 0) ctx.moveTo(p.x, p.y);
           else ctx.lineTo(p.x, p.y);
         }
@@ -621,7 +696,7 @@ export function createMapPane(options) {
     // Unselected pins
     for (const pin of normal) {
       if (!Number.isFinite(pin.lat) || !Number.isFinite(pin.lon)) continue;
-      const { x, y } = project(pin.lon, pin.lat, viewport);
+      const { x, y } = projectPoint(pin.lon, pin.lat);
       if (x < -20 || y < -20 || x > viewport.width + 20 || y > viewport.height + 20) {
         continue;
       }
@@ -663,7 +738,7 @@ export function createMapPane(options) {
     // Selected pins with glow ring and monospace label
     for (const pin of selected) {
       if (!Number.isFinite(pin.lat) || !Number.isFinite(pin.lon)) continue;
-      const { x, y } = project(pin.lon, pin.lat, viewport);
+      const { x, y } = projectPoint(pin.lon, pin.lat);
       if (x < -40 || y < -40 || x > viewport.width + 40 || y > viewport.height + 40) {
         continue;
       }
@@ -706,7 +781,7 @@ export function createMapPane(options) {
     let bestDist = Infinity;
     for (const pin of pins) {
       if (!Number.isFinite(pin.lat) || !Number.isFinite(pin.lon)) continue;
-      const point = project(pin.lon, pin.lat, viewport);
+      const point = projectPoint(pin.lon, pin.lat);
       const dist = Math.hypot(point.x - x, point.y - y);
       // Generous 18px click radius for quick, forgiving pin selection
       const hitRadius = Math.max(18, (pin.selected ? 13 : 7) + 6);
@@ -753,7 +828,7 @@ export function createMapPane(options) {
 
     for (const row of rows) {
       if (!Number.isFinite(row.lat) || !Number.isFinite(row.lon)) continue;
-      const { x, y } = project(row.lon, row.lat, viewport);
+      const { x, y } = projectPoint(row.lon, row.lat);
       if (x < -40 || y < -40 || x > viewport.width + 40 || y > viewport.height + 40) {
         continue;
       }
@@ -822,7 +897,7 @@ export function createMapPane(options) {
         ctx.beginPath();
         for (let i = 0; i < ring.length; i += 1) {
           const [lon, lat] = ring[i];
-          const point = project(lon, lat, viewport);
+          const point = projectPoint(lon, lat);
           if (i === 0) ctx.moveTo(point.x, point.y);
           else ctx.lineTo(point.x, point.y);
         }
@@ -925,7 +1000,7 @@ export function createMapPane(options) {
     let bestDistance = Infinity;
     for (const row of rows) {
       if (!Number.isFinite(row.lat) || !Number.isFinite(row.lon)) continue;
-      const point = project(row.lon, row.lat, viewport);
+      const point = projectPoint(row.lon, row.lat);
       const distance = Math.hypot(point.x - x, point.y - y);
       // The hit radius is the radius the dot was DRAWN at, plus a little. A
       // fixed twelve pixels against dots of two and a half to seven means
@@ -949,11 +1024,23 @@ export function createMapPane(options) {
       syncViewport();
       scheduleDraw();
     });
+    map.on('render', () => {
+      syncViewport();
+      scheduleDraw();
+    });
+    map.on('styledata', () => {
+      if (pendingSwathBands && map.getSource('desk-swaths')) {
+        updateMaplibreSwath(pendingSwathBands);
+      }
+      updateIsolationBounds();
+    });
     map.on('load', () => {
       resize();
       syncViewport();
       setBasemap(basemapMode);
       updateIsolationBounds();
+      lastSwathBands = null;
+      updateMaplibreSwath(options.swath?.() || pendingSwathBands);
       scheduleDraw();
     });
     map.on('click', (event) => {
@@ -1083,6 +1170,7 @@ export function createMapPane(options) {
      */
     async showSwath(day) {
       const bands = await swath.load(day);
+      if (map) updateMaplibreSwath(bands);
       scheduleDraw();
       return bands;
     },

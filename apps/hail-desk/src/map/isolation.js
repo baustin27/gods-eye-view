@@ -3,7 +3,8 @@ import { tileBounds } from '../../../../src/layers/streetLevel/tileMath.js';
 import { project } from './viewport.js';
 
 /** Cover the basemap outside the selected state, including while its outline loads. */
-export function drawOutsideState(ctx, viewport, polygons, color = '#05080b') {
+export function drawOutsideState(ctx, viewport, polygons, color = '#05080b', projectFn) {
+  const proj = projectFn || ((lon, lat) => project(lon, lat, viewport));
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, 0, viewport.width, viewport.height);
@@ -11,7 +12,7 @@ export function drawOutsideState(ctx, viewport, polygons, color = '#05080b') {
     for (const ring of polygon) {
       if (ring.length < 3) continue;
       ring.forEach(([lon, lat], index) => {
-        const point = project(lon, lat, viewport);
+        const point = proj(lon, lat);
         if (index === 0) ctx.moveTo(point.x, point.y);
         else ctx.lineTo(point.x, point.y);
       });
@@ -28,13 +29,14 @@ export function drawOutsideState(ctx, viewport, polygons, color = '#05080b') {
  * path deliberately hides everything while a newly selected state loads;
  * showing the previous state's tiles during that wait would break isolation.
  */
-export function clipToState(ctx, viewport, polygons) {
+export function clipToState(ctx, viewport, polygons, projectFn) {
+  const proj = projectFn || ((lon, lat) => project(lon, lat, viewport));
   ctx.beginPath();
   for (const polygon of polygons || []) {
     for (const ring of polygon) {
       if (ring.length < 3) continue;
       ring.forEach(([lon, lat], index) => {
-        const point = project(lon, lat, viewport);
+        const point = proj(lon, lat);
         if (index === 0) ctx.moveTo(point.x, point.y);
         else ctx.lineTo(point.x, point.y);
       });

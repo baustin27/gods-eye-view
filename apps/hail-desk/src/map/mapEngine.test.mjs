@@ -265,3 +265,21 @@ test('createMapPane sizes container, supports goTo default zoom 16, and switches
   assert.equal(currentBasemap, 'hybrid');
 });
 
+test('createMapPane showSwath and fallback swath drawing', async () => {
+  const { ctx, fills } = createMockContext();
+  const { canvas, mapContainer } = createMockCanvas(ctx);
+
+  const pane = createMapPane({
+    canvas,
+    mapContainer,
+  });
+
+  const bands = await pane.showSwath('2023-06-22');
+  assert.ok(Array.isArray(bands));
+
+  // Test unproject fallback
+  const geo = pane.unproject(400, 300);
+  assert.ok(Number.isFinite(geo.lon));
+  assert.ok(Number.isFinite(geo.lat));
+});
+

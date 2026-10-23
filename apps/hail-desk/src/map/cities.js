@@ -28,9 +28,11 @@ export function createCityPainter() {
    * @param {CanvasRenderingContext2D} ctx
    * @param {object} viewport
    * @param {Array<Array<Array<number>>>} outlines the rings, as [lon, lat]
+   * @param {((lon: number, lat: number) => {x: number, y: number})} [projectFn]
    */
-  function draw(ctx, viewport, outlines) {
+  function draw(ctx, viewport, outlines, projectFn) {
     if (!Array.isArray(outlines) || !outlines.length) return;
+    const proj = projectFn || ((lon, lat) => project(lon, lat, viewport));
     ctx.save();
     ctx.strokeStyle = 'rgba(255, 214, 102, 0.5)';
     ctx.lineWidth = 1;
@@ -40,7 +42,7 @@ export function createCityPainter() {
         ctx.beginPath();
         for (let i = 0; i < ring.length; i += 1) {
           const [lon, lat] = ring[i];
-          const point = project(lon, lat, viewport);
+          const point = proj(lon, lat);
           if (i === 0) ctx.moveTo(point.x, point.y);
           else ctx.lineTo(point.x, point.y);
         }

@@ -124,8 +124,9 @@ export function createSwathPainter() {
    * @param {CanvasRenderingContext2D} ctx
    * @param {object} viewport
    * @param {Array<object>} bands the bands, in degrees
+   * @param {((point: {lon: number, lat: number}) => {x: number, y: number})} [projectFn]
    */
-  function draw(ctx, viewport, bands) {
+  function draw(ctx, viewport, bands, projectFn) {
     if (!bands || !bands.length) return;
     // The bands are the whole country's storm, and the map is a window on it,
     // so they are projected and clipped by the canvas rather than culled: a
@@ -139,7 +140,7 @@ export function createSwathPainter() {
     // The viewport's projection returns a POINT, not a pair of numbers, so
     // it is read as a point here. Reading it as a pair is the kind of
     // mistake that draws nothing at all and says nothing about why.
-    const project = (point) => projectPoint(point.lon, point.lat, viewport);
+    const project = projectFn || ((point) => projectPoint(point.lon, point.lat, viewport));
     for (const band of bands) {
       ctx.beginPath();
       const outer = band.outer;
