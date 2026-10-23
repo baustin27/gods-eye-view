@@ -278,6 +278,27 @@ test('the index route answers the county list, in the order the tiles use', asyn
     ),
     'the housing units travel with the identity',
   );
+  assert.ok(
+    result.body.tracts.every(
+      (tract) =>
+        Number.isFinite(tract.bounds?.west) &&
+        Number.isFinite(tract.bounds?.south) &&
+        Number.isFinite(tract.bounds?.east) &&
+        Number.isFinite(tract.bounds?.north),
+    ),
+    'the list carries the bounds needed to focus a tract',
+  );
+});
+
+test("the geometry route returns a tract's full boundary rather than tile fragments", async () => {
+  const result = await runDeskApi(
+    new URL('http://localhost/api/desk/tracts/08/031/08031000102/geometry'),
+  );
+  assert.equal(result.status, 200);
+  assert.equal(result.body.geoid, '08031000102');
+  assert.ok(result.body.polygons.length > 0);
+  assert.ok(result.body.polygons.every((polygon) => polygon[0].length >= 3));
+  assert.ok(result.body.bounds.west < result.body.bounds.east);
 });
 
 test('the tract under the middle of the tile is in the tile', async () => {

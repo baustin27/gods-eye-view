@@ -73,7 +73,9 @@ function stateIndex() {
  * @returns {{postal: string, name: string, rings: Array<Array<Array<number>>>}|null}
  */
 export function stateOutline(postal) {
-  const code = String(postal || '').trim().toUpperCase();
+  const code = String(postal || '')
+    .trim()
+    .toUpperCase();
   if (!code) return null;
   const found = stateIndex().get(code);
   if (!found) return null;

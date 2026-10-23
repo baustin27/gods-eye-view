@@ -1,17 +1,13 @@
 /**
  * The desk's map pane.
  *
- * A CANVAS, not a mapping library. The desk is a table of places with a
- * knock list attached, and the map is here to answer "where is that" and to
- * let a person click a place off the map. A mapping library would be a
- * megabyte of JavaScript and a fight about the coordinate system; a canvas
- * with Web Mercator in it is a few hundred lines and no dependencies.
+ * MapLibre owns the familiar labeled basemap, camera and gestures. The clear
+ * canvas above it owns the desk's storm, tract, street and place overlays.
  *
  * What it draws, in order:
  *
- *   1. Esri's World Imagery, so there is a picture of the ground.
- *   2. The county's streets, from the desk's own tile API, in the same Web
- *      Mercator the tiles are cut in.
+ *   1. OpenFreeMap's labeled OpenStreetMap basemap (or Esri imagery).
+ *   2. The county's streets and tracts, from the desk's tile APIs.
  *   3. The PLACES, as dots, coloured by the number of severe reports in
  *      them - which is the number the table is sorted by, so the map and the
  *      table always agree about which places are the market.
@@ -21,6 +17,9 @@
  * tileMath.js`) is pure, and the map is the desk's own.
  */
 
+import { Map as MapLibreMap, setWorkerUrl } from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import mapLibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import {
   MAX_ZOOM,
   MIN_ZOOM,
@@ -32,18 +31,22 @@ import {
   visibleTiles,
   zoomAround,
 } from './viewport.js';
+import { pointInRingDegrees } from '../../../../src/data/stormArtwork.js';
 import { createBasemap, ESRI_ATTRIBUTION } from './basemap.js';
 import { createStreetPainter } from './streets.js';
 import { createTractPainter } from './tracts.js';
 import { createCityPainter } from './cities.js';
 import { createSwathPainter } from './swath.js';
-import { clipToState, tilesInState } from './isolation.js';
+import { clipToState, drawOutsideState, tilesInState } from './isolation.js';
+
+setWorkerUrl(mapLibreWorkerUrl);
 
 /**
  * The map pane.
  *
  * @param {object} options
  * @param {HTMLCanvasElement} options.canvas
+ * @param {HTMLElement} options.mapContainer
  * @param {object} [options.viewport]
  * @param {(place: object) => void} [options.onPick] called with the place
  *   under a click
@@ -51,19 +54,11 @@ import { clipToState, tilesInState } from './isolation.js';
  * @param {() => object} [options.scope] `{state, county}` for the overlay scope
  */
 export function createMapPane(options) {
-  const { canvas } = options;
+  const { canvas, mapContainer } = options;
   const ctx = canvas.getContext('2d');
-  // The basemap asks for a redraw when a tile arrives, so the map fills in
-  // rather than sitting half empty.
-  // The redraw is COALESCED into one animation frame.
-  //
-  // A pointermove fires sixty times a second and a redraw is not free, so
-  // every move used to queue another full draw and the queue ran away from
-  // the pointer. One frame is all a person can see anyway.
   let frame = null;
   let drawing = false;
 
-  const basemap = createBasemap({ onTile: () => scheduleDraw() });
   const tracts = createTractPainter({
     onTile: () => scheduleDraw(),
   });
@@ -71,14 +66,53 @@ export function createMapPane(options) {
   const streets = createStreetPainter({ onTile: () => scheduleDraw() });
   const swath = createSwathPainter();
   let viewport = options.viewport || createViewport();
+  let focusedStreet = null;
+  let focusedTractId = null;
+  let focusedTractPolygons = null;
+  let pixelRatio = Math.max(1, globalThis.devicePixelRatio || 1);
+  let basemapMode = options.basemap?.() === 'satellite' ? 'satellite' : 'road';
+  let isolationBoundsKey = '';
+  let map = null;
   let dragging = null;
   let moved = 0;
+  let zoomTarget = viewport.zoom;
+  const fallbackBasemap = createBasemap({ onTile: () => scheduleDraw() });
+  try {
+    map = new MapLibreMap({
+      container: mapContainer,
+      style: 'https://tiles.openfreemap.org/styles/liberty',
+      center: [viewport.centre.lon, viewport.centre.lat],
+      zoom: viewport.zoom,
+      minZoom: MIN_ZOOM,
+      maxZoom: MAX_ZOOM,
+      maxPitch: 0,
+      pitchWithRotate: false,
+      dragRotate: false,
+      attributionControl: false,
+      renderWorldCopies: false,
+    });
+    mapContainer.setAttribute(
+      'aria-label',
+      'Labeled road map. Drag or use arrow keys to pan; scroll or use plus and minus to zoom.',
+    );
+  } catch (error) {
+    // WebGL2 is unavailable in some headless and older browsers. Keep the
+    // desk usable there with its raster base instead of leaving a blank pane.
+    mapContainer.replaceChildren();
+    mapContainer.hidden = true;
+    canvas.parentElement?.classList.add('map-fallback');
+    options.onFallback?.(error);
+  }
 
-  // The device pixel ratio the BACKING STORE was made at. It is read once,
-  // here, and the draw uses the same one - reading it twice means the store
-  // and the drawing disagree the moment the window moves to a monitor with a
-  // different scale, and the map is drawn at the wrong size.
-  let pixelRatio = Math.max(1, globalThis.devicePixelRatio || 1);
+  function syncViewport() {
+    if (!map) return;
+    const centre = map.getCenter();
+    viewport = {
+      ...viewport,
+      centre: { lon: centre.lng, lat: centre.lat },
+      zoom: map.getZoom(),
+    };
+  }
 
   function resize() {
     pixelRatio = Math.max(1, globalThis.devicePixelRatio || 1);
@@ -87,6 +121,77 @@ export function createMapPane(options) {
     canvas.height = Math.round(rect.height * pixelRatio);
     ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     viewport = { ...viewport, width: rect.width, height: rect.height };
+    syncViewport();
+  }
+
+  function isolationBounds() {
+    const polygons = options.isolated?.() ? options.stateBoundary?.() : null;
+    if (!polygons?.length) return null;
+    let west = Infinity;
+    let south = Infinity;
+    let east = -Infinity;
+    let north = -Infinity;
+    for (const polygon of polygons) {
+      for (const ring of polygon) {
+        for (const [lon, lat] of ring) {
+          west = Math.min(west, lon);
+          east = Math.max(east, lon);
+          south = Math.min(south, lat);
+          north = Math.max(north, lat);
+        }
+      }
+    }
+    return Number.isFinite(west) ? { west, south, east, north } : null;
+  }
+
+  function updateIsolationBounds() {
+    if (!map) return;
+    const bounds = isolationBounds();
+    const key = bounds
+      ? `${bounds.west},${bounds.south},${bounds.east},${bounds.north}`
+      : '';
+    if (key === isolationBoundsKey) return;
+    isolationBoundsKey = key;
+    map.setMaxBounds(
+      bounds
+        ? [[bounds.west, bounds.south], [bounds.east, bounds.north]]
+        : null,
+    );
+  }
+
+  function ensureSatelliteLayer() {
+    if (map.getSource('desk-satellite')) return;
+    map.addSource('desk-satellite', {
+      type: 'raster',
+      tiles: [
+        'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      ],
+      tileSize: 256,
+      attribution: 'Imagery © Esri, Maxar, Earthstar Geographics, and GIS User Community',
+    });
+    const firstLabel = map.getStyle().layers.find((layer) => layer.type === 'symbol')?.id;
+    map.addLayer({
+      id: 'desk-satellite',
+      type: 'raster',
+      source: 'desk-satellite',
+      layout: { visibility: 'none' },
+    }, firstLabel);
+  }
+
+  function setBasemap(mode) {
+    basemapMode = mode === 'satellite' ? 'satellite' : 'road';
+    if (!map) return;
+    if (!map.isStyleLoaded()) {
+      map.once('load', () => setBasemap(basemapMode));
+      return;
+    }
+    ensureSatelliteLayer();
+    map.setLayoutProperty(
+      'desk-satellite',
+      'visibility',
+      basemapMode === 'satellite' ? 'visible' : 'none',
+    );
+    options.onBasemapChange?.(basemapMode);
   }
 
   /**
@@ -102,24 +207,43 @@ export function createMapPane(options) {
     try {
       ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       ctx.clearRect(0, 0, viewport.width, viewport.height);
-      ctx.fillStyle = '#05080b';
-      ctx.fillRect(0, 0, viewport.width, viewport.height);
+      if (!map) {
+        ctx.fillStyle = '#05080b';
+        ctx.fillRect(0, 0, viewport.width, viewport.height);
+      }
 
       const isolated = options.isolated?.();
       const boundary = options.stateBoundary?.();
-      const visible = visibleTiles(viewport);
+      const selectedTract = options.focusedTract?.() || null;
+      if (selectedTract !== focusedTractId) {
+        focusedTractId = selectedTract;
+        focusedTractPolygons = null;
+      }
+      updateIsolationBounds();
+      const tileViewport = { ...viewport, zoom: clampZoom(viewport.zoom) };
+      const visible = visibleTiles(tileViewport);
       const tiles = isolated ? tilesInState(visible, boundary) : visible;
+      if (isolated) drawOutsideState(ctx, viewport, boundary);
       ctx.save();
       try {
         if (isolated) clipToState(ctx, viewport, boundary);
-        basemap.draw(ctx, viewport, tiles);
+        if (!map) fallbackBasemap.draw(ctx, viewport, tiles);
 
         const scope = options.scope?.() || {};
         const inScope = Boolean(scope.state && scope.county);
-        if (inScope) {
-          // The houses, UNDER the hail. The fills are dimmed by the swath and
-          // that is the right way round: the hail is the subject.
-          tracts.draw(ctx, viewport, tiles, { mode: 'fill' });
+        // Census tracts are neighborhood detail. At regional zoom they
+        // collapse into moving cyan blocks; reveal them only when individual
+        // neighborhoods have enough screen area to read.
+        const neighborhoodZoom = viewport.zoom >= 12;
+        const streetZoom = viewport.zoom >= 13;
+        if (inScope && neighborhoodZoom) {
+          // The houses, UNDER the hail: the hail remains the subject.
+          tracts.draw(ctx, viewport, tiles, {
+            mode: 'fill',
+            highlightedGeoid: options.focusedTract?.(),
+          });
+        }
+        if (inScope && streetZoom) {
           streets.draw(ctx, viewport, tiles);
         }
 
@@ -135,20 +259,56 @@ export function createMapPane(options) {
 
         const bands = options.swath?.();
         if (bands && bands.length) swath.draw(ctx, viewport, bands);
-        if (inScope) {
-          // The neighbourhood boundaries, OVER the hail: a person zooming in
-          // is looking for the edges of the place they are going to work.
-          tracts.draw(ctx, viewport, tiles, { mode: 'outline' });
-        }
+        if (focusedTractPolygons) drawFocusedTract(focusedTractPolygons);
+        drawFocusedStreet(focusedStreet);
         drawPlaces();
       } finally {
         ctx.restore();
       }
-      drawAttribution();
       drawScaleBar();
     } finally {
       drawing = false;
     }
+  }
+
+  function drawFocusedStreet(points) {
+    if (!Array.isArray(points) || points.length < 4) return;
+    ctx.beginPath();
+    for (let i = 0; i + 1 < points.length; i += 2) {
+      const point = project(points[i], points[i + 1], viewport);
+      if (i === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    }
+    ctx.strokeStyle = 'rgba(10, 14, 19, 0.95)';
+    ctx.lineWidth = 7;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
+  function drawFocusedTract(polygons) {
+    ctx.save();
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = 'rgba(10, 14, 19, 0.95)';
+    ctx.shadowBlur = 4;
+    for (const polygon of polygons) {
+      for (const ring of polygon) {
+        if (ring.length < 3) continue;
+        ctx.beginPath();
+        ring.forEach(([lon, lat], index) => {
+          const point = project(lon, lat, viewport);
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.closePath();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   /**
@@ -294,17 +454,6 @@ export function createMapPane(options) {
   }
 
   /**
-   * The credit, on the map, because the service requires it and a credit
-   * behind a toggle is not a credit.
-   */
-  function drawAttribution() {
-    ctx.font = '10px ui-monospace, monospace';
-    ctx.textAlign = 'right';
-    ctx.fillStyle = 'rgba(220, 230, 240, 0.75)';
-    ctx.fillText(ESRI_ATTRIBUTION, viewport.width - 8, viewport.height - 8);
-  }
-
-  /**
    * The place under a screen pixel, if there is one.
    */
   /**
@@ -341,131 +490,88 @@ export function createMapPane(options) {
     return best;
   }
 
-  // The interaction: drag to pan, the wheel to zoom, a click to pick.
-  canvas.addEventListener('pointerdown', (event) => {
-    // Only the primary button drags. A right-drag used to pan the map and a
-    // right-click used to open a place, which is not a thing anybody wants.
-    if (event.button !== 0) return;
-    dragging = { x: event.offsetX, y: event.offsetY };
-    moved = 0;
-    canvas.setPointerCapture?.(event.pointerId);
-  });
-  canvas.addEventListener('pointermove', (event) => {
-    if (!dragging) return;
-    const dx = event.offsetX - dragging.x;
-    const dy = event.offsetY - dragging.y;
-    moved = Math.max(moved, Math.hypot(dx, dy));
-    dragging = { x: event.offsetX, y: event.offsetY };
-    viewport = panBy(viewport, dx, dy);
-    scheduleDraw();
-  });
-  // THE KEYBOARD. The map is a picture with no keyboard, and a picture with
-  // no keyboard is a picture a person cannot read alone.
-  canvas.addEventListener('keydown', (event) => {
-    const step = 90;
-    let handled = true;
-    switch (event.key) {
-      case 'ArrowLeft':
-        viewport = panBy(viewport, -step, 0);
-        break;
-      case 'ArrowRight':
-        viewport = panBy(viewport, step, 0);
-        break;
-      case 'ArrowUp':
-        viewport = panBy(viewport, 0, -step);
-        break;
-      case 'ArrowDown':
-        viewport = panBy(viewport, 0, step);
-        break;
-      case '+':
-      case '=':
-        zoomAroundAtCentre(1);
-        break;
-      case '-':
-      case '_':
-        zoomAroundAtCentre(-1);
-        break;
-      default:
-        handled = false;
-    }
-    if (handled) {
-      event.preventDefault();
+  resize();
+  if (map) {
+    map.on('move', () => {
+      syncViewport();
       scheduleDraw();
-    }
-  });
-
-  /**
-   * Zoom one level, about the middle of the frame.
-   *
-   * @param {number} levels
-   */
-  function zoomAroundAtCentre(levels) {
-    const next = clampZoom(viewport.zoom + levels);
-    if (next === viewport.zoom) return;
-    viewport = { ...viewport, zoom: next };
-    zoomTarget = next;
-  }
-
-  canvas.addEventListener('pointercancel', () => {
-    // A drag that is cancelled - a second finger, a system gesture - must
-    // LET GO, or the map stays latched to the pointer.
-    dragging = null;
-  });
-  canvas.addEventListener('pointerup', (event) => {
-    const wasDragging = dragging;
-    dragging = null;
-    canvas.releasePointerCapture?.(event.pointerId);
-    // A CLICK and a DRAG are told apart by how far the pointer moved FROM
-    // WHERE IT WENT DOWN, not by the sum of the deltas - two pixels of
-    // movement is a click, and a slow drag is a thousand pixels of deltas
-    // that never add up to much.
-    if (!wasDragging || moved < 5) {
-      const row = pick(event.offsetX, event.offsetY);
-      if (row) options.onPick?.(row);
-    }
-  });
-  // The wheel keeps a FRACTIONAL target and commits a WHOLE number.
-  //
-  // The fraction is what makes a notch feel like a notch: a mouse wheel sends
-  // several events for one gesture and each one adds to the target. The
-  // COMMITTED zoom is a whole number, because a fractional one breaks the
-  // tile index - the tile server is asked for a level it does not have, and
-  // Esri truncates it rather than refusing, so the imagery lands a continent
-  // away from where it belongs.
-  let zoomTarget = viewport.zoom;
-  canvas.addEventListener(
-    'wheel',
-    (event) => {
-      event.preventDefault();
-      const factor = event.deltaY < 0 ? 1.3 : 1 / 1.3;
-      zoomTarget = Math.max(
-        MIN_ZOOM,
-        Math.min(MAX_ZOOM, zoomTarget + Math.log2(factor)),
+    });
+    map.on('resize', () => {
+      resize();
+      scheduleDraw();
+    });
+    map.on('load', () => {
+      resize();
+      syncViewport();
+      setBasemap(basemapMode);
+      updateIsolationBounds();
+      scheduleDraw();
+    });
+    map.on('click', (event) => {
+      const place = pick(event.point.x, event.point.y);
+      if (place) {
+        options.onPick?.(place);
+        return;
+      }
+      const bands = options.swath?.() || [];
+      const point = { lon: event.lngLat.lng, lat: event.lngLat.lat };
+      const band = [...bands].reverse().find((candidate) =>
+        pointInRingDegrees(point, candidate.outer) &&
+        !(candidate.holes || []).some((hole) => pointInRingDegrees(point, hole)),
       );
+      if (band) options.onSwathPick?.(band);
+    });
+    map.on('error', (event) => {
+      if (event.error) options.onMapError?.(event.error);
+    });
+  } else {
+    let drag = null;
+    canvas.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      drag = { x: event.offsetX, y: event.offsetY };
+      moved = 0;
+      canvas.setPointerCapture?.(event.pointerId);
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (!drag) return;
+      const dx = event.offsetX - drag.x;
+      const dy = event.offsetY - drag.y;
+      moved = Math.max(moved, Math.hypot(dx, dy));
+      drag = { x: event.offsetX, y: event.offsetY };
+      viewport = panBy(viewport, dx, dy);
+      scheduleDraw();
+    });
+    canvas.addEventListener('pointerup', (event) => {
+      const wasDragging = drag;
+      drag = null;
+      canvas.releasePointerCapture?.(event.pointerId);
+      if (!wasDragging || moved < 5) {
+        const place = pick(event.offsetX, event.offsetY);
+        if (place) options.onPick?.(place);
+        else {
+          const { lon, lat } = unproject(event.offsetX, event.offsetY, viewport);
+          const point = { lon, lat };
+          const band = [...(options.swath?.() || [])].reverse().find((candidate) =>
+            pointInRingDegrees(point, candidate.outer) &&
+            !(candidate.holes || []).some((hole) => pointInRingDegrees(point, hole)),
+          );
+          if (band) options.onSwathPick?.(band);
+        }
+      }
+    });
+    canvas.addEventListener('wheel', (event) => {
+      event.preventDefault();
       viewport = zoomAround(
         viewport,
-        Math.round(zoomTarget),
+        clampZoom(viewport.zoom + (event.deltaY < 0 ? 1 : -1)),
         event.offsetX,
         event.offsetY,
       );
       scheduleDraw();
-    },
-    { passive: false },
-  );
-
-  resize();
-  // The desk had NO window-resize listener anywhere, so after a resize the
-  // backing store and the viewport were stale: the bitmap was CSS-stretched
-  // and blurry, and the projection used the old size. The observer catches the
-  // window, the panel and the browser's zoom all at once.
-  if (typeof ResizeObserver === 'function') {
-    const observer = new ResizeObserver(() => {
-      resize();
-      scheduleDraw();
-    });
-    observer.observe(canvas);
+    }, { passive: false });
+    options.onMapError?.(new Error('WebGL2 unavailable; using satellite fallback'));
+    void draw();
   }
-  void draw();
 
   /**
    * Fit the map to a box of degrees.
@@ -482,18 +588,26 @@ export function createMapPane(options) {
    */
   function fitBounds(west, south, east, north) {
     if (![west, south, east, north].every(Number.isFinite)) return;
-    if (east <= west || north <= south) return;
-    const centre = { lon: (west + east) / 2, lat: (south + north) / 2 };
-    const lonSpan = Math.max(0.01, east - west);
-    const latSpan = Math.max(0.01, north - south);
-    const stretch = Math.max(0.2, Math.cos((centre.lat * Math.PI) / 180));
-    const byWidth = Math.log2((360 * (viewport.width || 800)) / (256 * lonSpan));
-    const byHeight = Math.log2(
-      (360 * (viewport.height || 600) * stretch) / (256 * latSpan * 1.3),
+    const minLon = east === west ? west - 0.005 : west;
+    const maxLon = east === west ? east + 0.005 : east;
+    const minLat = north === south ? south - 0.005 : south;
+    const maxLat = north === south ? north + 0.005 : north;
+    if (!map) {
+      const centre = { lon: (minLon + maxLon) / 2, lat: (minLat + maxLat) / 2 };
+      const zoom = clampZoom(Math.floor(Math.min(
+        Math.log2((360 * viewport.width) / (256 * (maxLon - minLon))),
+        Math.log2((360 * viewport.height * Math.cos(centre.lat * Math.PI / 180)) /
+          (256 * (maxLat - minLat) * 1.3)),
+      )));
+      viewport = { ...viewport, centre, zoom };
+      zoomTarget = zoom;
+      scheduleDraw();
+      return;
+    }
+    map.fitBounds(
+      [[minLon, minLat], [maxLon, maxLat]],
+      { padding: 48, maxZoom: 17, duration: 650 },
     );
-    const zoom = clampZoom(Math.floor(Math.min(byWidth, byHeight)));
-    viewport = { ...viewport, centre, zoom };
-    zoomTarget = zoom;
   }
 
   return {
@@ -552,18 +666,66 @@ export function createMapPane(options) {
      * @param {number} north
      */
     fitBounds,
+    focusBounds(bounds) {
+      if (!bounds) return;
+      fitBounds(bounds.west, bounds.south, bounds.east, bounds.north);
+    },
+    clearFocus() {
+      focusedStreet = null;
+      scheduleDraw();
+    },
+    async focusTract(geoid) {
+      const id = String(geoid || '');
+      if (!/^\d{11}$/.test(id)) return false;
+      const response = await fetch(
+        `/api/desk/tracts/${id.slice(0, 2)}/${id.slice(2, 5)}/${id}/geometry`,
+      );
+      if (!response.ok) return false;
+      const tract = await response.json();
+      if (tract.geoid !== id || !tract.bounds || !tract.polygons?.length) return false;
+      if (options.focusedTract?.() !== id) return false;
+      focusedTractId = id;
+      focusedTractPolygons = tract.polygons;
+      focusedStreet = null;
+      fitBounds(tract.bounds.west, tract.bounds.south, tract.bounds.east, tract.bounds.north);
+      scheduleDraw();
+      return true;
+    },
+    focusStreet(points, bounds) {
+      if (!bounds || !Array.isArray(points)) return false;
+      focusedStreet = points;
+      fitBounds(bounds.west, bounds.south, bounds.east, bounds.north);
+      scheduleDraw();
+      return true;
+    },
+    zoomBy(levels) {
+      if (map) {
+        map.easeTo({ zoom: clampZoom(map.getZoom() + levels), duration: 280 });
+      } else {
+        viewport = { ...viewport, zoom: clampZoom(viewport.zoom + levels) };
+        zoomTarget = viewport.zoom;
+        scheduleDraw();
+      }
+    },
+    setBasemap,
     /** Move the map to a place. */
     goTo(lon, lat, zoom) {
-      viewport = {
-        ...viewport,
-        centre: { lon, lat },
-        zoom: zoom ?? viewport.zoom,
-      };
-      void draw();
+      if (map) {
+        map.flyTo({ center: [lon, lat], zoom: zoom ?? map.getZoom(), duration: 650 });
+      } else {
+        viewport = { ...viewport, centre: { lon, lat }, zoom: zoom ?? viewport.zoom };
+        scheduleDraw();
+      }
     },
     draw,
     resize,
     /** The point under a screen pixel, for the address lookup later. */
-    unproject,
+    unproject(x, y) {
+      if (map) {
+        const point = map.unproject([x, y]);
+        return { lon: point.lng, lat: point.lat };
+      }
+      return unproject(x, y, viewport);
+    },
   };
 }

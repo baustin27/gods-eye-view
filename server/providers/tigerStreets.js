@@ -228,9 +228,8 @@ export async function countyStreets(state, county, zip) {
  */
 export async function countyEdgeRecords(state, county) {
   const file = await countyEdgesPath(state, county);
-  const { readZipEntries, readShapefile } = await import(
-    path.join(REPO, 'scripts/lib/binary-geo.mjs')
-  );
+  const { readZipEntries, readShapefile } =
+    await import('../../scripts/lib/binary-geo.mjs');
   let entries = readZipEntries(fs.readFileSync(file));
   if (!entries || !entries.size) throw new Error('TIGER EDGES file is empty');
   const member = [...entries.keys()].find((name) =>
@@ -318,6 +317,7 @@ export async function countyEdges(state, county, zip) {
       const count = addressCount(from, to);
       if (!count) continue;
       streets.push({
+        edgeId: index,
         name,
         from: Number(from),
         to: Number(to),
@@ -359,6 +359,29 @@ function edgePoints(record) {
     }
   }
   return out;
+}
+
+/** Load one edge's line for the desk's click-to-focus interaction. */
+export async function countyStreetGeometry(state, county, edgeId) {
+  if (!/^\d{2}$/.test(String(state)) || !/^\d{3}$/.test(String(county))) {
+    const error = new Error('state and county are required');
+    error.status = 400;
+    throw error;
+  }
+  const index = Number(edgeId);
+  if (!Number.isInteger(index) || index < 0) {
+    const error = new Error('a valid street edge id is required');
+    error.status = 400;
+    throw error;
+  }
+  const { rows, shapes } = await countyEdgeRecords(state, county);
+  const points = rows[index] ? edgePoints(shapes.records[index]) : [];
+  if (points.length < 4) {
+    const error = new Error('the street geometry is not available');
+    error.status = 404;
+    throw error;
+  }
+  return { edgeId: index, points };
 }
 
 /**

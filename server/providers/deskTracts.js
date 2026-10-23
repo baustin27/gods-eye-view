@@ -417,10 +417,42 @@ export function tractListBody(state, county, index) {
       index: tract.index,
       geoid: tract.geoid,
       name: tract.name,
+      bounds: {
+        west: tract.minLon,
+        south: tract.minLat,
+        east: tract.maxLon,
+        north: tract.maxLat,
+      },
       units: tract.units,
       moe: tract.moe,
       population: tract.population,
     })),
+  };
+}
+
+/** One tract's complete, unclipped outline for selection and map focus. */
+export async function tractGeometry(state, county, geoid) {
+  if (!String(geoid).startsWith(`${state}${county}`)) {
+    const error = new Error('the tract does not belong to this county');
+    error.status = 404;
+    throw error;
+  }
+  const index = await countyTractIndex(state, county);
+  const tract = index.tracts.find((entry) => entry.geoid === geoid);
+  if (!tract) {
+    const error = new Error('the tract outline is not available');
+    error.status = 404;
+    throw error;
+  }
+  return {
+    geoid: tract.geoid,
+    bounds: {
+      west: tract.minLon,
+      south: tract.minLat,
+      east: tract.maxLon,
+      north: tract.maxLat,
+    },
+    polygons: tract.parts,
   };
 }
 

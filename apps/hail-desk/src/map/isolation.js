@@ -2,6 +2,27 @@ import { pointInRing } from '../../../../src/data/stormScoring.js';
 import { tileBounds } from '../../../../src/layers/streetLevel/tileMath.js';
 import { project } from './viewport.js';
 
+/** Cover the basemap outside the selected state, including while its outline loads. */
+export function drawOutsideState(ctx, viewport, polygons, color = '#05080b') {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, viewport.width, viewport.height);
+  for (const polygon of polygons || []) {
+    for (const ring of polygon) {
+      if (ring.length < 3) continue;
+      ring.forEach(([lon, lat], index) => {
+        const point = project(lon, lat, viewport);
+        if (index === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
+      ctx.closePath();
+    }
+  }
+  ctx.fillStyle = color;
+  ctx.fill('evenodd');
+  ctx.restore();
+}
+
 /**
  * One clip wraps every geographic layer, including raster imagery. An empty
  * path deliberately hides everything while a newly selected state loads;

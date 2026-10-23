@@ -45,6 +45,14 @@ export const DESK_ROUTES = {
     const places = placesForState(url.searchParams.get('state') || '');
     return { count: places.length, places };
   },
+  '/api/desk/street-geometry': async (url) => {
+    const { countyStreetGeometry } = await import('./tigerStreets.js');
+    return countyStreetGeometry(
+      url.searchParams.get('state') || '',
+      url.searchParams.get('county') || '',
+      url.searchParams.get('edge') || '',
+    );
+  },
   '/api/desk/state': async (url) => {
     const { stateOutline } = await import('./deskStates.js');
     const outline = stateOutline(url.searchParams.get('state') || '');
@@ -127,6 +135,8 @@ const STREET_TILE_BY_GEO_PATH =
 const TRACT_TILE_BY_GEO_PATH =
   /^\/api\/desk\/tracts\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/;
 const TRACT_INDEX_PATH = /^\/api\/desk\/tracts\/(\d{2})\/(\d{3})\/index$/;
+const TRACT_GEOMETRY_PATH =
+  /^\/api\/desk\/tracts\/(\d{2})\/(\d{3})\/(\d{11})\/geometry$/;
 
 /**
  * How long a tile may be cached by the browser.
@@ -359,6 +369,22 @@ export async function runDeskApi(url) {
       return {
         status: 404,
         body: { error: error?.message || 'the tract list could not be built' },
+      };
+    }
+  }
+
+  const tractGeometryMatch = TRACT_GEOMETRY_PATH.exec(url.pathname);
+  if (tractGeometryMatch) {
+    const [, state, county, geoid] = tractGeometryMatch;
+    try {
+      const { tractGeometry } = await import('./deskTracts.js');
+      return { status: 200, body: await tractGeometry(state, county, geoid) };
+    } catch (error) {
+      return {
+        status: Number(error?.status) || 404,
+        body: {
+          error: error?.message || 'the tract outline could not be loaded',
+        },
       };
     }
   }

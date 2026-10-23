@@ -149,6 +149,7 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
    * @param {Array<{z: number, x: number, y: number}>} tiles
    * @param {object} options
    * @param {'fill'|'outline'} [options.mode]
+   * @param {string} [options.highlightedGeoid]
    */
   function draw(ctx, viewport, tiles, options = {}) {
     const { mode = 'fill' } = options;
@@ -208,8 +209,12 @@ export function createTractPainter({ fetchImpl = globalThis.fetch, onTile } = {}
         }
         ctx.closePath();
         if (mode === 'outline') {
-          ctx.strokeStyle = 'rgba(165, 243, 252, 0.45)';
-          ctx.lineWidth = 0.75;
+          const tract = indexLists.get(tileData.geoid)?.[ring.edgeIndex];
+          const highlighted = tract?.geoid === options.highlightedGeoid;
+          ctx.strokeStyle = highlighted
+            ? 'rgba(251, 191, 36, 0.95)'
+            : 'rgba(165, 243, 252, 0.45)';
+          ctx.lineWidth = highlighted ? 2 : 0.75;
           ctx.stroke();
         } else {
           ctx.fillStyle = tractFill(unitsFor(tileData.geoid, ring.edgeIndex));

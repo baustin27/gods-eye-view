@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { clipToState, tilesInState } from './isolation.js';
+import { clipToState, drawOutsideState, tilesInState } from './isolation.js';
 import { createViewport } from './viewport.js';
 
 const colorado = [
@@ -58,6 +58,26 @@ test('a missing outline fails closed rather than revealing the world', () => {
     null,
   );
   assert.equal(clipped, true);
+});
+
+test('the isolation mask paints outside the state, and a missing outline covers all', () => {
+  const fills = [];
+  const ctx = {
+    save() {},
+    restore() {},
+    beginPath() {},
+    rect() {},
+    moveTo() {},
+    lineTo() {},
+    closePath() {},
+    fill(rule) { fills.push({ rule, color: ctx.fillStyle }); },
+  };
+  drawOutsideState(ctx, createViewport(), colorado);
+  drawOutsideState(ctx, createViewport(), null);
+  assert.deepEqual(fills, [
+    { rule: 'evenodd', color: '#05080b' },
+    { rule: 'evenodd', color: '#05080b' },
+  ]);
 });
 
 test('tile filtering preserves small islands and excludes tiles entirely inside holes', () => {

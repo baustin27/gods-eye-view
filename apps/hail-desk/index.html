@@ -16,8 +16,24 @@
         <span class="mark" aria-hidden="true">◈</span>
         <div>
           <h1>HAIL DESK</h1>
-          <p class="tagline" id="tagline">Market view</p>
+          <p class="tagline" id="tagline">Precision Swaths · Apportioned Housing · Street Knock Lists</p>
         </div>
+      </div>
+      <div class="omnibar-wrap" id="omnibarWrap" role="search" aria-label="Omnibar search">
+        <input
+          id="omnibarInput"
+          type="search"
+          placeholder="Search address (e.g. 2840 S Elm), city, tract, or date..."
+          autocomplete="off"
+          aria-label="Search address, city, tract, or date"
+        />
+        <button type="button" id="omnibarAction" class="omnibar-action" title="Trigger search verification">Verify</button>
+      </div>
+      <div class="modes" id="modes" role="group" aria-label="Workspace mode">
+        <button type="button" id="mode-split" data-mode="split" class="active" aria-pressed="true">SPLIT DESK</button>
+        <button type="button" id="mode-map" data-mode="map" aria-pressed="false">FIELD MAP</button>
+        <button type="button" id="mode-knock" data-mode="knock" aria-pressed="false">KNOCK LIST</button>
+        <button type="button" id="mode-dossier" data-mode="dossier" aria-pressed="false">LOSS DOSSIER</button>
       </div>
       <p class="source" id="source"></p>
     </header>
@@ -90,18 +106,21 @@
       <!--
         THE MAP.
 
-        The desk is a table of places, and a table cannot say "where is that"
-        or let a person click a town off a picture. The map answers the first
-        and does the second, and it is drawn on a canvas with the same Web
-        Mercator the street tiles are cut in.
+        The desk is a table of places, and the labeled map answers "where is
+        that". Storm, tract, and selected-street geometry stays in a separate
+        overlay so the underlying road map remains readable.
       -->
       <section class="map-pane" id="mapPane" aria-label="Map of the filtered market">
+        <div id="mapBase" class="map-base" aria-label="Labeled interactive map"></div>
         <canvas
           id="mapCanvas"
-          role="img"
-          tabindex="0"
-          aria-label="The map. Arrow keys pan, plus and minus zoom."
+          aria-hidden="true"
         ></canvas>
+        <div class="map-navigation" role="group" aria-label="Map zoom">
+          <button type="button" id="zoomIn" aria-label="Zoom in" title="Zoom in">+</button>
+          <button type="button" id="zoomOut" aria-label="Zoom out" title="Zoom out">−</button>
+        </div>
+        <p class="map-attribution" id="mapAttribution">OpenFreeMap © OpenMapTiles · © OpenStreetMap contributors</p>
         <!--
           THE RECENT DAYS, as chips over the map. The globe's pattern: the
           open leads are the recent storms, and the ones before them are
@@ -129,6 +148,9 @@
         >
           PLACES
         </button>
+        <button type="button" id="basemapToggle" class="map-toggle basemap-toggle" aria-pressed="false" title="Show satellite imagery">
+          SATELLITE
+        </button>
         <!--
           THE INFO LINE. What is on the map, in one line, with the day
           convention in it - because a person looking at a map of a storm has
@@ -138,7 +160,7 @@
         <p class="map-caption" id="mapCaption"></p>
       </section>
 
-      <div class="list-pane">
+      <div class="list-pane" id="sideConsole" data-panel="console">
         <!--
           THE SPOPE CHIPS: every storm day, the days somebody called in, and
           the days nobody did. The third is the lead list - the hail fell and
@@ -231,9 +253,11 @@
             exposure figure, and the housing-unit count is the reliable market
             size.
           </p>
-        </section>
         </details>
       </div>
+
+      <section class="knock-pane" id="knockHub" data-panel="knock" hidden aria-label="Street Canvassing & Knock List"></section>
+      <section class="dossier-pane" id="dossierCard" data-panel="dossier" hidden aria-label="Property Loss Dossier"></section>
 
 
 

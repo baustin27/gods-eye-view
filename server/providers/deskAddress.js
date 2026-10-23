@@ -95,7 +95,10 @@ function placeIndex() {
     if (!Number.isFinite(place.lat) || !Number.isFinite(place.lon)) continue;
     for (const name of [place.full, place.name]) {
       if (!name) continue;
-      places.set(String(name).toLowerCase(), { lat: place.lat, lon: place.lon });
+      places.set(String(name).toLowerCase(), {
+        lat: place.lat,
+        lon: place.lon,
+      });
     }
   }
   return places;
@@ -208,7 +211,9 @@ export function parseAddressQuery(query) {
  * @returns {object|null} the county
  */
 export function countyForPlace(place, state) {
-  const name = String(place || '').trim().toLowerCase();
+  const name = String(place || '')
+    .trim()
+    .toLowerCase();
   if (!name) return biggestCounty(state);
   const centre = placeIndex().get(name);
   if (!centre) return null;
@@ -220,7 +225,8 @@ export function countyForPlace(place, state) {
     for (const part of county.rings) {
       const [outer, ...holes] = part;
       if (!outer || !pointInRing(outer, centre.lat, centre.lon)) continue;
-      if (holes.some((hole) => pointInRing(hole, centre.lat, centre.lon))) continue;
+      if (holes.some((hole) => pointInRing(hole, centre.lat, centre.lon)))
+        continue;
       return county;
     }
   }
@@ -242,7 +248,9 @@ function biggestCounty(state) {
     countySizes = new Map();
     try {
       const payload = JSON.parse(
-        zlib.gunzipSync(fs.readFileSync(COUNTIES_FILE_ARTIFACT)).toString('utf8'),
+        zlib
+          .gunzipSync(fs.readFileSync(COUNTIES_FILE_ARTIFACT))
+          .toString('utf8'),
       );
       for (const row of payload.rows || []) {
         countySizes.set(String(row.fips), {
@@ -260,9 +268,7 @@ function biggestCounty(state) {
     if (!best || info.units > best.units) best = { fips, units: info.units };
   }
   if (!best) return null;
-  const found = countyIndex().find(
-    (county) => county.geoid === best.fips,
-  );
+  const found = countyIndex().find((county) => county.geoid === best.fips);
   return found || null;
 }
 
@@ -297,7 +303,9 @@ export function pointAlongSegment(points, fraction) {
   let total = 0;
   for (let i = 0; i + 3 < points.length; i += 2) {
     const dx =
-      (points[i + 2] - points[i]) * metres * Math.cos((points[i + 1] * Math.PI) / 180);
+      (points[i + 2] - points[i]) *
+      metres *
+      Math.cos((points[i + 1] * Math.PI) / 180);
     const dy = (points[i + 3] - points[i + 1]) * metres;
     const length = Math.hypot(dx, dy);
     segments.push(length);
@@ -331,7 +339,9 @@ export function pointAlongSegment(points, fraction) {
  */
 export async function geocodeAddress({ state, county, number, street }) {
   const edges = await countyEdges(state, county);
-  const wanted = String(street || '').trim().toLowerCase();
+  const wanted = String(street || '')
+    .trim()
+    .toLowerCase();
   if (!wanted) return [];
   const candidates = [];
   for (const edge of edges) {
@@ -344,7 +354,8 @@ export async function geocodeAddress({ state, county, number, street }) {
     if (number !== null && number < edge.from) continue;
     if (number !== null && number > edge.to) continue;
     const span = edge.to - edge.from;
-    const fraction = number !== null && span > 0 ? (number - edge.from) / span : 0.5;
+    const fraction =
+      number !== null && span > 0 ? (number - edge.from) / span : 0.5;
     const point = pointAlongSegment(edge.points, fraction);
     if (!point) continue;
     candidates.push({
@@ -465,7 +476,9 @@ async function reportsNear(lat, lon) {
     .sort();
   for (const name of years) {
     const payload = JSON.parse(
-      zlib.gunzipSync(fs.readFileSync(path.join(STORM_DIR, name))).toString('utf8'),
+      zlib
+        .gunzipSync(fs.readFileSync(path.join(STORM_DIR, name)))
+        .toString('utf8'),
     );
     for (const row of payload.reports || []) {
       const [date, , hazard, magnitude, rlat, rlon] = row;

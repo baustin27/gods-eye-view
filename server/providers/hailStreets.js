@@ -205,7 +205,10 @@ export async function countyStreetList(state, county, options = {}) {
   // because a county has hundreds of thousands of coordinates, and the desk
   // was downloading all of them to draw four hundred rows. The map's tile
   // route is where the geometry belongs.
-  const payload = kept.map(({ points, ...rest }) => rest);
+  const payload = kept.map(({ points, ...rest }) => ({
+    ...rest,
+    bounds: streetBounds(points),
+  }));
 
   return {
     streets: payload,
@@ -218,6 +221,25 @@ export async function countyStreetList(state, county, options = {}) {
       ? { geoid: tract.geoid, name: tract.name, cellsCentred }
       : null,
   };
+}
+
+/** The geographic extent of one flat [lon, lat, ...] street line. */
+export function streetBounds(points) {
+  if (!Array.isArray(points) || points.length < 4) return null;
+  let west = Infinity;
+  let south = Infinity;
+  let east = -Infinity;
+  let north = -Infinity;
+  for (let i = 0; i + 1 < points.length; i += 2) {
+    const lon = points[i];
+    const lat = points[i + 1];
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+    west = Math.min(west, lon);
+    east = Math.max(east, lon);
+    south = Math.min(south, lat);
+    north = Math.max(north, lat);
+  }
+  return Number.isFinite(west) ? { west, south, east, north } : null;
 }
 
 /**

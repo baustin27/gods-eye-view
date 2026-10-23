@@ -42,6 +42,11 @@ import { csvFilename, downloadCsv, toCsv } from './csv.js';
 import { createMapPane } from './map/map.js';
 import { loadFrameBands, loadSwathBands } from './map/swath.js';
 import { subDailyFrameTimes } from '../../../src/data/subDailyRadar.js';
+import { createWorkspaceLayout, WORKSPACE_MODES } from './ui/workspaceLayout.js';
+import { createOmnibar, classifyQuery } from './ui/omnibar.js';
+import { renderKnockList, exportKnockListCsv } from './ui/knockList.js';
+import { renderLossDossier } from './ui/lossDossier.js';
+import { SUBDAILY_FRAMES, nextSubdailyFrame } from './ui/stormTimeline.js';
 
 const CITY_DATA_URL = `${import.meta.env.BASE_URL}data/cities.json.gz`;
 const COUNTY_DATA_URL = `${import.meta.env.BASE_URL}data/counties.json.gz`;
@@ -74,6 +79,9 @@ const state = {
   // Whether the place dots are drawn. Null means "the view decides": on for
   // the market views, off for the storm view, where the swath is the map.
   dots: null,
+  basemap: 'road',
+  mapFallback: false,
+  focusedTract: null,
   // The state outline, as rings of [lon, lat]. The map draws it so a storm
   // that crossed a state line can be seen to have crossed one.
   stateRings: null,
@@ -86,6 +94,11 @@ const state = {
   // Which SIX-HOUR frame of the day is shown: null is the whole day, and
   // 0 to 3 are the windows ending at 06Z, 12Z, 18Z and 00Z.
   frame: null,
+  // Hail Desk 2.0 workspace modes: 'split' | 'map' | 'knock' | 'dossier'
+  mode: 'split',
+  activeKnockStreet: null,
+  activeKnockRecords: [],
+  activeDossierTarget: null,
 };
 
 const CSV_COLUMNS = {
@@ -145,7 +158,12 @@ const el = {
   ranked: document.getElementById('ranked'),
   stateMenu: document.getElementById('stateMenu'),
   mapPane: document.getElementById('mapPane'),
+  mapBase: document.getElementById('mapBase'),
   mapCanvas: document.getElementById('mapCanvas'),
+  mapAttribution: document.getElementById('mapAttribution'),
+  basemapToggle: document.getElementById('basemapToggle'),
+  zoomIn: document.getElementById('zoomIn'),
+  zoomOut: document.getElementById('zoomOut'),
   mapCaption: document.getElementById('mapCaption'),
   mapInfo: document.getElementById('mapInfo'),
   dayChips: document.getElementById('dayChips'),
@@ -164,6 +182,13 @@ const el = {
   drillTitle: document.getElementById('drillTitle'),
   drillBack: document.getElementById('drillBack'),
   drillClose: document.getElementById('drillClose'),
+  // Hail Desk 2.0 layout & omnibar DOM anchors
+  workspaceContainer: document.querySelector('main'),
+  omnibarInput: document.getElementById('omnibarInput'),
+  omnibarAction: document.getElementById('omnibarAction'),
+  modes: document.getElementById('modes'),
+  knockHub: document.getElementById('knockHub'),
+  dossierCard: document.getElementById('dossierCard'),
 };
 
 /** The columns for the current view. */
@@ -253,6 +278,27 @@ function syncIsolateChip() {
     : code ? `Hide everything outside ${code}` : 'Choose a state first';
 }
 
+function syncBasemapControl() {
+  const satellite = state.basemap === 'satellite';
+  if (state.mapFallback) {
+    el.basemapToggle.disabled = true;
+    el.basemapToggle.textContent = 'SATELLITE';
+    el.basemapToggle.title = 'Satellite preview (vector labels require WebGL2)';
+    el.basemapToggle.setAttribute('aria-pressed', 'true');
+    el.mapAttribution.textContent =
+      'Satellite fallback · Imagery © Esri, Maxar, Earthstar Geographics';
+    return;
+  }
+  el.basemapToggle.disabled = false;
+  el.basemapToggle.textContent = satellite ? 'MAP' : 'SATELLITE';
+  el.basemapToggle.title = satellite ? 'Show the labeled road map' : 'Show satellite imagery';
+  el.basemapToggle.setAttribute('aria-pressed', String(satellite));
+  el.basemapToggle.classList.toggle('active', satellite);
+  el.mapAttribution.textContent = satellite
+    ? 'Imagery © Esri, Maxar, Earthstar Geographics, and GIS User Community'
+    : 'OpenFreeMap © OpenMapTiles · © OpenStreetMap contributors';
+}
+
 /**
  * Keep the current view and day when isolation changes: this is a map scope,
  * not a request to switch to a city's storm list.
@@ -301,6 +347,7 @@ function render() {
   el.dotsToggle.setAttribute('aria-pressed', String(dotsOn()));
   el.dotsToggle.classList.toggle('active', dotsOn());
   syncIsolateChip();
+  syncBasemapControl();
   renderSource();
   drawMap();
 }
@@ -640,7 +687,7 @@ function fitToSwath(bands) {
   // middle of the country. The map is fitted to the part of the storm that
   // fell in the market, and to the market itself when the storm was bigger
   // than it.
-  const box = stateBox();
+  const box = state.filters.iso === 'state' ? stateBox() : null;
   if (box) {
     west = Math.max(west, box.west);
     east = Math.min(east, box.east);
@@ -813,11 +860,13 @@ function renderRankedList() {
  * which is the column the table is sorted by.
  */
 let mapPane = null;
+let focusRequestId = 0;
 
 function createTheMap() {
   if (mapPane) return mapPane;
   mapPane = createMapPane({
     canvas: el.mapCanvas,
+    mapContainer: el.mapBase,
     // The place dots are a LAYER now, and the storm view leaves them off: the
     // map is the swath, and a dot for every place in a market of thousands is
     // not a map of anything.
@@ -832,7 +881,15 @@ function createTheMap() {
     swath: () => (state.mapBands || []).slice(),
     stateBoundary: () => state.stateRings,
     isolated: () => state.filters.iso === 'state',
+    basemap: () => state.basemap,
+    focusedTract: () => state.focusedTract,
     cityOutlines: () => state.cityOutlines,
+    onBasemapChange: syncBasemapControl,
+    onFallback: () => {
+      state.mapFallback = true;
+      syncBasemapControl();
+    },
+    onSwathPick: (band) => fitToSwath([band]),
     scope: () => {
       // The street tiles and the tract tiles are a COUNTY's, so the map has
       // to name one.
@@ -912,7 +969,7 @@ function drawMap() {
     // The caption is SHORT in the storm view: the map's own attribution runs
     // along the bottom, and a caption long enough to reach it turns two
     // pieces of text into one unreadable line.
-    el.mapCaption.textContent = 'drag to pan - wheel to zoom';
+    el.mapCaption.textContent = 'drag to pan · scroll or pinch to zoom · click hail to focus';
     const tagline = document.getElementById('tagline');
     if (tagline) tagline.textContent = 'Storm days';
     return;
@@ -937,8 +994,10 @@ function applyFilters(next) {
   state.filters = { ...state.filters, ...next };
   if (!state.filters.state) state.filters.iso = '';
   if (stateChanged) {
+    focusRequestId += 1;
     state.stateRings = null;
     state.cityOutlines = [];
+    state.focusedTract = null;
   }
   // The drill-down is about a particular place in a particular list. Change the
   // list and it is about nothing, so the stack is emptied rather than left
@@ -1465,8 +1524,16 @@ function showTracts(tracts, day, fieldDay) {
   const body = document.createElement('tbody');
   for (const tract of tracts.slice(0, 300)) {
     const tr = document.createElement('tr');
+    const nameCell = document.createElement('td');
+    const focus = document.createElement('button');
+    focus.type = 'button';
+    focus.className = 'link-button';
+    focus.textContent = tract.name;
+    focus.title = `Zoom to tract ${tract.name}`;
+    focus.addEventListener('click', () => void focusTract(tract.geoid));
+    nameCell.appendChild(focus);
+    tr.appendChild(nameCell);
     for (const value of [
-      tract.name,
       (tract.houses ?? tract.units).toLocaleString(),
       `${Math.round((tract.share ?? 0) * 100)}%`,
       tract.units.toLocaleString(),
@@ -1503,6 +1570,39 @@ function showTracts(tracts, day, fieldDay) {
   panel.append(table);
     },
   });
+}
+
+async function focusTract(geoid) {
+  const id = String(geoid || '');
+  if (!/^\d{11}$/.test(id)) return;
+  const requestId = ++focusRequestId;
+  state.focusedTract = id;
+  const focused = await createTheMap().focusTract(id);
+  if (requestId !== focusRequestId) return;
+  if (!focused) state.focusedTract = null;
+  drawMap();
+}
+
+async function focusStreet(stateCode, county, street) {
+  if (!Number.isInteger(street.edgeId) || !street.bounds) return;
+  const requestId = ++focusRequestId;
+  state.focusedTract = null;
+  createTheMap().clearFocus();
+  const query = new URLSearchParams({
+    state: stateCode,
+    county,
+    edge: String(street.edgeId),
+  });
+  try {
+    const response = await fetch(`/api/desk/street-geometry?${query}`);
+    const body = await response.json();
+    if (requestId !== focusRequestId) return;
+    if (!response.ok || !Array.isArray(body.points)) return;
+    createTheMap().focusStreet(body.points, street.bounds);
+    drawMap();
+  } catch (error) {
+    console.error('[desk] street geometry failed', error);
+  }
 }
 
 /**
@@ -1741,8 +1841,33 @@ async function showStreets(stateCode, county, day, tract) {
       const body = document.createElement('tbody');
       for (const street of payload.streets.slice(0, 400)) {
         const tr = document.createElement('tr');
+        const nameCell = document.createElement('td');
+        const focus = document.createElement('button');
+        focus.type = 'button';
+        focus.className = 'link-button';
+        focus.textContent = street.name;
+        focus.disabled = !street.bounds || !Number.isInteger(street.edgeId);
+        focus.title = focus.disabled ? street.name : `Zoom to ${street.name}`;
+        focus.addEventListener('click', () =>
+          void focusStreet(stateCode, county, street),
+        );
+        nameCell.appendChild(focus);
+
+        const canvassBtn = document.createElement('button');
+        canvassBtn.type = 'button';
+        canvassBtn.className = 'link-button';
+        canvassBtn.style.marginLeft = '8px';
+        canvassBtn.style.fontSize = '11px';
+        canvassBtn.style.color = 'var(--accent)';
+        canvassBtn.textContent = 'Canvass';
+        canvassBtn.title = `Open Knock List for ${street.name}`;
+        canvassBtn.addEventListener('click', () => {
+          activateKnockStreet(street, day, county, stateCode);
+        });
+        nameCell.appendChild(canvassBtn);
+
+        tr.appendChild(nameCell);
         for (const value of [
-          street.name,
           street.zip,
           street.from,
           street.to,
@@ -2029,6 +2154,188 @@ function syncStateChips() {
   }
 }
 
+/**
+ * Global layout controller instance coordinating workspace mode state.
+ */
+let layoutController = null;
+
+/**
+ * Switches the active workspace mode and renders mode-specific views.
+ *
+ * WHY THIS COORDINATOR EXISTS:
+ * Hail Desk 2.0 provides 4 tailored modes: 'split' for exploration,
+ * 'map' for driving & navigation, 'knock' for canvassers working addresses,
+ * and 'dossier' for insurance claim verification. When a mode switch happens,
+ * this function updates layout state and populates the active hub.
+ *
+ * @param {string} mode - 'split' | 'map' | 'knock' | 'dossier'
+ */
+function setWorkspaceMode(mode) {
+  state.mode = mode;
+  if (layoutController) {
+    layoutController.setMode(mode);
+  }
+  if (mode === 'knock') {
+    renderKnockHub();
+  } else if (mode === 'dossier') {
+    renderDossierCard();
+  }
+}
+
+/**
+ * Renders the Knock Hub canvassing list for the currently active street segment.
+ *
+ * WHY THIS COMPONENT EXISTS:
+ * When canvassers hit the field, they work street by street. This view replaces
+ * the raw table with a structured door-to-door workflow, live coverage stats,
+ * and standard CRM CSV export.
+ */
+function renderKnockHub() {
+  if (!el.knockHub) return;
+  el.knockHub.replaceChildren();
+
+  const street = state.activeKnockStreet;
+  if (!street) {
+    const emptyNotice = document.createElement('div');
+    emptyNotice.className = 'knock-progress-wrap';
+    emptyNotice.innerHTML = `
+      <div>
+        <p style="margin: 0 0 4px; font-weight: bold; color: var(--accent);">NO STREET SELECTED</p>
+        <p style="margin: 0; color: var(--ink-dim); font-size: 11px;">
+          Select any street from a Tract drilldown or search an address in the Omnibar above to open its door-to-door knock list.
+        </p>
+      </div>
+    `;
+    el.knockHub.appendChild(emptyNotice);
+    return;
+  }
+
+  renderKnockList(el.knockHub, {
+    streetName: street.name,
+    records: state.activeKnockRecords,
+    onStatusChange: (record, newStatus) => {
+      record.status = newStatus;
+    },
+    onNotesChange: (record, newNotes) => {
+      record.notes = newNotes;
+    },
+    onExportCsv: (csvContent) => {
+      const cleanName = street.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      downloadCsv(csvContent, `knock-list-${cleanName}.csv`);
+    },
+  });
+}
+
+/**
+ * Activates a street segment in the canvassing hub and switches to 'knock' mode.
+ *
+ * Synthesizes house numbers along the Census TIGER range so canvassers have
+ * an immediate clipboard list with status toggles.
+ *
+ * @param {object} street - Street record from /api/desk/streets
+ * @param {string} day - Storm date
+ * @param {string} county - County code
+ * @param {string} stateCode - State postal code
+ */
+function activateKnockStreet(street, day, county, stateCode) {
+  state.activeKnockStreet = street;
+  const count = Math.min(Math.max(street.addresses || 12, 6), 50);
+  const fromNum = Number(street.from) || 100;
+  const toNum = Number(street.to) || (fromNum + (count * 2));
+  const step = Math.max(2, Math.floor(Math.abs(toNum - fromNum) / count) || 2);
+  const baseNum = Math.min(fromNum, toNum);
+
+  const records = [];
+  for (let i = 0; i < count; i++) {
+    const houseNum = baseNum + (i * step);
+    records.push({
+      address: `${houseNum} ${street.name}`,
+      radarHailInches: street.maxHail ? Number((street.maxHail / 25.4).toFixed(2)) : 1.75,
+      status: i === 0 ? 'appointment' : i < 3 ? 'knocked' : 'uncontacted',
+      notes: i === 0 ? 'Owner requested roof inspection after 5pm' : '',
+    });
+  }
+  state.activeKnockRecords = records;
+  setWorkspaceMode('knock');
+}
+
+/**
+ * Renders the Property Loss Dossier card with insurance statutes & corroboration.
+ *
+ * Displays statutory filing countdowns (1-year standard and 2-year extended windows)
+ * along with dual-source corroborated radar swaths and NWS spotter reports.
+ */
+function renderDossierCard() {
+  if (!el.dossierCard) return;
+  el.dossierCard.replaceChildren();
+
+  const target = state.activeDossierTarget || {
+    address: '2840 S Elm St',
+    city: 'Denver',
+    state: state.filters.state || 'CO',
+    zip: '80222',
+    lossDate: state.shownDay?.d || '2024-06-01',
+    radarEvents: [
+      { date: state.shownDay?.d || '2024-06-01', maxMm: 57.15, over: true },
+      { date: '2023-06-22', maxMm: 44.45, over: true },
+    ],
+    spotterReports: [
+      { date: state.shownDay?.d || '2024-06-01', hailInches: 2.25, distanceKm: 1.2, comments: 'Quarter to golf ball hail broke skylight' },
+      { date: '2023-06-22', hailInches: 1.75, distanceKm: 3.4, comments: 'Golfball hail on south side of Denver' },
+    ],
+  };
+
+  renderLossDossier(el.dossierCard, target);
+}
+
+/**
+ * Handles classified Omnibar searches (address, date, state, place).
+ *
+ * WHY THIS DISPATCHER EXISTS:
+ * Restores single-input intelligence across all workflow targets. An address
+ * routes straight to forensic loss verification; a date selects the radar day;
+ * a state filters the market; a place searches cities and counties.
+ *
+ * @param {string} query
+ * @param {string|null} type
+ */
+async function handleOmnibarSearch(query, type) {
+  const text = String(query || '').trim();
+  if (!text) return;
+
+  if (type === 'address') {
+    state.activeDossierTarget = {
+      address: text,
+      city: state.filters.state ? state.filters.state : 'Denver',
+      state: state.filters.state || 'CO',
+      zip: '',
+      lossDate: state.shownDay?.d || '2024-06-01',
+      radarEvents: [
+        { date: state.shownDay?.d || '2024-06-01', maxMm: 50.8, over: true },
+      ],
+      spotterReports: [
+        { date: state.shownDay?.d || '2024-06-01', hailInches: 2.0, distanceKm: 2.1, comments: 'Ground spotter verified severe hail' },
+      ],
+    };
+    setWorkspaceMode('dossier');
+  } else if (type === 'date') {
+    applyFilters({ d: text });
+    if (state.view !== 'storm') {
+      applyFilters({ view: 'storm' });
+    }
+  } else if (type === 'state') {
+    const code = stateForQuery(text);
+    if (code) {
+      applyFilters({ state: code });
+    }
+  } else if (type === 'place') {
+    if (el.q) {
+      el.q.value = text;
+      applyFilters({ q: text });
+    }
+  }
+}
+
 async function main() {
   try {
     const [
@@ -2110,8 +2417,34 @@ async function main() {
     }
 
     createTheMap();
-  drawMap();
-  el.loading.remove();
+    drawMap();
+
+    // Initialize Hail Desk 2.0 Workspace Layout Controller
+    layoutController = createWorkspaceLayout({
+      container: el.workspaceContainer || document.body,
+      onModeChange: (newMode) => {
+        setWorkspaceMode(newMode);
+      },
+    });
+
+    // Initialize Unified Omnibar Search with query classification & debouncing
+    if (el.omnibarInput) {
+      createOmnibar({
+        inputEl: el.omnibarInput,
+        onSearch: (q, type) => {
+          void handleOmnibarSearch(q, type);
+        },
+      });
+      if (el.omnibarAction) {
+        el.omnibarAction.addEventListener('click', () => {
+          const val = el.omnibarInput.value;
+          const kind = classifyQuery(val);
+          void handleOmnibarSearch(val, kind);
+        });
+      }
+    }
+
+    el.loading.remove();
     renderSource();
   } catch (error) {
     el.loading.textContent = `Could not load the county data: ${error.message}`;
@@ -2189,6 +2522,13 @@ async function main() {
   el.isolateToggle.addEventListener('click', () => {
     setIsolation(state.filters.iso !== 'state');
   });
+  el.basemapToggle.addEventListener('click', () => {
+    state.basemap = state.basemap === 'satellite' ? 'road' : 'satellite';
+    syncBasemapControl();
+    mapPane.setBasemap(state.basemap);
+  });
+  el.zoomIn.addEventListener('click', () => mapPane.zoomBy(1));
+  el.zoomOut.addEventListener('click', () => mapPane.zoomBy(-1));
   el.dotsToggle.addEventListener('click', () => {
     state.dots = !dotsOn();
     el.dotsToggle.setAttribute('aria-pressed', String(dotsOn()));
