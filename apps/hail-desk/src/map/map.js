@@ -18,7 +18,9 @@
  */
 
 import { Map as MapLibreMap, setWorkerUrl } from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
+if (typeof window !== 'undefined') {
+  import('maplibre-gl/dist/maplibre-gl.css').catch(() => {});
+}
 import mapLibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import {
   MAX_ZOOM,
@@ -180,7 +182,11 @@ export function createMapPane(options) {
 
   function setBasemap(mode) {
     basemapMode = mode === 'satellite' ? 'satellite' : 'road';
-    if (!map) return;
+    if (!map) {
+      options.onBasemapChange?.(basemapMode);
+      scheduleDraw();
+      return;
+    }
     if (!map.isStyleLoaded()) {
       map.once('load', () => setBasemap(basemapMode));
       return;
@@ -192,6 +198,7 @@ export function createMapPane(options) {
       basemapMode === 'satellite' ? 'visible' : 'none',
     );
     options.onBasemapChange?.(basemapMode);
+    scheduleDraw();
   }
 
   /**
@@ -207,10 +214,6 @@ export function createMapPane(options) {
     try {
       ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       ctx.clearRect(0, 0, viewport.width, viewport.height);
-      if (!map) {
-        ctx.fillStyle = '#05080b';
-        ctx.fillRect(0, 0, viewport.width, viewport.height);
-      }
 
       const isolated = options.isolated?.();
       const boundary = options.stateBoundary?.();
@@ -227,23 +230,40 @@ export function createMapPane(options) {
       ctx.save();
       try {
         if (isolated) clipToState(ctx, viewport, boundary);
-        if (!map) fallbackBasemap.draw(ctx, viewport, tiles);
+
+        // Always draw the raster basemap when MapLibre is absent or still loading,
+        // ensuring the map canvas NEVER appears black in headless Chrome or while
+        // vector tiles are in flight.
+        const needsRasterBase =
+          !map ||
+          (typeof map.isStyleLoaded === 'function' && !map.isStyleLoaded()) ||
+          (typeof map.loaded === 'function' && !map.loaded());
+        if (needsRasterBase) {
+          fallbackBasemap.draw(ctx, viewport, tiles, basemapMode);
+        }
 
         const scope = options.scope?.() || {};
         const inScope = Boolean(scope.state && scope.county);
-        // Census tracts are neighborhood detail. At regional zoom they
-        // collapse into moving cyan blocks; reveal them only when individual
-        // neighborhoods have enough screen area to read.
-        const neighborhoodZoom = viewport.zoom >= 12;
-        const streetZoom = viewport.zoom >= 13;
-        if (inScope && neighborhoodZoom) {
+        const showTracts = options.showTracts?.() !== false;
+        const showStreets = options.showStreets?.() !== false;
+
+        // Census tracts: draw when enabled, in scope, and at zoom >= 10
+        if (showTracts && inScope && viewport.zoom >= 10) {
           // The houses, UNDER the hail: the hail remains the subject.
           tracts.draw(ctx, viewport, tiles, {
             mode: 'fill',
             highlightedGeoid: options.focusedTract?.(),
           });
         }
-        if (inScope && streetZoom) {
+
+        // Draw tract summary preview rings if provided
+        const previewRings = options.tractsPreview?.();
+        if (showTracts && Array.isArray(previewRings) && previewRings.length) {
+          drawTractsPreview(previewRings);
+        }
+
+        // Streets: draw when enabled and at zoom >= 12
+        if (showStreets && viewport.zoom >= 12) {
           streets.draw(ctx, viewport, tiles);
         }
 
@@ -258,10 +278,19 @@ export function createMapPane(options) {
         drawStateBoundary(ctx, viewport, boundary);
 
         const bands = options.swath?.();
-        if (bands && bands.length) swath.draw(ctx, viewport, bands);
+        if (bands && bands.length) {
+          swath.draw(ctx, viewport, bands);
+          // Subtle cyan tract grid cells/contours inside the swath so tracts are
+          // visually discernible even at regional zoom
+          if (showTracts) {
+            drawSwathTractGrid(bands);
+          }
+        }
+
         if (focusedTractPolygons) drawFocusedTract(focusedTractPolygons);
-        drawFocusedStreet(focusedStreet);
+        if (focusedStreet) drawFocusedStreet(focusedStreet);
         drawPlaces();
+        drawKnockPins();
       } finally {
         ctx.restore();
       }
@@ -272,21 +301,48 @@ export function createMapPane(options) {
   }
 
   function drawFocusedStreet(points) {
-    if (!Array.isArray(points) || points.length < 4) return;
+    if (!Array.isArray(points) || points.length < 2) return;
+    const isFlat = typeof points[0] === 'number';
+    if (isFlat && points.length < 4) return;
+
+    ctx.save();
     ctx.beginPath();
-    for (let i = 0; i + 1 < points.length; i += 2) {
-      const point = project(points[i], points[i + 1], viewport);
-      if (i === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
+    if (isFlat) {
+      for (let i = 0; i + 1 < points.length; i += 2) {
+        const point = project(points[i], points[i + 1], viewport);
+        if (i === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      }
+    } else {
+      points.forEach((pt, i) => {
+        const lon = pt.lon ?? pt[0];
+        const lat = pt.lat ?? pt[1];
+        const point = project(lon, lat, viewport);
+        if (i === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
     }
-    ctx.strokeStyle = 'rgba(10, 14, 19, 0.95)';
-    ctx.lineWidth = 7;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+
+    // Glowing cyan under-casing (#38bdf8)
+    ctx.shadowColor = '#38bdf8';
+    ctx.shadowBlur = 10;
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+    ctx.lineWidth = 8;
     ctx.stroke();
+
+    // Dark isolation casing
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(10, 14, 19, 0.95)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+
+    // Crisp glowing amber core line (#fbbf24)
     ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 2.5;
     ctx.stroke();
+    ctx.restore();
   }
 
   function drawFocusedTract(polygons) {
@@ -312,26 +368,265 @@ export function createMapPane(options) {
   }
 
   /**
+   * Draw tract summary preview rings.
+   *
+   * WHY: When exploring regional markets before high-res tract geometry tiles
+   * stream in, drawing tract summary rings gives immediate spatial clarity
+   * of neighborhood bounds.
+   */
+  function drawTractsPreview(preview) {
+    if (!Array.isArray(preview) || !preview.length) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.65)';
+    ctx.fillStyle = 'rgba(34, 211, 238, 0.12)';
+    ctx.lineWidth = 1.5;
+    for (const item of preview) {
+      if (!item) continue;
+      const rings = Array.isArray(item)
+        ? (Array.isArray(item[0]) && typeof item[0][0] === 'number'
+            ? [item]
+            : (Array.isArray(item[0]) ? item : [item]))
+        : (item.rings || (item.outer ? [item.outer] : (item.coordinates ? item.coordinates : [])));
+
+      for (const ring of rings) {
+        if (!Array.isArray(ring) || ring.length < 3) continue;
+        ctx.beginPath();
+        for (let i = 0; i < ring.length; i++) {
+          const pt = ring[i];
+          const lon = pt.lon ?? pt[0];
+          const lat = pt.lat ?? pt[1];
+          if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+          const p = project(lon, lat, viewport);
+          if (i === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Draw subtle cyan tract grid cells/contours inside the swath.
+   *
+   * WHY: At regional zoom, individual census tracts are not yet fetched or
+   * are too dense to render individually. Rendering a subtle cyan grid
+   * inside the hail swath geometry indicates neighborhood parcelation to
+   * the operator, confirming that residential exposure analysis is active.
+   */
+  function drawSwathTractGrid(bands) {
+    if (!bands || !bands.length) return;
+    ctx.save();
+    ctx.beginPath();
+    let ringCount = 0;
+    for (const band of bands) {
+      const outer = band.outer;
+      if (!outer || outer.length < 3) continue;
+      for (let i = 0; i < outer.length; i++) {
+        const pt = outer[i];
+        const lon = pt.lon ?? pt[0];
+        const lat = pt.lat ?? pt[1];
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+        const p = project(lon, lat, viewport);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.closePath();
+      ringCount++;
+      for (const hole of band.holes || []) {
+        if (!hole || hole.length < 3) continue;
+        for (let i = 0; i < hole.length; i++) {
+          const pt = hole[i];
+          const lon = pt.lon ?? pt[0];
+          const lat = pt.lat ?? pt[1];
+          if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+          const p = project(lon, lat, viewport);
+          if (i === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+      }
+    }
+
+    if (ringCount > 0) {
+      ctx.clip('evenodd');
+      ctx.strokeStyle = 'rgba(34, 211, 238, 0.16)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      const cellSize = 36;
+      for (let x = 0; x <= viewport.width; x += cellSize) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, viewport.height);
+      }
+      for (let y = 0; y <= viewport.height; y += cellSize) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(viewport.width, y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Draw canvassing knock pins.
+   *
+   * WHY: Door-to-door canvassers and roofing teams track which houses have
+   * been inspected, knocked, or need follow-up. Rendering them with tactical
+   * radar styling and status colour coding allows instant street-level triage.
+   */
+  function drawKnockPins() {
+    const pins = options.knockPins?.() || [];
+    if (!pins.length) return;
+
+    const normal = [];
+    const selected = [];
+    for (const pin of pins) {
+      if (pin.selected || pin.status === 'target' || pin.status === 'selected') {
+        selected.push(pin);
+      } else {
+        normal.push(pin);
+      }
+    }
+
+    // Unselected pins
+    for (const pin of normal) {
+      if (!Number.isFinite(pin.lat) || !Number.isFinite(pin.lon)) continue;
+      const { x, y } = project(pin.lon, pin.lat, viewport);
+      if (x < -20 || y < -20 || x > viewport.width + 20 || y > viewport.height + 20) {
+        continue;
+      }
+      let color = '#64748b';
+      let r = 4.5;
+      const raw = String(pin.status || '').trim();
+      const s = raw.toLowerCase();
+      if (
+        raw === 'Inspected' ||
+        raw === 'Claim Filed' ||
+        raw === 'Inspect Set' ||
+        s === 'inspected' ||
+        s === 'claim filed' ||
+        s === 'claim' ||
+        s === 'inspect set'
+      ) {
+        color = '#10b981';
+        r = 5;
+      } else if (
+        raw === 'Knocked' ||
+        raw === 'Follow-up' ||
+        raw === 'Door Hanger' ||
+        s === 'knocked' ||
+        s === 'follow-up' ||
+        s === 'door hanger'
+      ) {
+        color = '#f59e0b';
+        r = 5;
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Selected pins with glow ring and monospace label
+    for (const pin of selected) {
+      if (!Number.isFinite(pin.lat) || !Number.isFinite(pin.lon)) continue;
+      const { x, y } = project(pin.lon, pin.lat, viewport);
+      if (x < -40 || y < -40 || x > viewport.width + 40 || y > viewport.height + 40) {
+        continue;
+      }
+      // Outer translucent pulse ring (r = 13, rgba(6, 182, 212, 0.28))
+      ctx.beginPath();
+      ctx.arc(x, y, 13, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(6, 182, 212, 0.28)';
+      ctx.fill();
+
+      // Core selected pin: #06b6d4 with white stroke (r = 7)
+      ctx.beginPath();
+      ctx.arc(x, y, 7, 0, Math.PI * 2);
+      ctx.fillStyle = '#06b6d4';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      const label = pin.label ? String(pin.label) : (pin.hailLabel ? String(pin.hailLabel) : '');
+      if (label) {
+        ctx.save();
+        ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+        const textWidth = ctx.measureText(label).width;
+        const lx = x + 12;
+        const ly = y;
+        ctx.fillStyle = 'rgba(10, 14, 19, 0.88)';
+        ctx.fillRect(lx - 2, ly - 7, textWidth + 6, 14);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillText(label, lx + 1, ly);
+        ctx.restore();
+      }
+    }
+  }
+
+  function pickKnockPin(x, y) {
+    const pins = options.knockPins?.() || [];
+    let best = null;
+    let bestDist = Infinity;
+    for (const pin of pins) {
+      if (!Number.isFinite(pin.lat) || !Number.isFinite(pin.lon)) continue;
+      const point = project(pin.lon, pin.lat, viewport);
+      const dist = Math.hypot(point.x - x, point.y - y);
+      const hitRadius = (pin.selected ? 13 : 7) + 6;
+      if (dist <= hitRadius && dist < bestDist) {
+        bestDist = dist;
+        best = pin;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Draw on the next frame, at most once.
    */
   function scheduleDraw() {
     if (frame !== null) return;
-    frame = requestAnimationFrame(() => {
-      frame = null;
-      draw();
-    });
+    if (typeof requestAnimationFrame === 'function') {
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        draw();
+      });
+    } else {
+      frame = setTimeout(() => {
+        frame = null;
+        draw();
+      }, 0);
+    }
   }
 
   /**
    * The places, as dots, sized and coloured by their severe reports.
+   * Top 8 places and severe hail hot spots (>= 1.5") include crisp monospace labels.
    */
   function drawPlaces() {
+    if (options.showPlaces?.() === false) return;
     const rows = options.places?.() || [];
     if (!rows.length) return;
+
+    // Identify top 8 places by severe reports
+    const sorted = [...rows].sort(
+      (a, b) => (Number(b.severe) || 0) - (Number(a.severe) || 0),
+    );
+    const top8Set = new Set(sorted.slice(0, 8));
+
     for (const row of rows) {
       if (!Number.isFinite(row.lat) || !Number.isFinite(row.lon)) continue;
       const { x, y } = project(row.lon, row.lat, viewport);
-      if (x < -20 || y < -20 || x > viewport.width + 20 || y > viewport.height + 20) {
+      if (x < -40 || y < -40 || x > viewport.width + 40 || y > viewport.height + 40) {
         continue;
       }
       const radius = dotRadius(row);
@@ -346,6 +641,32 @@ export function createMapPane(options) {
       ctx.strokeStyle = 'rgba(10, 14, 19, 0.9)';
       ctx.lineWidth = 1;
       ctx.stroke();
+
+      const hasLabel = top8Set.has(row) || Number(row.max) >= 1.5;
+      if (hasLabel && row.name) {
+        ctx.save();
+        ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+        const nameText = String(row.name);
+        const maxVal = Number(row.max);
+        const hailText = maxVal > 0 ? ` ${maxVal.toFixed(2)}″` : '';
+        const nameWidth = ctx.measureText(nameText).width;
+        const hailWidth = hailText ? ctx.measureText(hailText).width : 0;
+        const totalWidth = nameWidth + hailWidth;
+        const lx = x + radius + 4;
+        const ly = y;
+
+        ctx.fillStyle = 'rgba(10, 14, 19, 0.85)';
+        ctx.fillRect(lx - 2, ly - 6, totalWidth + 4, 12);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(nameText, lx, ly);
+        if (hailText) {
+          ctx.fillStyle = '#f59e0b';
+          ctx.fillText(hailText, lx + nameWidth, ly);
+        }
+        ctx.restore();
+      }
     }
   }
 
@@ -508,6 +829,11 @@ export function createMapPane(options) {
       scheduleDraw();
     });
     map.on('click', (event) => {
+      const pin = pickKnockPin(event.point.x, event.point.y);
+      if (pin) {
+        options.onKnockPinPick?.(pin);
+        return;
+      }
       const place = pick(event.point.x, event.point.y);
       if (place) {
         options.onPick?.(place);
@@ -546,6 +872,11 @@ export function createMapPane(options) {
       drag = null;
       canvas.releasePointerCapture?.(event.pointerId);
       if (!wasDragging || moved < 5) {
+        const pin = pickKnockPin(event.offsetX, event.offsetY);
+        if (pin) {
+          options.onKnockPinPick?.(pin);
+          return;
+        }
         const place = pick(event.offsetX, event.offsetY);
         if (place) options.onPick?.(place);
         else {
@@ -726,6 +1057,118 @@ export function createMapPane(options) {
         return { lon: point.lng, lat: point.lat };
       }
       return unproject(x, y, viewport);
+    },
+    /**
+     * Reset the camera view to the current storm swath bounds, state bounds, or places.
+     */
+    resetView() {
+      // 1. Try current swath bands
+      const bands = options.swath?.() || [];
+      if (bands.length) {
+        let west = Infinity;
+        let south = Infinity;
+        let east = -Infinity;
+        let north = -Infinity;
+        for (const band of bands) {
+          for (const pt of band.outer || []) {
+            const lon = pt.lon ?? pt[0];
+            const lat = pt.lat ?? pt[1];
+            if (Number.isFinite(lon) && Number.isFinite(lat)) {
+              if (lon < west) west = lon;
+              if (lon > east) east = lon;
+              if (lat < south) south = lat;
+              if (lat > north) north = lat;
+            }
+          }
+        }
+        if (Number.isFinite(west)) {
+          // Clip swath bounds to state boundary if available so resetView frames the state's storm
+          const boundary = options.stateBoundary?.();
+          if (Array.isArray(boundary) && boundary.length) {
+            let sWest = Infinity;
+            let sSouth = Infinity;
+            let sEast = -Infinity;
+            let sNorth = -Infinity;
+            for (const polygon of boundary) {
+              for (const ring of polygon) {
+                for (const [lon, lat] of ring) {
+                  if (Number.isFinite(lon) && Number.isFinite(lat)) {
+                    if (lon < sWest) sWest = lon;
+                    if (lon > sEast) sEast = lon;
+                    if (lat < sSouth) sSouth = lat;
+                    if (lat > sNorth) sNorth = lat;
+                  }
+                }
+              }
+            }
+            if (Number.isFinite(sWest)) {
+              const clippedWest = Math.max(west, sWest);
+              const clippedEast = Math.min(east, sEast);
+              const clippedSouth = Math.max(south, sSouth);
+              const clippedNorth = Math.min(north, sNorth);
+              if (clippedEast > clippedWest && clippedNorth > clippedSouth) {
+                west = clippedWest;
+                east = clippedEast;
+                south = clippedSouth;
+                north = clippedNorth;
+              } else {
+                west = sWest;
+                east = sEast;
+                south = sSouth;
+                north = sNorth;
+              }
+            }
+          }
+          fitBounds(west, south, east, north);
+          return;
+        }
+      }
+
+      // 2. Try state bounds
+      const boundary = options.stateBoundary?.();
+      if (Array.isArray(boundary) && boundary.length) {
+        let west = Infinity;
+        let south = Infinity;
+        let east = -Infinity;
+        let north = -Infinity;
+        for (const polygon of boundary) {
+          for (const ring of polygon) {
+            for (const [lon, lat] of ring) {
+              if (Number.isFinite(lon) && Number.isFinite(lat)) {
+                if (lon < west) west = lon;
+                if (lon > east) east = lon;
+                if (lat < south) south = lat;
+                if (lat > north) north = lat;
+              }
+            }
+          }
+        }
+        if (Number.isFinite(west)) {
+          fitBounds(west, south, east, north);
+          return;
+        }
+      }
+
+      // 3. Fallback to places
+      const rows = options.places?.() || [];
+      if (rows.length) {
+        const placed = rows.filter(
+          (row) => Number.isFinite(row.lat) && Number.isFinite(row.lon),
+        );
+        if (placed.length) {
+          let west = Infinity;
+          let south = Infinity;
+          let east = -Infinity;
+          let north = -Infinity;
+          for (const row of placed) {
+            if (row.lon < west) west = row.lon;
+            if (row.lon > east) east = row.lon;
+            if (row.lat < south) south = row.lat;
+            if (row.lat > north) north = row.lat;
+          }
+          fitBounds(west, south, east, north);
+        }
+      }
     },
   };
 }

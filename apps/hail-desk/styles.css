@@ -1,576 +1,117 @@
 /*
- * The Hail Desk.
+ * Hail Desk 2.0 — Dark Slate Tactical Console Stylesheet
  *
- * Dark, because it is a table read in a room with a projector on, and because
- * the globe it sits beside is dark. It is NOT the globe's stylesheet: this is
- * a different tool for a different job, and the one thing they should share is
- * the feeling of a console.
- *
- * The type scale is small and the rows are dense, because a salesperson
- * comparing forty counties is reading columns, not prose. Everything here
- * serves that: the numbers are tabular, the header is sticky, and a phone gets
- * the same information as a desktop in a shape a thumb can scroll.
+ * Designed for precision geospatial intelligence, storm restoration canvassing,
+ * apportioned housing exposure, and forensic property loss verification.
+ * Fully self-contained without external CSS framework runtime dependencies.
  */
 
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
 :root {
-  --bg: #0a0e13;
-  --panel: #10161d;
-  --panel-2: #161e27;
-  --line: #223040;
-  --ink: #dce6f0;
-  --ink-dim: #8ea3b8;
-  --ink-faint: #5d7085;
-  --accent: #3ad6c8;
-  --accent-dim: #1d7a74;
-  --warn: #e0a020;
-  --bad: #e06020;
+  --bg: #020617;
+  --bg-deep: #090d16;
+  --panel: #0f172a;
+  --panel-2: #1e293b;
+  --panel-3: #111827;
+  --line: #1e293b;
+  --line-highlight: #334155;
+  --ink: #f8fafc;
+  --ink-dim: #94a3b8;
+  --ink-faint: #64748b;
+  --accent: #06b6d4;
+  --accent-bright: #38bdf8;
+  --accent-glow: rgba(6, 182, 212, 0.25);
+  --fuchsia: #d946ef;
+  --fuchsia-bright: #e879f9;
+  --fuchsia-glow: rgba(217, 70, 239, 0.25);
+  --amber: #f59e0b;
+  --amber-bright: #fbbf24;
+  --amber-glow: rgba(245, 158, 11, 0.25);
+  --emerald: #10b981;
+  --emerald-bright: #34d399;
+  --emerald-glow: rgba(16, 185, 129, 0.25);
+  --purple: #6d28d9;
+  --violet: #9333ea;
+  --magenta: #c026d3;
+  --radius-sm: 4px;
   --radius: 6px;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --radius-lg: 8px;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
 }
 
 * {
   box-sizing: border-box;
 }
 
-body {
+html, body {
+  height: 100vh;
   margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  -webkit-text-size-adjust: 100%;
-}
-
-.masthead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.mark {
-  color: var(--accent);
-  font-size: 26px;
-  line-height: 1;
-}
-
-.masthead h1 {
-  margin: 0;
-  font: 600 15px/1.2 var(--mono);
-  letter-spacing: 0.22em;
-}
-
-.tagline {
-  margin: 2px 0 0;
-  color: var(--ink-faint);
-  font: 11px/1.3 var(--mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.source {
-  margin: 0;
-  color: var(--ink-faint);
-  font: 11px/1.4 var(--mono);
-}
-
-/*
- * UNIFIED OMNIBAR SEARCH
- * High-speed debounced classifier for address verification, dates, places, and markets.
- */
-.omnibar-wrap {
-  display: flex;
-  align-items: center;
-  position: relative;
-  min-width: 340px;
-  max-width: 460px;
-  flex: 1 1 auto;
-}
-
-.omnibar-wrap input {
-  width: 100%;
-  padding: 7px 70px 7px 12px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  color: var(--ink);
-  font: 12px/1.3 var(--mono);
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.omnibar-wrap input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(58, 214, 200, 0.18);
-}
-
-.omnibar-action {
-  position: absolute;
-  right: 4px;
-  padding: 4px 10px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--panel);
-  color: var(--ink-dim);
-  font: 600 11px/1 var(--mono);
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.omnibar-action:hover {
-  background: var(--line);
-  color: var(--ink);
-}
-
-/*
- * WORKSPACE MODE SWITCHER
- * Splits between market overview, field map, street canvassing, and forensic dossier.
- */
-.modes {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.modes button {
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  padding: 6px 12px;
-  font: 600 11px/1 var(--mono);
-  letter-spacing: 0.08em;
-  color: var(--ink-dim);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.modes button:hover {
-  color: var(--ink);
-}
-
-.modes button.active,
-.modes button[aria-pressed="true"] {
-  background: rgba(58, 214, 200, 0.15);
-  color: var(--accent);
-  border: 1px solid var(--accent-dim);
-}
-
-/*
- * THE LAYOUT & MODE SPECIALIZATIONS
- */
-main {
-  padding: 12px 16px 24px;
-  max-width: 1800px;
-  margin: 0 auto;
-  height: calc(100vh - 58px);
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  grid-template-columns: minmax(0, 1.1fr) minmax(430px, 0.9fr);
-  grid-template-areas:
-    'views views'
-    'filters filters'
-    'map list';
-  gap: 12px;
-  transition: grid-template-columns 0.2s ease-in-out;
-}
-
-main > .views { grid-area: views; }
-main > .filters { grid-area: filters; }
-main > .map-pane { grid-area: map; }
-main > .list-pane { grid-area: list; }
-main > .knock-pane { grid-area: list; }
-main > .dossier-pane { grid-area: list; }
-main > .list-pane .notes { grid-area: auto; }
-
-/* Mode: Field Map (Maximized) */
-main.mode-map {
-  grid-template-columns: minmax(0, 1fr) 0;
-  gap: 0;
-}
-main.mode-map > .list-pane,
-main.mode-map > .knock-pane,
-main.mode-map > .dossier-pane {
-  display: none !important;
-}
-
-/* Mode: Knock List (Street Canvassing) */
-main.mode-knock > .list-pane,
-main.mode-knock > .dossier-pane {
-  display: none !important;
-}
-main.mode-knock > .knock-pane {
-  display: flex !important;
-}
-
-/* Mode: Loss Dossier (Forensic Property History) */
-main.mode-dossier > .list-pane,
-main.mode-dossier > .knock-pane {
-  display: none !important;
-}
-main.mode-dossier > .dossier-pane {
-  display: flex !important;
-}
-
-/* Knock Pane & Dossier Pane Styling */
-.knock-pane,
-.dossier-pane {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-  overflow: auto;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 16px;
-}
-
-.knock-progress-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  font: 12px/1.3 var(--mono);
-}
-
-.knock-badges {
-  display: flex;
-  gap: 8px;
-}
-
-.badge-tag {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font: 600 10px/1.4 var(--mono);
-}
-
-.badge-inspected { background: rgba(52, 211, 153, 0.2); color: #34d399; }
-.badge-knocked { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
-.badge-remaining { background: var(--line); color: var(--ink-dim); }
-.badge-corroborated { background: rgba(58, 214, 200, 0.2); color: var(--accent); }
-.badge-eligible { background: rgba(52, 211, 153, 0.2); color: #34d399; }
-.badge-warning { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
-.badge-expired { background: rgba(239, 68, 68, 0.2); color: #f87171; }
-
-.dossier-target-card {
-  padding: 14px;
-  background: var(--bg);
-  border: 1px solid var(--accent-dim);
-  border-radius: var(--radius);
-}
-
-.dossier-statute-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  font: 12px/1.4 var(--mono);
-}
-
-/* The list column is its own scroller, so the map keeps its size. */
-.list-pane {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-  overflow: auto;
-}
-
-.list-pane .table-wrap,
-.list-pane .detail {
-  max-height: none;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
-/*
- * A drill-down and the table, sharing the column equally, is a table with
- * half a table's height and a panel with half a panel's. The open panel
- * takes the room.
- */
-.list-pane.drilling .detail {
-  flex: 3 1 auto;
-}
-
-.list-pane.drilling .table-wrap {
-  flex: 0 1 auto;
-  min-height: 120px;
-}
-
-.list-pane .summary,
-.list-pane .worst,
-.list-pane .data-row-list {
-  flex: 0 0 auto;
-  margin: 0;
-}
-
-@media (max-width: 1100px) {
-  main {
-    height: auto;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto auto;
-    grid-template-areas:
-      'views'
-      'filters'
-      'map'
-      'list'
-      'notes';
-  }
-  .list-pane .table-wrap,
-  .list-pane .detail {
-    height: auto;
-    max-height: 70vh;
-  }
-  .map-pane {
-    height: 60vh;
-  }
-}
-
-/* ---- view switch ---- */
-
-.views {
-  display: flex;
-  gap: 0;
-  margin: 0 0 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  overflow: hidden;
-  width: fit-content;
-}
-
-.views button {
-  border: 0;
-  border-radius: 0;
-  background: var(--panel);
-  padding: 8px 18px;
-  font: 600 11px/1 var(--mono);
-  letter-spacing: 0.12em;
-  color: var(--ink-dim);
-}
-
-.views button + button {
-  border-left: 1px solid var(--line);
-}
-
-.views button.active {
-  background: var(--accent);
-  color: #05100f;
-}
-
-/* ---- filters ---- */
-
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 14px;
-  align-items: flex-end;
-  padding: 12px 14px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.field.grow {
-  flex: 1 1 180px;
-  min-width: 140px;
-}
-
-.field label {
-  font: 10px/1 var(--mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
-
-.field.actions {
-  flex-direction: row;
-  gap: 8px;
-}
-
-input,
-select,
-button {
-  font: 13px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  color: var(--ink);
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 7px 9px;
-  min-height: 34px;
-}
-
-input:focus-visible,
-select:focus-visible,
-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-input[type="number"] {
-  width: 88px;
-  font-family: var(--mono);
-}
-
-button {
-  cursor: pointer;
-  font-weight: 600;
-}
-
-button:hover:not(:disabled) {
-  border-color: var(--accent-dim);
-  color: #fff;
-}
-
-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-button.secondary {
-  background: transparent;
-}
-
-/* ---- summary ---- */
-
-/*
- * The ranked list: the places worth the afternoon.
- *
- * The same vocabulary the globe's county list uses, so the two surfaces say
- * the same thing the same way. The lead is a short fixed-width marker so the
- * eye can scan the column; the text carries the value as a share of the
- * maximum, because an absolute score is not comparable across windows.
- */
-.data-row-list {
-  list-style: none;
-  margin: 0 0 10px;
   padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 2px 8px;
-}
-
-.data-row-list li {
-  margin: 0;
-}
-
-.data-row-list-item {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel);
-  color: var(--ink);
-  font: 13px/1.3 var(--mono);
-  text-align: left;
-  cursor: pointer;
-}
-
-.data-row-list-item:hover {
-  border-color: var(--accent-dim);
-  background: var(--panel-2);
-}
-
-.data-row-list-item:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.data-row-list-lead {
-  flex: 0 0 auto;
-  min-width: 2.4em;
-  color: var(--ink-faint);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.data-row-list-text {
-  flex: 1 1 auto;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.data-row-list-item[aria-current='step'] {
-  border-color: var(--accent);
-}
-
-/*
- * The globe's control vocabulary, in the desk.
- *
- * A chip is a button with a state, not an option in a dropdown: the desk's
- * state picker was a <select> with fifty entries, which is a control you have
- * to open, read and close to use one of them, and it is the control a person
- * touches FIRST. These are the same class names the globe uses, so the two
- * surfaces say the same thing the same way.
- */
-.data-toggle-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.data-toggle-chip {
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--panel-2);
-  color: var(--ink-dim);
-  font: 600 11px/1 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.data-toggle-chip:hover {
+  background: var(--bg);
   color: var(--ink);
-  border-color: var(--accent-dim);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-.data-toggle-chip:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(51, 65, 85, 0.8);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 1);
 }
 
-.data-toggle-chip.chip-active {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: rgba(58, 214, 200, 0.1);
+/* Keyframe animations */
+@keyframes pulseEmerald {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
 }
 
-/*
- * The dropdown is still there - it is how the other thirty-eight states are
- * reached - but it is out of sight and out of the tab order, so the chip row
- * is what a person sees and the form still submits a state.
- */
+@keyframes pulseCyan {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 6px #06b6d4); }
+  50% { opacity: 0.4; filter: drop-shadow(0 0 1px #06b6d4); }
+}
+
+@keyframes radarPulse {
+  0% { opacity: 0.85; filter: drop-shadow(0 0 6px rgba(192, 38, 211, 0.4)); }
+  50% { opacity: 0.95; filter: drop-shadow(0 0 16px rgba(192, 38, 211, 0.7)); }
+  100% { opacity: 0.85; filter: drop-shadow(0 0 6px rgba(192, 38, 211, 0.4)); }
+}
+
+/* Utility text color helpers */
+.text-cyan { color: var(--accent-bright) !important; }
+.text-fuchsia { color: var(--fuchsia-bright) !important; }
+.text-amber { color: var(--amber-bright) !important; }
+.text-emerald { color: var(--emerald-bright) !important; }
+.text-purple { color: #c084fc !important; }
+.text-indigo { color: #818cf8 !important; }
+.text-white { color: #ffffff !important; }
+.text-slate { color: #e2e8f0 !important; }
+.text-dim { color: var(--ink-dim) !important; }
+.text-right { text-align: right !important; }
+.font-bold { font-weight: 700 !important; }
+.font-semibold { font-weight: 600 !important; }
+.font-mono { font-family: var(--font-mono) !important; }
+.ml-1 { margin-left: 4px !important; }
+.text-xs { font-size: 11px !important; }
+
+/* Accessible visually hidden utility */
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -583,62 +124,477 @@ button.secondary {
   border: 0;
 }
 
-/*
- * The states the chips do not show.
- *
- * A hidden dropdown is a state nobody can reach, and Colorado is not in the
- * top twelve on hail alone.
+/* Universal hidden enforcement.
+ * Rules that declare display: flex / block on classes override the native [hidden]
+ * attribute unless author styles enforce display: none !important.
  */
-.state-menu[hidden] {
-  /* The `hidden` attribute sets `display: none`, and a `display: flex` rule on
-     the same element BEATS it - so a hidden menu still took up the space of a
-     row. The rule has to be explicit. */
-  display: none;
+.hidden, [hidden] {
+  display: none !important;
+}
+
+aside.side-console.hidden,
+aside.side-console[hidden] {
+  display: none !important;
+}
+
+/* ==========================================================================
+   TOP CONSOLE MASTHEAD
+   ========================================================================== */
+
+.masthead {
+  height: 56px;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.8);
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(12px);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+  z-index: 30;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-mark-box {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  background: rgba(6, 182, 212, 0.1);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #22d3ee;
+  font-weight: 700;
+  font-size: 16px;
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.25);
+}
+
+.brand-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand h1 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #f8fafc;
+}
+
+.blueprint-badge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  background: rgba(6, 182, 212, 0.2);
+  color: #67e8f9;
+  border: 1px solid rgba(6, 182, 212, 0.3);
+}
+
+.tagline {
+  margin: 2px 0 0;
+  color: #94a3b8;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+}
+
+/* Omnibar Search Input */
+.omnibar-wrap {
+  position: relative;
+  width: 384px;
+  max-width: 100%;
+}
+
+.omnibar-inner {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.omnibar-search-icon {
+  position: absolute;
+  left: 10px;
+  width: 16px;
+  height: 16px;
+  color: #64748b;
+  pointer-events: none;
+}
+
+.omnibar-wrap input {
+  width: 100%;
+  background: rgba(2, 6, 23, 0.8);
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  border-radius: var(--radius-lg);
+  padding: 6px 66px 6px 34px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: #e2e8f0;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.omnibar-wrap input:focus {
+  border-color: #06b6d4;
+  box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.2);
+}
+
+.omnibar-action {
+  position: absolute;
+  right: 4px;
+  padding: 3px 10px;
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.omnibar-action:hover {
+  background: #334155;
+  color: #ffffff;
+}
+
+/* Workspace Mode Switcher */
+.modes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #020617;
+  padding: 4px;
+  border-radius: var(--radius-lg);
+  border: 1px solid #1e293b;
+}
+
+.modes button {
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: #94a3b8;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.modes button:hover {
+  color: #f8fafc;
+}
+
+.modes button.active,
+.modes button[aria-pressed="true"] {
+  background: rgba(6, 182, 212, 0.2);
+  color: #67e8f9;
+  border-color: rgba(6, 182, 212, 0.4);
+  font-weight: 600;
+}
+
+.led-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.pulse-emerald {
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+  animation: pulseEmerald 2s infinite ease-in-out;
+}
+
+.pulse-cyan {
+  background: #06b6d4;
+  box-shadow: 0 0 6px #06b6d4;
+  animation: pulseCyan 2s infinite ease-in-out;
+}
+
+/* Quick Actions */
+.quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  border-radius: var(--radius);
+  border: 1px solid #334155;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-action:hover {
+  background: #334155;
+  color: #ffffff;
+}
+
+.btn-icon-only {
+  padding: 6px;
+}
+
+.w-3\.5 { width: 14px; height: 14px; }
+.w-4 { width: 16px; height: 16px; }
+
+/* ==========================================================================
+   COMPACT 1-LINE MARKET & FILTER TOOLBAR
+   ========================================================================== */
+
+.filter-toolbar {
+  height: 44px;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.7);
+  background: rgba(15, 23, 42, 0.6);
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.market-select-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.filter-label {
+  color: #64748b;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  margin-right: 2px;
+}
+
+.state-chips {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.data-toggle-chip {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(30, 41, 59, 0.8);
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.data-toggle-chip:hover {
+  background: #334155;
+  color: #ffffff;
+  border-color: #475569;
+}
+
+.data-toggle-chip.chip-active,
+.data-toggle-chip[aria-pressed="true"] {
+  background: #06b6d4;
+  color: #020617;
+  font-weight: 700;
+  border-color: #06b6d4;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.state-more-btn {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: #1e293b;
+  color: #94a3b8;
+  border: 1px solid #334155;
+  cursor: pointer;
+}
+
+.state-more-btn:hover {
+  color: #ffffff;
+  background: #334155;
+}
+
+.state-isolate {
+  margin-left: 2px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  border: 1px solid #334155;
+  color: #94a3b8;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+}
+
+.state-isolate:hover {
+  color: #ffffff;
+  border-color: #475569;
+}
+
+.state-isolate.active,
+.state-isolate[aria-pressed="true"] {
+  border-color: #06b6d4;
+  color: #67e8f9;
+  background: rgba(6, 182, 212, 0.1);
+}
+
+.state-isolate .led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #64748b;
+  transition: all 0.15s ease;
+}
+
+.state-isolate.active .led,
+.state-isolate[aria-pressed="true"] .led {
+  background: #06b6d4;
+  box-shadow: 0 0 6px #06b6d4;
 }
 
 .state-menu {
-  /* It OVERLAYS. Opening a list of states should not push the map down the
-     page - the map is what the person is looking at. */
   position: absolute;
   left: 0;
-  right: 0;
   top: 100%;
-  z-index: 30;
+  margin-top: 6px;
+  z-index: 40;
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-top: 6px;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel-2);
-  max-height: 140px;
+  padding: 10px;
+  border: 1px solid #334155;
+  border-radius: var(--radius-lg);
+  background: #0f172a;
+  max-height: 200px;
+  max-width: 480px;
   overflow-y: auto;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6);
 }
 
-.state-menu-empty {
-  color: var(--ink-faint);
-  font: 11px/1.3 var(--mono);
+.state-menu[hidden] {
+  display: none !important;
 }
 
-.state-field {
-  flex: 2 1 320px;
-  position: relative;
+/* Hail Min Stone Threshold Pills */
+.stone-select-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
-/*
- * The map pane.
- *
- * The MapLibre basemap and the transparent canvas overlays share one camera
- * and one frame, so panning never lets a data layer drift away from its map.
- */
-.map-pane {
-  position: relative;
-  min-height: 0;
-  border: 1px solid var(--line);
+.min-stone-pills {
+  display: flex;
+  align-items: center;
+  background: #020617;
+  padding: 2px;
   border-radius: var(--radius);
+  border: 1px solid #1e293b;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.stone-pill {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: #94a3b8;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.stone-pill:hover {
+  color: #f8fafc;
+}
+
+.stone-pill.active {
+  background: rgba(6, 182, 212, 0.2);
+  color: #67e8f9;
+  font-weight: 600;
+  border-color: rgba(6, 182, 212, 0.3);
+}
+
+/* Active Storm Callout */
+.active-storm-callout {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #cbd5e1;
+  flex-shrink: 0;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.callout-sep {
+  color: #334155;
+}
+
+/* ==========================================================================
+   MAIN WORKSPACE BODY
+   ========================================================================== */
+
+main.workspace-main {
+  flex: 1;
+  display: flex;
   overflow: hidden;
-  background: #05080b;
+  position: relative;
+  height: calc(100vh - 100px);
+  width: 100%;
+}
+
+/* ==========================================================================
+   LEFT PANE: MAP ENGINE & HUDS
+   ========================================================================== */
+
+.map-pane {
+  flex: 1;
+  position: relative;
+  background: var(--bg-deep);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .map-base {
@@ -651,7 +607,7 @@ button.secondary {
   font: 12px/1.4 system-ui, sans-serif;
 }
 
-.map-pane canvas#mapCanvas {
+canvas#mapCanvas {
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -671,624 +627,1362 @@ button.secondary {
   cursor: grabbing;
 }
 
-/*
- * The caption sits at the BOTTOM, because the top-left of the map belongs to
- * the recent-day chips, and a chip row under a caption is two things
- * fighting for the same corner.
- */
-.map-caption {
+/* HUD Frames: Top Left */
+.hud-frames {
   position: absolute;
-  left: 8px;
-  bottom: 8px;
-  margin: 0;
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: rgba(10, 14, 19, 0.82);
-  color: var(--ink-dim);
-  font: 11px/1.3 var(--mono);
-  pointer-events: none;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(12px);
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-lg);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
 }
 
-/*
- * THE RECENT DAYS, as chips over the map.
- *
- * The globe's pattern: the open leads are the recent storms, and the ones
- * before them are claims. The same twelve chips are there every time, so a
- * person learns where to look, and a chip is one click.
- */
+.hud-label {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.frame-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.frame-chip {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  color: #94a3b8;
+  background: transparent;
+  border: 1px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.frame-chip:hover {
+  color: #ffffff;
+}
+
+.frame-chip.active {
+  background: rgba(6, 182, 212, 0.2);
+  color: #67e8f9;
+  font-weight: 700;
+  border-color: rgba(6, 182, 212, 0.3);
+}
+
+.hud-divider {
+  height: 16px;
+  width: 1px;
+  background: #334155;
+  margin: 0 2px;
+}
+
+.hud-play-btn {
+  padding: 4px;
+  color: #06b6d4;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+}
+
+.hud-play-btn:hover {
+  color: #67e8f9;
+}
+
+/* HUD Layers: Top Right */
+.hud-layers {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(12px);
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-lg);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.hud-btn {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  border: 1px solid #1e293b;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.hud-btn:hover {
+  color: #ffffff;
+  background: #1e293b;
+}
+
+.hud-btn.active,
+.hud-btn[aria-pressed="true"] {
+  background: rgba(6, 182, 212, 0.2);
+  color: #67e8f9;
+  border-color: rgba(6, 182, 212, 0.4);
+}
+
+#dotsToggle.active,
+#dotsToggle[aria-pressed="true"] {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+/* HUD Legend: Bottom Left */
+.hud-legend {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  z-index: 10;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.hud-legend-title {
+  color: #94a3b8;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+}
+
+.hud-legend-swatches {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.swatch-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #cbd5e1;
+}
+
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  display: inline-block;
+  border: 1px solid;
+}
+
+.swatch-purple {
+  background: #6d28d9;
+  border-color: #9333ea;
+}
+
+.swatch-violet {
+  background: #9333ea;
+  border-color: #c026d3;
+}
+
+.swatch-magenta {
+  background: #c026d3;
+  border-color: #e879f9;
+}
+
+.swatch-core {
+  background: #fdf4ff;
+  border-color: #ffffff;
+  animation: radarPulse 4s infinite ease-in-out;
+}
+
+.hud-legend-pins {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(30, 41, 59, 0.8);
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.pin-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pin-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.pin-cyan {
+  background: #06b6d4;
+  box-shadow: 0 0 6px #06b6d4;
+}
+
+.pin-emerald {
+  background: #10b981;
+}
+
+.pin-amber {
+  background: #f59e0b;
+}
+
+.pin-slate {
+  background: #64748b;
+}
+
+.hud-map-status {
+  margin-top: 2px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(30, 41, 59, 0.6);
+  font-size: 10px;
+  color: #64748b;
+}
+
+.hud-map-status p {
+  margin: 0;
+  line-height: 1.3;
+}
+
+.map-attribution {
+  font-size: 9px;
+  color: #475569;
+}
+
+/* Bottom Center HUD: Day Chips */
 .day-chips {
   position: absolute;
-  left: 8px;
-  top: 8px;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
-  max-width: calc(100% - 110px);
+  max-width: calc(100% - 320px);
+  overflow-x: auto;
+  padding: 4px 6px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
 }
 
 .day-chip {
   padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: rgba(10, 14, 19, 0.86);
-  color: var(--ink-dim);
-  font: 10px/1.2 var(--mono);
+  border: 1px solid #334155;
+  border-radius: var(--radius-sm);
+  background: rgba(2, 6, 23, 0.85);
+  color: #94a3b8;
+  font-family: var(--font-mono);
+  font-size: 10px;
   cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
 }
 
 .day-chip:hover {
-  color: var(--ink);
-  border-color: var(--accent);
+  color: #ffffff;
+  border-color: #06b6d4;
 }
 
 .day-chip.active {
-  color: #fff;
+  color: #ffffff;
   background: rgba(109, 40, 217, 0.9);
   border-color: #c026d3;
+  font-weight: 700;
 }
 
-/*
- * THE FRAME CHIPS: the whole day, or the six-hour windows inside it.
- */
-.frame-chips {
+/* Bottom Right HUD: Zoom Controls */
+.hud-zoom {
   position: absolute;
-  left: 8px;
-  top: 34px;
+  bottom: 16px;
+  right: 16px;
+  z-index: 10;
   display: flex;
+  flex-direction: column;
   gap: 4px;
 }
 
-/*
- * THE SCOPE CHIPS: every day, the days somebody called in, the days nobody
- * did.
- */
-.scope-chips {
+.hud-zoom-buttons {
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(12px);
+  border: 1px solid #1e293b;
+  border-radius: var(--radius);
+  padding: 2px;
   display: flex;
-  gap: 4px;
-  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
-.scope-chip {
-  padding: 4px 9px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--panel);
-  color: var(--ink-dim);
-  font: 10px/1.2 var(--mono);
-  letter-spacing: 0.08em;
-  cursor: pointer;
-}
-
-.scope-chip:hover {
-  color: var(--ink);
-  border-color: var(--accent);
-}
-
-.scope-chip.active {
-  color: #fff;
-  background: rgba(109, 40, 217, 0.85);
-  border-color: #c026d3;
-}
-
-.frame-chip {
-  padding: 3px 7px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: rgba(10, 14, 19, 0.86);
-  color: var(--ink-dim);
-  font: 10px/1.2 var(--mono);
-  letter-spacing: 0.06em;
-  cursor: pointer;
-}
-
-.frame-chip:hover {
-  color: var(--ink);
-  border-color: var(--accent);
-}
-
-.frame-chip.active {
-  color: #fff;
-  background: rgba(61, 214, 200, 0.24);
-  border-color: var(--accent);
-}
-
-/*
- * THE PLACES, as a layer.
- *
- * A toggle, not a rule: off in the storm view, where the swath is the map,
- * and on in the market views, where a market of towns IS a set of dots. A
- * person can have it either way.
- */
-.map-toggle {
-  position: absolute;
-  right: 8px;
-  top: 8px;
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: rgba(10, 14, 19, 0.86);
-  color: var(--ink-dim);
-  font: 10px/1.2 var(--mono);
-  letter-spacing: 0.08em;
-  cursor: pointer;
-}
-
-.map-toggle.active {
-  color: #fff;
-  border-color: var(--accent);
-}
-
-.basemap-toggle {
-  top: 42px;
-}
-
-.map-navigation {
-  position: absolute;
-  z-index: 4;
-  top: 78px;
-  right: 8px;
-  display: grid;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-}
-
-.map-navigation button {
-  width: 34px;
-  height: 34px;
+.hud-zoom-buttons button {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #cbd5e1;
+  background: transparent;
   border: 0;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--ink);
-  font: 20px/1 system-ui, sans-serif;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 14px;
   cursor: pointer;
 }
 
-.map-navigation button:last-child {
-  border-bottom: 0;
+.hud-zoom-buttons button:hover {
+  background: #1e293b;
+  color: #ffffff;
 }
 
-.map-navigation button:hover {
-  background: #26313d;
+.hud-zoom-sep {
+  width: 20px;
+  height: 1px;
+  background: #1e293b;
+  margin: 2px 0;
 }
 
-.map-attribution {
-  position: absolute;
-  right: 8px;
-  bottom: 5px;
-  z-index: 4;
-  max-width: calc(100% - 16px);
-  margin: 0;
-  padding: 2px 5px;
-  border-radius: 3px;
-  background: rgba(10, 14, 19, 0.8);
-  color: var(--ink-dim);
-  font: 9px/1.3 system-ui, sans-serif;
-  pointer-events: none;
-}
-
-.maplibregl-ctrl-group {
-  overflow: hidden;
-  border: 1px solid var(--line) !important;
-  border-radius: 6px !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4) !important;
-}
-
-.maplibregl-ctrl-group button {
-  background-color: var(--panel) !important;
-}
-
-.maplibregl-ctrl-group button:hover {
-  background-color: var(--panel-raised, #202833) !important;
-}
-
-.maplibregl-ctrl-group button span {
-  filter: invert(1);
-}
-
-.maplibregl-ctrl-attrib {
-  color: var(--ink-dim) !important;
-  background: rgba(10, 14, 19, 0.82) !important;
-}
-
-.maplibregl-ctrl-attrib a {
-  color: var(--ink) !important;
-}
-
-.maplibregl-ctrl-scale {
-  color: var(--ink) !important;
-  border-color: var(--ink-dim) !important;
-  background: rgba(10, 14, 19, 0.72) !important;
-  font: 10px/1.2 var(--mono) !important;
-}
-
-/*
- * State isolation belongs with the state picker, so its target is visible
- * beside the control rather than being inferred from a map drill-down.
- */
-.state-isolate {
-  margin-top: 8px;
-}
-.state-isolate.active {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.map-toggle:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* The drill-down's own ISOLATE button, beside the place's name. */
-.isolate-button {
-  margin-left: auto;
-  align-self: flex-start;
-}
-
-/*
- * THE INFO LINE: what is on the map, in one line, with the day convention
- * in it. A person looking at a map of a storm has to know which clock the
- * day is on before they can believe any of it.
- */
-.map-info {
-  position: absolute;
-  left: 8px;
-  bottom: 28px;
-  margin: 0;
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: rgba(10, 14, 19, 0.86);
-  color: var(--ink);
-  font: 11px/1.3 var(--mono);
-  pointer-events: none;
-}
-
-/*
- * The notes, folded.
- *
- * They are a wall of prose about what every number means, and they were
- * taking more of the screen than the map. Folded, they are one line that
- * says what they are and they are there when they are wanted.
- */
-.notes summary {
-  cursor: pointer;
-  padding: 6px 9px;
-  border: 1px solid var(--line);
+.hud-btn-reset {
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(12px);
+  border: 1px solid #1e293b;
+  color: #94a3b8;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 4px 6px;
   border-radius: var(--radius);
-  background: var(--panel);
-  color: var(--ink-dim);
-  font: 11px/1.3 var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.notes[open] summary {
-  margin-bottom: 8px;
-}
-
-.summary {
-  margin: 14px 0 2px;
-  font: 13px/1.4 var(--mono);
-  color: var(--ink);
-}
-
-.worst {
-  margin: 0 0 12px;
-  font: 12px/1.4 var(--mono);
-  color: var(--ink-dim);
-}
-
-/* ---- table ---- */
-
-.table-wrap {
-  overflow: auto;
-  max-height: calc(100vh - 320px);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel);
-}
-
-.loading {
-  margin: 0;
-  padding: 28px 16px;
-  color: var(--ink-dim);
-  font: 13px/1.4 var(--mono);
   text-align: center;
+  cursor: pointer;
 }
 
-.loading.error {
-  color: var(--bad);
-  text-align: left;
+.hud-btn-reset:hover {
+  color: #ffffff;
+  background: #1e293b;
 }
 
-.desk-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
+/* ==========================================================================
+   RIGHT SIDE CONSOLE
+   ========================================================================== */
+
+aside.side-console {
+  width: 520px;
+  border-left: 1px solid #1e293b;
+  background: rgba(15, 23, 42, 0.95);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  z-index: 20;
+  overflow: hidden;
+  transition: width 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.desk-table th,
-.desk-table td {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
+/* Mode layout adaptations */
+main.mode-map #sideConsole,
+main[data-mode="map"] #sideConsole {
+  display: none !important;
+}
+
+main.mode-knock #sideConsole,
+main[data-mode="knock"] #sideConsole,
+main.mode-dossier #sideConsole,
+main[data-mode="dossier"] #sideConsole {
+  width: 580px;
+}
+
+/* Console Tabs Header */
+.console-tabs {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #1e293b;
+  background: rgba(2, 6, 23, 0.7);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.console-tab {
+  flex: 1;
+  padding: 10px 8px;
+  text-align: center;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 11px;
   white-space: nowrap;
 }
 
-.desk-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--panel-2);
-  padding: 0;
+.console-tab:hover {
+  color: #e2e8f0;
+}
+
+.console-tab.active,
+.console-tab[aria-selected="true"] {
+  border-bottom-color: #06b6d4;
+  color: #67e8f9;
+  font-weight: 700;
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.badge-cyan {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  background: rgba(6, 182, 212, 0.2);
+  color: #67e8f9;
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  margin-left: 4px;
+}
+
+/* Tab Content Panels */
+.tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.tab-content[hidden],
+.tab-content.hidden {
+  display: none !important;
+}
+
+/* ==========================================================================
+   TAB 1: STORM DATES
+   ========================================================================== */
+
+.scope-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.scope-label {
+  color: #94a3b8;
+}
+
+.scope-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #020617;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid #1e293b;
+  font-size: 11px;
+}
+
+.scope-chip {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  color: #94a3b8;
+  background: transparent;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.scope-chip:hover {
+  color: #ffffff;
+}
+
+.scope-chip.active {
+  background: rgba(6, 182, 212, 0.2);
+  color: #67e8f9;
   font-weight: 600;
 }
 
-.desk-sort {
-  display: block;
-  width: 100%;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 8px 10px;
-  text-align: left;
-  font: 600 11px/1 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-dim);
+.summary {
+  margin: 0;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: #94a3b8;
+  line-height: 1.4;
 }
 
-.desk-sort:hover {
-  color: var(--ink);
+/* Interactive Storm Day Cards */
+.storm-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.desk-sort.active {
-  color: var(--accent);
-}
-
-.desk-table td {
-  font: 13px/1.3 var(--mono);
-}
-
-.desk-table td.num {
-  text-align: right;
-}
-
-/*
- * The row height is PINNED, because the table is a window onto the rows
- * rather than a copy of them, and the window is computed from the scroll
- * position. A row that is one pixel taller than the arithmetic thinks puts
- * the last visible row under the sticky header.
- */
-.desk-table tbody tr {
-  height: 30px;
-}
-
-/* A row of nothing, standing in for the rows it replaces. */
-.desk-table tbody tr.desk-spacer td {
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-
-.desk-table tbody tr:nth-child(even) {
-  background: rgba(255, 255, 255, 0.015);
-}
-
-.desk-table tbody tr:hover {
-  background: rgba(58, 214, 200, 0.07);
-}
-
-.desk-table tbody tr.clickable {
+.storm-card {
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid #1e293b;
+  background: rgba(2, 6, 23, 0.6);
   cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-/*
- * The selected row, marked as such. A person looking at a list and a map
- * has to know which row the map is showing, and a table that does not say so
- * makes them read the map's caption to find out.
- */
-.desk-table tbody tr.selected td {
-  background: rgba(109, 40, 217, 0.18);
-  color: var(--ink);
+.storm-card:hover {
+  border-color: #334155;
+  background: rgba(30, 41, 59, 0.4);
 }
 
-.desk-table tbody tr.clickable:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+.storm-card.active {
+  border: 2px solid rgba(6, 182, 212, 0.7);
+  background: rgba(30, 41, 59, 0.8);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
 }
 
-/* ---- the drill-down ---- */
+.storm-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.storm-card-date {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.storm-card.active .storm-card-date {
+  color: #67e8f9;
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #06b6d4;
+  display: inline-block;
+  animation: pulseCyan 2s infinite ease-in-out;
+}
+
+.badge-fuchsia {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  background: rgba(217, 70, 239, 0.2);
+  color: #f0abfc;
+  border: 1px solid rgba(217, 70, 239, 0.4);
+}
+
+.badge-fuchsia-dim {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  background: rgba(217, 70, 239, 0.1);
+  color: #f0abfc;
+  border: 1px solid rgba(217, 70, 239, 0.2);
+}
+
+.badge-purple-dim {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  background: rgba(147, 51, 234, 0.1);
+  color: #d8b4fe;
+  border: 1px solid rgba(147, 51, 234, 0.2);
+}
+
+.storm-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(51, 65, 85, 0.6);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.card-kpi-label {
+  margin: 0;
+  font-size: 10px;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+
+.card-kpi-val {
+  margin: 2px 0 0;
+  font-weight: 700;
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.storm-card-footer {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.view-tracts-link {
+  color: #06b6d4;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.view-tracts-link:hover {
+  text-decoration: underline;
+}
+
+/* Drill-Down Panel & Drilling State */
+.drilling #stormCardsList,
+.drilling #tableWrap {
+  display: none !important;
+}
 
 .detail {
-  margin: 0 0 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--accent-dim);
-  border-radius: var(--radius);
-  background: var(--panel);
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid #06b6d4;
+  border-radius: var(--radius-lg);
+  margin-bottom: 12px;
+}
+
+.drilling .detail {
+  display: flex !important;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+
+.drilling #drillBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .detail-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #334155;
+  padding-bottom: 6px;
 }
 
 .detail-head h2 {
   margin: 0;
-  font: 600 14px/1.3 var(--mono);
-  color: var(--accent);
-}
-
-.detail-summary {
-  margin: 8px 0 10px;
-  color: var(--ink-dim);
+  font-family: var(--font-mono);
   font-size: 13px;
-  line-height: 1.55;
-}
-
-.storm-table {
-  background: transparent;
-}
-
-.storm-table thead th {
-  position: static;
-  background: transparent;
-  padding: 4px 10px 4px 0;
-  font: 600 10px/1 var(--mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+  color: #67e8f9;
 }
 
 .link-button {
   background: transparent;
-  border: 1px solid var(--accent-dim);
-  color: var(--accent);
-  padding: 3px 9px;
-  min-height: 0;
-  font: 600 10px/1 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  border: 0;
+  color: #06b6d4;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
 }
 
 .link-button:hover {
-  background: rgba(58, 214, 200, 0.12);
-  color: var(--ink);
+  text-decoration: underline;
 }
 
-.storm-table td {
-  padding: 4px 10px 4px 0;
-  border-bottom: 1px solid rgba(34, 48, 64, 0.6);
+button.secondary {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  cursor: pointer;
 }
 
-/* ---- notes ---- */
-
-.notes {
-  margin-top: 22px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel);
-  max-width: 900px;
+/* Data Table Wrap & Table Styles */
+.table-wrap {
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-lg);
+  overflow: auto;
+  background: rgba(2, 6, 23, 0.6);
+  flex: 1 1 auto;
+  min-height: 120px;
 }
 
-.notes h2 {
-  margin: 0 0 10px;
-  font: 600 11px/1 var(--mono);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--ink-dim);
-}
-
-.notes dl {
-  margin: 0;
-  display: grid;
-  grid-template-columns: 150px 1fr;
-  gap: 6px 16px;
-}
-
-.notes dt {
-  font: 600 12px/1.5 var(--mono);
-  color: var(--accent);
-}
-
-.notes dd {
-  margin: 0;
-  color: var(--ink-dim);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.caveat {
-  margin: 14px 0 0;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-  color: var(--ink-faint);
+table,
+.desk-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-family: var(--font-mono);
   font-size: 12px;
-  line-height: 1.6;
 }
 
-/* ---- narrow screens: the table becomes cards ---- */
+th {
+  padding: 8px 10px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  font-size: 10px;
+  color: #94a3b8;
+  text-transform: uppercase;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
 
-@media (max-width: 760px) {
-  main {
-    padding: 12px 10px 40px;
+td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.6);
+  color: #cbd5e1;
+}
+
+tr:hover td {
+  background: rgba(30, 41, 59, 0.4);
+}
+
+.loading {
+  color: #94a3b8;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 16px;
+  text-align: center;
+}
+
+/* ==========================================================================
+   TAB 2: STREET KNOCK LIST (Canvassing Leads Hub)
+   ========================================================================== */
+
+.knock-hub-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.knock-hub-title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: #67e8f9;
+}
+
+.knock-hub-subtitle {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.btn-walksheet {
+  padding: 4px 10px;
+  background: #0891b2;
+  color: #020617;
+  font-weight: 700;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  border: 0;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-walksheet:hover {
+  background: #06b6d4;
+}
+
+.knock-progress-wrap {
+  background: #020617;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid #1e293b;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.knock-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge-tag {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.badge-inspected {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+}
+
+.badge-knocked {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+}
+
+.badge-remaining {
+  background: #334155;
+  color: #cbd5e1;
+}
+
+.knock-table-wrap {
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: rgba(2, 6, 23, 0.6);
+}
+
+.knock-table {
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-collapse: collapse;
+}
+
+.highlighted-row {
+  background: rgba(8, 145, 178, 0.15);
+}
+
+.knock-status-select {
+  background: #0f172a;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  outline: none;
+}
+
+.select-cyan {
+  border: 1px solid rgba(6, 182, 212, 0.5);
+  color: #67e8f9;
+}
+
+.select-emerald {
+  border: 1px solid rgba(16, 185, 129, 0.5);
+  color: #34d399;
+}
+
+.select-amber {
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+}
+
+.link-btn-cyan {
+  color: #06b6d4;
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.link-btn-cyan:hover {
+  text-decoration: underline;
+}
+
+.link-btn-slate {
+  color: #94a3b8;
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   TAB 3: PROPERTY LOSS VERIFICATION DOSSIER
+   ========================================================================== */
+
+.dossier-target-card {
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(6, 182, 212, 0.4);
+  background: rgba(8, 145, 178, 0.1);
+}
+
+.target-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.badge-target {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  background: rgba(6, 182, 212, 0.3);
+  color: #a5f3fc;
+}
+
+.target-address {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.target-sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.status-orb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.orb-emerald {
+  background: #34d399;
+  box-shadow: 0 0 8px #34d399;
+}
+
+.target-meta-grid {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(6, 182, 212, 0.2);
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.meta-label {
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.meta-val {
+  margin: 2px 0 0;
+  color: #e2e8f0;
+  font-weight: 500;
+}
+
+.dossier-statute-card {
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.statute-title {
+  font-weight: 700;
+  color: #fcd34d;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.statute-desc {
+  margin: 4px 0 0;
+  color: #cbd5e1;
+  font-size: 11px;
+}
+
+.badge-statute {
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.2);
+  color: #fcd34d;
+  font-weight: 700;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  font-size: 11px;
+}
+
+.events-heading {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: #cbd5e1;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.loss-events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.loss-event-card {
+  padding: 10px;
+  border-radius: var(--radius);
+  background: #020617;
+  border: 1px solid #1e293b;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.event-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.event-title {
+  font-weight: 700;
+}
+
+.event-desc {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.btn-export-dossier {
+  width: 100%;
+  padding: 10px;
+  background: #06b6d4;
+  color: #020617;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  border-radius: var(--radius-lg);
+  font-size: 12px;
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background 0.15s ease;
+  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.25);
+}
+
+.btn-export-dossier:hover {
+  background: #22d3ee;
+}
+
+/* ==========================================================================
+   TAB 4: MARKET ANALYTICS (Macro Exposure)
+   ========================================================================== */
+
+.macro-heading {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: #cbd5e1;
+  margin: 0;
+}
+
+.macro-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.macro-kpi-card {
+  background: #020617;
+  padding: 10px;
+  border-radius: var(--radius);
+  border: 1px solid #1e293b;
+}
+
+.kpi-label {
+  font-size: 10px;
+  color: #64748b;
+  text-transform: uppercase;
+}
+
+.kpi-value {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.macro-subheading {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: #94a3b8;
+  margin: 4px 0 0;
+}
+
+.macro-table-wrap {
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: rgba(2, 6, 23, 0.6);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.macro-table {
+  width: 100%;
+  text-align: left;
+  border-collapse: collapse;
+}
+
+/* Sub-toggle Views */
+.views {
+  display: flex;
+  gap: 0;
+  margin: 4px 0;
+  border: 1px solid #1e293b;
+  border-radius: var(--radius);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.views button {
+  border: 0;
+  border-radius: 0;
+  background: #0f172a;
+  padding: 6px 14px;
+  font: 600 11px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.views button + button {
+  border-left: 1px solid #1e293b;
+}
+
+.views button.active,
+.views button[aria-pressed="true"] {
+  background: #06b6d4;
+  color: #020617;
+}
+
+/* Ranked Place List */
+.data-row-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 4px;
+}
+
+.data-row-list li {
+  margin: 0;
+}
+
+.data-row-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-sm);
+  background: #0f172a;
+  color: #cbd5e1;
+  font: 11px/1.3 var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.data-row-list-item:hover {
+  border-color: #06b6d4;
+  background: #1e293b;
+}
+
+.data-row-list-lead {
+  flex: 0 0 auto;
+  min-width: 2.2em;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.data-row-list-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Notes & Caveats */
+details.notes {
+  margin-top: 8px;
+  padding: 8px;
+  background: #020617;
+  border: 1px solid #1e293b;
+  border-radius: var(--radius);
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+details.notes summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+details.notes dl {
+  margin: 8px 0 0;
+}
+
+details.notes dt {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: #67e8f9;
+  margin-top: 6px;
+}
+
+details.notes dd {
+  margin: 2px 0 6px;
+  line-height: 1.4;
+}
+
+/* ==========================================================================
+   CONSOLE FOOTER
+   ========================================================================== */
+
+.console-footer {
+  height: 32px;
+  border-top: 1px solid #1e293b;
+  background: #020617;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.footer-right {
+  display: flex;
+  align-items: center;
+}
+
+.system-healthy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #06b6d4;
+  font-weight: 600;
+}
+
+.source {
+  color: #64748b;
+}
+
+/* ==========================================================================
+   RESPONSIVE BREAKPOINTS
+   ========================================================================== */
+
+@media (max-width: 1440px) {
+  .filter-toolbar {
+    gap: 6px;
+    padding: 0 8px;
   }
-
-  .masthead {
-    padding: 12px 14px;
+  .active-storm-callout {
+    gap: 5px;
+    font-size: 10.5px;
   }
+}
 
-  .filters {
-    gap: 8px 10px;
-  }
-
-  .field.grow {
-    flex-basis: 100%;
-  }
-
-  .table-wrap {
-    max-height: none;
-    border: 0;
-    background: transparent;
-  }
-
-  .desk-table,
-  .desk-table tbody,
-  .desk-table tr,
-  .desk-table td {
-    display: block;
-    width: 100%;
-  }
-
-  .desk-table thead {
+@media (max-width: 1024px) {
+  .active-storm-callout {
     display: none;
   }
-
-  .desk-table tr {
-    margin-bottom: 8px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: var(--panel);
-    padding: 6px 4px;
+  aside.side-console {
+    width: 440px;
   }
+}
 
-  .desk-table td {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    border-bottom: 0;
-    padding: 3px 10px;
-  }
-
-  /* The label comes from the column, which the card layout restores. */
-  .desk-table td::before {
-    content: attr(data-label);
-    color: var(--ink-faint);
-    font: 10px/1.6 var(--mono);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .desk-table td:first-child {
-    font-weight: 700;
-    font-size: 15px;
-    padding-bottom: 6px;
-  }
-
-  .desk-table td:first-child::before {
+@media (max-width: 768px) {
+  .omnibar-wrap {
     display: none;
   }
-
-  .notes dl {
-    grid-template-columns: 1fr;
-    gap: 2px;
+  main.workspace-main {
+    flex-direction: column;
+    height: auto;
+    overflow-y: auto;
   }
-
-  .notes dd {
-    margin-bottom: 8px;
+  .map-pane {
+    height: 50vh;
+    flex: none;
+  }
+  aside.side-console {
+    width: 100% !important;
+    height: 50vh;
+    border-left: 0;
+    border-top: 1px solid #1e293b;
   }
 }

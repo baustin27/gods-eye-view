@@ -1,268 +1,772 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Hail Desk — market view</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hail Desk 2.0 — Precision Swaths & Street Knock Lists</title>
     <meta
       name="description"
-      content="Hail and wind market view: counties, hazard, exposure and housing units, with a table you can filter, sort and export."
+      content="Hail and wind market intelligence console: precision radar swaths, apportioned housing exposure, street knock lists, and property loss dossiers."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body>
+  <body class="dark-slate">
+    <!-- TOP CONSOLE MASTHEAD -->
     <header class="masthead">
       <div class="brand">
-        <span class="mark" aria-hidden="true">◈</span>
+        <div class="brand-mark-box" aria-hidden="true">◈</div>
         <div>
-          <h1>HAIL DESK</h1>
-          <p class="tagline" id="tagline">Precision Swaths · Apportioned Housing · Street Knock Lists</p>
+          <div class="brand-title-row">
+            <h1>HAIL DESK</h1>
+            <span class="blueprint-badge">2.0 BLUEPRINT</span>
+          </div>
+          <p class="tagline" id="tagline">PRECISION SWATHS · APPORTIONED HOUSING · STREET KNOCK LISTS</p>
         </div>
       </div>
+
+      <!-- UNIFIED OMNIBAR SEARCH -->
       <div class="omnibar-wrap" id="omnibarWrap" role="search" aria-label="Omnibar search">
-        <input
-          id="omnibarInput"
-          type="search"
-          placeholder="Search address (e.g. 2840 S Elm), city, tract, or date..."
-          autocomplete="off"
-          aria-label="Search address, city, tract, or date"
-        />
-        <button type="button" id="omnibarAction" class="omnibar-action" title="Trigger search verification">Verify</button>
+        <div class="omnibar-inner">
+          <svg class="omnibar-search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+          <input
+            id="omnibarInput"
+            type="search"
+            placeholder="Search address (e.g. 2840 S Elm), city, tract, or date..."
+            autocomplete="off"
+            aria-label="Search address, city, tract, or date"
+            value="2840 S Elm St, Denver CO"
+          />
+          <button type="button" id="omnibarAction" class="omnibar-action" title="Trigger search verification">Verify</button>
+        </div>
       </div>
+
+      <!-- WORKSPACE MODE SWITCHER -->
       <div class="modes" id="modes" role="group" aria-label="Workspace mode">
-        <button type="button" id="mode-split" data-mode="split" class="active" aria-pressed="true">SPLIT DESK</button>
-        <button type="button" id="mode-map" data-mode="map" aria-pressed="false">FIELD MAP</button>
-        <button type="button" id="mode-knock" data-mode="knock" aria-pressed="false">KNOCK LIST</button>
-        <button type="button" id="mode-dossier" data-mode="dossier" aria-pressed="false">LOSS DOSSIER</button>
+        <button type="button" id="mode-split" data-mode="split" class="active" aria-pressed="true">Split Desk</button>
+        <button type="button" id="mode-map" data-mode="map" aria-pressed="false">Field Map</button>
+        <button type="button" id="mode-knock" data-mode="knock" aria-pressed="false">
+          <span class="led-dot pulse-emerald" aria-hidden="true"></span> Knock List
+        </button>
+        <button type="button" id="mode-dossier" data-mode="dossier" aria-pressed="false">Loss Dossier</button>
       </div>
-      <p class="source" id="source"></p>
+
+      <!-- RIGHT QUICK ACTIONS -->
+      <div class="quick-actions">
+        <button type="button" id="export" class="btn-action btn-export" title="Export Leads">
+          <svg class="w-3.5 h-3.5 text-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+          </svg>
+          <span>Export Leads</span>
+        </button>
+        <button type="button" id="copyLink" class="btn-action btn-icon-only" title="Copy Share Link">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
+          </svg>
+        </button>
+      </div>
     </header>
 
-    <main>
-      <div class="views" id="views" role="group" aria-label="View">
-        <button type="button" data-view="storm" class="active" aria-pressed="true">STORM DAYS</button>
-        <button type="button" data-view="city" aria-pressed="false">CITIES</button>
-        <button type="button" data-view="county" aria-pressed="false">COUNTIES</button>
+    <!-- COMPACT 1-LINE MARKET & FILTER TOOLBAR -->
+    <form class="filter-toolbar" id="filters" aria-label="Filters">
+      <!-- Left: Market State Selection -->
+      <div class="market-select-group">
+        <span class="filter-label">MARKET:</span>
+        <div class="data-toggle-controls state-chips" id="stateChips" role="group" aria-label="Market state quick select">
+          <button type="button" class="data-toggle-chip chip-active" data-chip-id="state:CO" aria-pressed="true">CO</button>
+          <button type="button" class="data-toggle-chip chip-idle" data-chip-id="state:TX" aria-pressed="false">TX</button>
+          <button type="button" class="data-toggle-chip chip-idle" data-chip-id="state:OK" aria-pressed="false">OK</button>
+          <button type="button" class="data-toggle-chip chip-idle" data-chip-id="state:KS" aria-pressed="false">KS</button>
+          <button type="button" class="data-toggle-chip chip-idle" data-chip-id="state:NE" aria-pressed="false">NE</button>
+          <button type="button" class="data-toggle-chip chip-idle" data-chip-id="state:MN" aria-pressed="false">MN</button>
+          <button type="button" class="data-toggle-chip chip-idle" data-chip-id="state:IA" aria-pressed="false">IA</button>
+          <button type="button" class="data-toggle-chip chip-idle" data-chip-id="state:MO" aria-pressed="false">MO</button>
+          <button type="button" class="data-toggle-chip chip-idle" data-chip-id="state:more">MORE</button>
+        </div>
+        <div class="state-menu" id="stateMenu" hidden aria-label="Every state in the market"></div>
+        <select id="state" name="state" class="visually-hidden" aria-hidden="true" tabindex="-1">
+          <option value="">All states</option>
+        </select>
+        <button type="button" id="isolateToggle" class="state-isolate" aria-pressed="false" title="Hide everything outside the selected state">
+          <span class="led" id="isolateStateLed" aria-hidden="true"></span>
+          <span id="isolateStateText">Isolate CO</span>
+        </button>
       </div>
 
-      <form class="filters" id="filters" aria-label="Filters">
-        <!--
-          The STATE picker is a chip row, not a dropdown.
+      <!-- Center: Min Stone Hail Threshold Pills -->
+      <div class="stone-select-group">
+        <span class="filter-label">MIN STONE:</span>
+        <div class="min-stone-pills" id="minStonePills" role="group" aria-label="Minimum hailstone threshold">
+          <button type="button" class="stone-pill" data-min="0">Any</button>
+          <button type="button" class="stone-pill" data-min="0.75">≥0.75″</button>
+          <button type="button" class="stone-pill active" data-min="1.0">≥1.00″</button>
+          <button type="button" class="stone-pill" data-min="1.5">≥1.50″</button>
+          <button type="button" class="stone-pill" data-min="2.0">≥2.00″</button>
+          <button type="button" class="stone-pill" data-min="2.5">≥2.50″</button>
+        </div>
+        <select id="minHail" name="minHail" class="visually-hidden" aria-hidden="true" tabindex="-1">
+          <option value="0">Any</option>
+          <option value="10">0.75"</option>
+          <option value="15" selected>1.00"</option>
+          <option value="20">1.25"</option>
+          <option value="25">1.50"</option>
+          <option value="30">1.75"</option>
+          <option value="40">2.00"</option>
+          <option value="50">2.50"</option>
+          <option value="60">3.00"</option>
+        </select>
+        <!-- Compact inputs for main.js form bindings -->
+        <input id="fromYear" name="fromYear" type="number" inputmode="numeric" class="visually-hidden" aria-hidden="true" tabindex="-1" />
+        <input id="toYear" name="toYear" type="number" inputmode="numeric" class="visually-hidden" aria-hidden="true" tabindex="-1" />
+        <input id="q" name="q" type="search" placeholder="Place or state" autocomplete="off" class="visually-hidden" aria-hidden="true" tabindex="-1" />
+      </div>
 
-          A dropdown with fifty entries is a control you have to open, read and
-          close to use one of them, and it is the control a person touches
-          first: which market am I looking at. The globe picks its places with
-          a row of buttons, and the desk now does the same. The twelve
-          biggest markets are the chips; the rest are still reachable, because
-          a chip row of fifty would be a wall.
-        -->
-        <div class="field state-field">
-          <label id="state-label">State</label>
-          <div class="data-toggle-controls" id="stateChips" role="group" aria-labelledby="state-label"></div>
-          <button type="button" id="isolateToggle" class="state-isolate" aria-pressed="false" title="Hide everything outside the selected state">ISOLATE STATE</button>
-          <div class="state-menu" id="stateMenu" hidden aria-label="Every state in the market"></div>
-          <select id="state" name="state" class="visually-hidden" aria-hidden="true" tabindex="-1">
-            <option value="">All states</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="fromYear">From</label>
-          <input id="fromYear" name="fromYear" type="number" inputmode="numeric" />
-        </div>
-        <div class="field">
-          <label for="toYear">To</label>
-          <input id="toYear" name="toYear" type="number" inputmode="numeric" />
-        </div>
-        <div class="field">
-          <label for="minHail">Min max hail</label>
-          <select id="minHail" name="minHail">
-            <option value="0">Any</option>
-            <option value="10">0.75"</option>
-            <option value="15">1.00"</option>
-            <option value="20">1.25"</option>
-            <option value="25">1.50"</option>
-            <option value="30">1.75"</option>
-            <option value="40">2.00"</option>
-            <option value="50">2.50"</option>
-            <option value="60">3.00"</option>
-          </select>
-        </div>
-        <div class="field grow">
-          <label for="q">Search</label>
-          <input
-            id="q"
-            name="q"
-            type="search"
-            placeholder="Place or state"
-            autocomplete="off"
-          />
-        </div>
-        <div class="field actions">
-          <button type="button" id="export">Export CSV</button>
-          <button type="button" id="copyLink" class="secondary">Copy link</button>
-        </div>
-      </form>
+      <!-- Right: Active Storm Info Metric Callout -->
+      <div class="active-storm-callout" id="activeStormCallout">
+        <span id="calloutDate" class="text-amber font-bold">2024-06-01</span>
+        <span class="callout-sep" aria-hidden="true">|</span>
+        <span>Houses in Reach: <strong id="calloutHouses" class="text-cyan font-bold">323,867</strong></span>
+        <span class="callout-sep" aria-hidden="true">|</span>
+        <span>Max MESH: <strong id="calloutMaxHail" class="text-fuchsia font-bold">3.40″</strong></span>
+        <span class="callout-sep" aria-hidden="true">|</span>
+        <span>Tracts: <strong id="calloutTracts" class="text-slate font-bold">165</strong></span>
+      </div>
+    </form>
 
-      <!--
-        THE MAP.
+    <!-- MAIN WORKSPACE BODY (FLEX ROW VIEWPORT) -->
+    <main id="workspaceMain" class="workspace-main" data-mode="split">
 
-        The desk is a table of places, and the labeled map answers "where is
-        that". Storm, tract, and selected-street geometry stays in a separate
-        overlay so the underlying road map remains readable.
-      -->
-      <section class="map-pane" id="mapPane" aria-label="Map of the filtered market">
+      <!-- LEFT PANE: NATIVE MAP ENGINE -->
+      <section class="map-pane" id="mapPane" aria-label="Interactive hail swath & canvassing map">
         <div id="mapBase" class="map-base" aria-label="Labeled interactive map"></div>
-        <canvas
-          id="mapCanvas"
-          aria-hidden="true"
-        ></canvas>
-        <div class="map-navigation" role="group" aria-label="Map zoom">
-          <button type="button" id="zoomIn" aria-label="Zoom in" title="Zoom in">+</button>
-          <button type="button" id="zoomOut" aria-label="Zoom out" title="Zoom out">−</button>
+        <canvas id="mapCanvas" aria-hidden="true"></canvas>
+
+        <!-- TOP-LEFT HUD: RADAR SUB-DAILY FRAMES -->
+        <div class="hud-frames" id="hudFrames" role="group" aria-label="Radar frame controls">
+          <span class="hud-label">RADAR FRAME:</span>
+          <div class="frame-chips" id="frameChips" role="group" aria-label="Frames of the day">
+            <button type="button" class="frame-chip active" data-frame="DAY">FULL DAY</button>
+            <button type="button" class="frame-chip" data-frame="06Z">06Z</button>
+            <button type="button" class="frame-chip" data-frame="12Z">12Z</button>
+            <button type="button" class="frame-chip" data-frame="18Z">18Z</button>
+            <button type="button" class="frame-chip" data-frame="00Z">00Z</button>
+          </div>
+          <div class="hud-divider" aria-hidden="true"></div>
+          <button type="button" id="radarPlayBtn" class="hud-btn hud-play-btn" title="Play 24h Radar Sequence" aria-label="Play 24h Radar Sequence">
+            <svg class="w-3.5 h-3.5 text-cyan" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          </button>
         </div>
-        <p class="map-attribution" id="mapAttribution">OpenFreeMap © OpenMapTiles · © OpenStreetMap contributors</p>
-        <!--
-          THE RECENT DAYS, as chips over the map. The globe's pattern: the
-          open leads are the recent storms, and the ones before them are
-          claims. A chip is one click, and the same twelve are there every
-          time, so a person learns where to look.
-        -->
+
+        <!-- TOP-RIGHT HUD: MAP LAYER CONTROLS -->
+        <div class="hud-layers" id="hudLayers" role="group" aria-label="Map layer toggles">
+          <button type="button" id="basemapToggle" class="hud-btn basemap-toggle" aria-pressed="false" title="Show satellite imagery">
+            <svg class="w-3.5 h-3.5 text-emerald" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064"/></svg>
+            Satellite
+          </button>
+          <button type="button" id="tractsToggle" class="hud-btn active" aria-pressed="true" title="Toggle Census Tracts">
+            Tracts
+          </button>
+          <button type="button" id="streetsToggle" class="hud-btn active" aria-pressed="true" title="Toggle Street Centrelines">
+            Streets
+          </button>
+          <button type="button" id="dotsToggle" class="hud-btn active" aria-pressed="true" title="Toggle Spotters & Places">
+            Spotters (48)
+          </button>
+        </div>
+
+        <!-- BOTTOM-LEFT HUD: RADAR MESH LEGEND -->
+        <div class="hud-legend" id="hudLegend" aria-label="Radar severity and pin legend">
+          <span class="hud-legend-title">RADAR MESH SEVERITY (INCHES)</span>
+          <div class="hud-legend-swatches">
+            <div class="swatch-item">
+              <span class="swatch swatch-purple" aria-hidden="true"></span>
+              <span>1.00 – 1.50″</span>
+            </div>
+            <div class="swatch-item">
+              <span class="swatch swatch-violet" aria-hidden="true"></span>
+              <span>1.50 – 2.00″</span>
+            </div>
+            <div class="swatch-item">
+              <span class="swatch swatch-magenta" aria-hidden="true"></span>
+              <span>2.00 – 2.75″</span>
+            </div>
+            <div class="swatch-item">
+              <span class="swatch swatch-core" aria-hidden="true"></span>
+              <span class="text-white font-bold">2.75″+ Core</span>
+            </div>
+          </div>
+          <div class="hud-legend-pins">
+            <span class="pin-item"><span class="pin-dot pin-cyan" aria-hidden="true"></span> Selected Home</span>
+            <span class="pin-item"><span class="pin-dot pin-emerald" aria-hidden="true"></span> Inspected / Claim</span>
+            <span class="pin-item"><span class="pin-dot pin-amber" aria-hidden="true"></span> Knocked</span>
+            <span class="pin-item"><span class="pin-dot pin-slate" aria-hidden="true"></span> Uncontacted</span>
+          </div>
+          <div class="hud-map-status">
+            <p class="map-info" id="mapInfo" role="status" aria-live="polite"></p>
+            <p class="map-caption" id="mapCaption"></p>
+            <p class="map-attribution" id="mapAttribution">OpenFreeMap © OpenMapTiles · © OpenStreetMap contributors</p>
+          </div>
+        </div>
+
+        <!-- BOTTOM-CENTER HUD: RECENT STORM DAY QUICK CHIPS -->
         <div class="day-chips" id="dayChips" role="group" aria-label="Recent storm days"></div>
-        <!--
-          THE FRAME CHIPS: the whole day, or the six-hour windows inside it.
-          A storm is an hour of weather, and a map that says "here is where the
-          hail fell on Tuesday" is a claim about eighteen hours of it.
-        -->
-        <div class="frame-chips" id="frameChips" role="group" aria-label="Frames of the day"></div>
-        <!--
-          THE PLACES, as a layer. Off in the storm view, where the swath is
-          the map, and on in the market views, where a market of towns IS a
-          set of dots. A person can turn it on either way.
-        -->
-        <button
-          type="button"
-          id="dotsToggle"
-          class="map-toggle"
-          aria-pressed="false"
-          title="Show the places as dots on the map"
-        >
-          PLACES
-        </button>
-        <button type="button" id="basemapToggle" class="map-toggle basemap-toggle" aria-pressed="false" title="Show satellite imagery">
-          SATELLITE
-        </button>
-        <!--
-          THE INFO LINE. What is on the map, in one line, with the day
-          convention in it - because a person looking at a map of a storm has
-          to know which clock the day is on before they can believe any of it.
-        -->
-        <p class="map-info" id="mapInfo" role="status" aria-live="polite"></p>
-        <p class="map-caption" id="mapCaption"></p>
+
+        <!-- BOTTOM-RIGHT HUD: ZOOM & RESET CONTROLS -->
+        <div class="hud-zoom" role="group" aria-label="Map zoom controls">
+          <div class="hud-zoom-buttons">
+            <button type="button" id="zoomIn" aria-label="Zoom in" title="Zoom in">+</button>
+            <div class="hud-zoom-sep" aria-hidden="true"></div>
+            <button type="button" id="zoomOut" aria-label="Zoom out" title="Zoom out">−</button>
+          </div>
+          <button type="button" id="zoomReset" class="hud-btn-reset" aria-label="Reset map view" title="Reset map view">RESET</button>
+        </div>
       </section>
 
-      <div class="list-pane" id="sideConsole" data-panel="console">
-        <!--
-          THE SPOPE CHIPS: every storm day, the days somebody called in, and
-          the days nobody did. The third is the lead list - the hail fell and
-          the only people who know are the people who did not call it in.
-        -->
-        <div class="scope-chips" id="scopeChips" role="group" aria-label="Which storms the list holds" hidden></div>
-        <p class="summary" id="summary" role="status" aria-live="polite"></p>
-        <ol class="data-row-list" id="ranked" aria-label="Worst places"></ol>
+      <!-- RIGHT SIDE CONSOLE: WORKSPACE INTELLIGENCE -->
+      <aside class="list-pane side-console" id="sideConsole" data-panel="side-console" aria-label="Workspace console">
+        
+        <!-- 4-TAB NAVIGATION BAR -->
+        <nav class="console-tabs" role="tablist" aria-label="Console views">
+          <button type="button" id="tab-storms" role="tab" class="console-tab active" aria-selected="true" aria-controls="content-storms">
+            STORM DATES (<span id="stormTabCount">160</span>)
+          </button>
+          <button type="button" id="tab-knock" role="tab" class="console-tab" aria-selected="false" aria-controls="content-knock">
+            KNOCK LIST <span id="knockTabBadge" class="badge-cyan">42</span>
+          </button>
+          <button type="button" id="tab-dossier" role="tab" class="console-tab" aria-selected="false" aria-controls="content-dossier">
+            VERIFY DOSSIER
+          </button>
+          <button type="button" id="tab-macro" role="tab" class="console-tab" aria-selected="false" aria-controls="content-macro">
+            MARKET
+          </button>
+        </nav>
 
-        <!--
-          ONE drill-down panel, with a stack behind it. There used to be three -
-          the storms, the tracts, the streets - as siblings in the flow, and all
-          three could be open at once, so the page grew downwards and the thing
-          you were reading was always below the fold. A drill-down now REPLACES
-          what was there, and the Back button walks back up.
-        -->
-        <section class="detail" id="detail" hidden aria-label="Drill-down">
-          <div class="detail-head">
-            <button type="button" id="drillBack" class="link-button" hidden>&#8592; Back</button>
-            <h2 id="drillTitle"></h2>
-            <button type="button" id="drillClose" class="secondary">Close</button>
+        <!-- TAB 1 CONTENT: STORM DATES (Primary Work List) -->
+        <div id="content-storms" class="tab-content console-tab-content" role="tabpanel" aria-labelledby="tab-storms" data-panel="console">
+          <!-- Filter Scope Bar -->
+          <div class="scope-bar">
+            <span class="scope-label">Filter Scope:</span>
+            <div class="scope-chips" id="scopeChips" role="group" aria-label="Which storms the list holds">
+              <button type="button" class="scope-chip active" data-scope="all">All Storms</button>
+              <button type="button" class="scope-chip" data-scope="corroborated">Corroborated</button>
+              <button type="button" class="scope-chip" data-scope="prospects" title="Radar reach with 0 reports filed — Open Leads">Prospects (114)</button>
+            </div>
           </div>
-          <div id="drillBody"></div>
-        </section>
 
-        <div class="table-wrap" id="tableWrap">
-          <p class="loading" id="loading">Loading county data…</p>
+          <p class="summary" id="summary" role="status" aria-live="polite"></p>
+
+          <!-- TRACT -> STREET DRILL-DOWN PANEL -->
+          <section class="detail" id="detail" hidden aria-label="Drill-down">
+            <div class="detail-head">
+              <button type="button" id="drillBack" class="link-button" hidden>&#8592; Back</button>
+              <h2 id="drillTitle"></h2>
+              <button type="button" id="drillClose" class="secondary">Close</button>
+            </div>
+            <div id="drillBody"></div>
+          </section>
+
+          <!-- INTERACTIVE STORM DAY CARDS -->
+          <div class="storm-cards-list" id="stormCardsList">
+            <!-- Card 1: 2024-06-01 (Active Selected) -->
+            <div class="storm-card active" data-date="2024-06-01" tabindex="0" role="button" aria-label="Select storm day 2024-06-01">
+              <div class="storm-card-header">
+                <span class="storm-card-date">
+                  <span class="pulse-dot" aria-hidden="true"></span>
+                  2024-06-01
+                </span>
+                <span class="badge-fuchsia">MAX 3.40″</span>
+              </div>
+              <div class="storm-card-grid">
+                <div>
+                  <p class="card-kpi-label">HOUSES IN REACH</p>
+                  <p class="card-kpi-val text-cyan">323,867</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">TRACTS REACHED</p>
+                  <p class="card-kpi-val text-slate">165</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">GROUND SPOTTERS</p>
+                  <p class="card-kpi-val text-amber">48 filed</p>
+                </div>
+              </div>
+              <div class="storm-card-footer">
+                <span>Denver Metro, Lakewood, Aurora, Centennial</span>
+                <span class="view-tracts-link">View Tracts →</span>
+              </div>
+            </div>
+
+            <!-- Card 2: 2026-06-02 -->
+            <div class="storm-card" data-date="2026-06-02" tabindex="0" role="button" aria-label="Select storm day 2026-06-02">
+              <div class="storm-card-header">
+                <span class="storm-card-date">2026-06-02</span>
+                <span class="badge-fuchsia-dim">MAX 2.25″</span>
+              </div>
+              <div class="storm-card-grid">
+                <div>
+                  <p class="card-kpi-label">HOUSES IN REACH</p>
+                  <p class="card-kpi-val text-slate">183,986</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">TRACTS</p>
+                  <p class="card-kpi-val text-slate">94</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">SPOTTERS</p>
+                  <p class="card-kpi-val text-amber">34 filed</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 3: 2025-06-18 -->
+            <div class="storm-card" data-date="2025-06-18" tabindex="0" role="button" aria-label="Select storm day 2025-06-18">
+              <div class="storm-card-header">
+                <span class="storm-card-date">2025-06-18</span>
+                <span class="badge-fuchsia-dim">MAX 2.89″</span>
+              </div>
+              <div class="storm-card-grid">
+                <div>
+                  <p class="card-kpi-label">HOUSES IN REACH</p>
+                  <p class="card-kpi-val text-slate">137,198</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">TRACTS</p>
+                  <p class="card-kpi-val text-slate">69</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">SPOTTERS</p>
+                  <p class="card-kpi-val text-amber">52 filed</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 4: 2026-06-26 -->
+            <div class="storm-card" data-date="2026-06-26" tabindex="0" role="button" aria-label="Select storm day 2026-06-26">
+              <div class="storm-card-header">
+                <span class="storm-card-date">2026-06-26</span>
+                <span class="badge-purple-dim">MAX 2.42″</span>
+              </div>
+              <div class="storm-card-grid">
+                <div>
+                  <p class="card-kpi-label">HOUSES IN REACH</p>
+                  <p class="card-kpi-val text-slate">48,699</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">TRACTS</p>
+                  <p class="card-kpi-val text-slate">29</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">SPOTTERS</p>
+                  <p class="card-kpi-val text-amber">19 filed</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 5: 2025-07-07 -->
+            <div class="storm-card" data-date="2025-07-07" tabindex="0" role="button" aria-label="Select storm day 2025-07-07">
+              <div class="storm-card-header">
+                <span class="storm-card-date">2025-07-07</span>
+                <span class="badge-purple-dim">MAX 2.17″</span>
+              </div>
+              <div class="storm-card-grid">
+                <div>
+                  <p class="card-kpi-label">HOUSES IN REACH</p>
+                  <p class="card-kpi-val text-slate">40,221</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">TRACTS</p>
+                  <p class="card-kpi-val text-slate">24</p>
+                </div>
+                <div>
+                  <p class="card-kpi-label">SPOTTERS</p>
+                  <p class="card-kpi-val text-amber">11 filed</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- DYNAMIC DATA TABLE ANCHOR -->
+          <div class="table-wrap" id="tableWrap">
+            <p class="loading" id="loading">Loading storm data…</p>
+          </div>
         </div>
 
-        <details class="notes" aria-label="What these numbers mean">
-          <summary>What these numbers are</summary>
-          <h2>What these numbers are</h2>
-          <dl>
-            <dt>Hail &ge; 1&Prime;</dt>
-            <dd>
-              Hail reports of an inch or more in this place, inside the selected
-              window, counted from the individual reports. This is a
-              <em>count of what was reported</em>, not a model. A town with 232
-              of them is a real signal; a town with two is likely a quiet
-              reporting culture rather than a quiet sky.
-            </dd>
-            <dt>Score</dt>
-            <dd>
-              A model of the likelihood that a residential structure in this
-              county was hit by damaging hail or wind over the selected window.
-              It blends observed hazard, the FEMA National Risk Index's modelled
-              loss rate, and exposure. Sort by it; do not quote it.
-            </dd>
-            <dt>Housing units</dt>
-            <dd>
-              Census ACS 5-year table B25001 — how many roofs are in the county.
-              That is the <em>market size</em>, not the number of houses that were
-              hit. The margin of error is shown because B25001 is a sample
-              estimate.
-            </dd>
-            <dt>Expected loss / yr</dt>
-            <dd>
-              The county's modelled expected annual loss from hail and wind,
-              from the FEMA National Risk Index. A yearly figure, not a dollar
-              amount lost last year.
-            </dd>
-            <dt>Max hail</dt>
-            <dd>
-              The largest stone ever recorded in the county, in inches. Lifetime,
-              not window — a county that had one softball in 1993 still shows it.
-            </dd>
-          </dl>
-          <p class="caveat">
-            Radar says <em>where</em> hail fell; it is unsound as a measure of
-            <em>how big</em> each stone was, so the size columns come from
-            ground reports and the radar is corroboration, never the measure.
-          </p>
-          <p class="caveat">
-            <strong>There is no &ldquo;houses hit&rdquo; column, and that is
-            deliberate too.</strong> Housing units are the market size - how many
-            roofs are in the town - and they are not the number that were hit.
-            Counting the roofs in the swath needs the radar at a resolution that
-            can be laid over a town boundary, which is the next piece of work;
-            until then, a number here would be an estimate dressed as a
-            count.
-          </p>
-          <p class="caveat">
-            <strong>There is no &ldquo;reported damage&rdquo; column, and that
-            is deliberate.</strong> The Storm Prediction Center's loss field
-            mixes two different things: dollars for hail, and the estimated
-            population affected for wind. A single Houston wind report carries
-            70,000,000 in it, and the two are summed into the same county total.
-            A column of those numbers would look like money and mean nothing, so
-            it is not here. The expected annual loss above is the reliable
-            exposure figure, and the housing-unit count is the reliable market
-            size.
-          </p>
-        </details>
-      </div>
+        <!-- TAB 2 CONTENT: STREET KNOCK LIST (Canvassing Leads Hub) -->
+        <div id="content-knock" class="tab-content knock-pane" role="tabpanel" aria-labelledby="tab-knock" data-panel="knock" hidden>
+          <div id="knockHub">
+            <div class="knock-hub-header">
+              <div>
+                <h2 class="knock-hub-title">TRACT 08031006801 · DENVER</h2>
+                <p class="knock-hub-subtitle">Segment: S Elm St (Yale Ave to Harvard Ave)</p>
+              </div>
+              <button type="button" class="btn-walksheet" onclick="alert('Exporting walk sheet for S Elm St (42 homes) to printable PDF...')">
+                Print Walk Sheet
+              </button>
+            </div>
 
-      <section class="knock-pane" id="knockHub" data-panel="knock" hidden aria-label="Street Canvassing & Knock List"></section>
-      <section class="dossier-pane" id="dossierCard" data-panel="dossier" hidden aria-label="Property Loss Dossier"></section>
+            <!-- Knock Progress Metric Bar -->
+            <div class="knock-progress-wrap">
+              <div>
+                <span class="text-dim">Target Coverage:</span>
+                <strong class="text-white ml-1">42 Homes</strong>
+              </div>
+              <div class="knock-badges">
+                <span class="badge-tag badge-inspected">14 Inspected</span>
+                <span class="badge-tag badge-knocked">18 Knocked</span>
+                <span class="badge-tag badge-remaining">10 Left</span>
+              </div>
+            </div>
 
+            <!-- Knock Lead Table -->
+            <div class="knock-table-wrap">
+              <table class="knock-table">
+                <thead>
+                  <tr>
+                    <th>Address</th>
+                    <th>Radar Hail</th>
+                    <th>Canvass Status</th>
+                    <th class="text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="highlighted-row">
+                    <td class="font-bold text-cyan">2840 S Elm St</td>
+                    <td class="text-fuchsia font-bold">2.25″ MESH</td>
+                    <td>
+                      <select class="knock-status-select select-cyan" onchange="window.updateKnockStatus && window.updateKnockStatus(this)">
+                        <option selected>Inspect Set</option>
+                        <option>Knocked</option>
+                        <option>Claim Filed</option>
+                        <option>Closed</option>
+                      </select>
+                    </td>
+                    <td class="text-right">
+                      <button type="button" class="link-btn-cyan" onclick="switchTab('dossier')">Dossier</button>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>2820 S Elm St</td>
+                    <td class="text-fuchsia">2.25″ MESH</td>
+                    <td><span class="badge-tag badge-inspected">Claim Filed</span></td>
+                    <td class="text-right"><span class="text-dim text-xs">Done</span></td>
+                  </tr>
+                  <tr>
+                    <td>2800 S Elm St</td>
+                    <td class="text-purple">2.10″ MESH</td>
+                    <td><span class="badge-tag badge-knocked">Knocked (Follow-up)</span></td>
+                    <td class="text-right"><button type="button" class="link-btn-slate">Note</button></td>
+                  </tr>
+                  <tr>
+                    <td class="text-dim">2780 S Elm St</td>
+                    <td class="text-purple">2.05″ MESH</td>
+                    <td><span class="badge-tag badge-remaining">Uncontacted</span></td>
+                    <td class="text-right"><button type="button" class="link-btn-cyan">Knock</button></td>
+                  </tr>
+                  <tr>
+                    <td>2860 S Elm St</td>
+                    <td class="text-fuchsia">2.30″ MESH</td>
+                    <td><span class="badge-tag badge-inspected">Inspected</span></td>
+                    <td class="text-right"><span class="text-dim text-xs">Done</span></td>
+                  </tr>
+                  <tr>
+                    <td class="text-dim">2880 S Elm St</td>
+                    <td class="text-fuchsia">2.20″ MESH</td>
+                    <td><span class="badge-tag badge-knocked">Door Hanger</span></td>
+                    <td class="text-right"><button type="button" class="link-btn-cyan">Call</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
 
+        <!-- TAB 3 CONTENT: PROPERTY LOSS VERIFICATION DOSSIER -->
+        <div id="content-dossier" class="tab-content dossier-pane" role="tabpanel" aria-labelledby="tab-dossier" data-panel="dossier" hidden>
+          <div id="dossierCard">
+            <!-- Verified Target Header -->
+            <div class="dossier-target-card">
+              <div class="target-card-top">
+                <div>
+                  <span class="badge-target">VERIFIED TARGET</span>
+                  <h2 class="target-address">2840 S Elm St</h2>
+                  <p class="target-sub">Denver, CO 80222 · Single Family Residence</p>
+                </div>
+                <span class="status-orb orb-emerald" title="Confirmed Hail Reach" aria-label="Confirmed Hail Reach"></span>
+              </div>
+              <div class="target-meta-grid">
+                <div>
+                  <span class="meta-label">TIGER RANGE:</span>
+                  <p class="meta-val">2800 – 2898 (Even)</p>
+                </div>
+                <div>
+                  <span class="meta-label">CENSUS TRACT:</span>
+                  <p class="meta-val">08031006801</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Insurance Claim Statute Countdown -->
+            <div class="dossier-statute-card">
+              <div>
+                <span class="statute-title">
+                  <svg class="w-4 h-4 text-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                  </svg>
+                  Filing Window Status:
+                </span>
+                <p class="statute-desc">14 months elapsed since Date of Loss (June 1, 2024).</p>
+              </div>
+              <span class="badge-statute">Eligible (2-Yr Window)</span>
+            </div>
+
+            <!-- Lifetime Hail Loss History -->
+            <div class="dossier-events-section">
+              <h3 class="events-heading">Detected Loss Events (2021 – 2026)</h3>
+              <div class="loss-events-list">
+                <div class="loss-event-card">
+                  <div class="event-card-header">
+                    <span class="event-title text-cyan">2024-06-01 (Primary Loss)</span>
+                    <span class="event-badge text-fuchsia font-bold">2.25″ MESH</span>
+                  </div>
+                  <p class="event-desc">
+                    Corroborated by NOAA trained spotter report 1.2 mi west: <strong>2.50″ stone at 18:42 UTC</strong>.
+                  </p>
+                </div>
+                <div class="loss-event-card">
+                  <div class="event-card-header">
+                    <span class="event-title text-slate">2023-06-22</span>
+                    <span class="event-badge text-purple">1.75″ MESH</span>
+                  </div>
+                  <p class="event-desc">Golf ball sized hail reported in south Denver metro.</p>
+                </div>
+                <div class="loss-event-card">
+                  <div class="event-card-header">
+                    <span class="event-title text-dim">2022-07-15</span>
+                    <span class="event-badge text-indigo">1.00″ MESH</span>
+                  </div>
+                  <p class="event-desc">Marginal severe hail boundary.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- PDF Certificate Action Button -->
+            <button type="button" class="btn-export-dossier" onclick="alert('Generating PDF Hail Verification Certificate for 2840 S Elm St with NOAA SPC radar corroboration...')">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+              </svg>
+              Export Certified Loss Report (PDF)
+            </button>
+          </div>
+        </div>
+
+        <!-- TAB 4 CONTENT: MARKET ANALYTICS (Macro Exposure) -->
+        <div id="content-macro" class="tab-content macro-pane" role="tabpanel" aria-labelledby="tab-macro" hidden>
+          <h2 class="macro-heading">COLORADO MARKET AGGREGATES</h2>
+          <div class="macro-kpi-grid" id="macroKpiGrid">
+            <div class="macro-kpi-card">
+              <span class="kpi-label">Total Housing Units</span>
+              <p class="kpi-value text-white">2,510,488</p>
+            </div>
+            <div class="macro-kpi-card">
+              <span class="kpi-label">FEMA NRI Risk Score</span>
+              <p class="kpi-value text-amber">Very High (94.2)</p>
+            </div>
+            <div class="macro-kpi-card">
+              <span class="kpi-label">Severe Hail Days/Yr</span>
+              <p class="kpi-value text-cyan">28.4 avg</p>
+            </div>
+            <div class="macro-kpi-card">
+              <span class="kpi-label">Expected Annual Loss</span>
+              <p class="kpi-value text-slate">$418M / yr</p>
+            </div>
+          </div>
+
+          <!-- Market Analytics Sub-toggle: CITIES vs COUNTIES -->
+          <div class="views" id="views" role="group" aria-label="Market view selection">
+            <button type="button" data-view="storm" class="visually-hidden" aria-pressed="true" style="display:none">STORM DAYS</button>
+            <button type="button" data-view="city" aria-pressed="false">CITIES</button>
+            <button type="button" data-view="county" class="active" aria-pressed="true">COUNTIES</button>
+          </div>
+
+          <ol class="data-row-list" id="ranked" aria-label="Worst places" hidden></ol>
+
+          <h3 class="macro-subheading">TOP COUNTIES BY HOUSING EXPOSURE</h3>
+          <div class="macro-table-wrap" id="macroTableWrap">
+            <table class="macro-table">
+              <thead>
+                <tr>
+                  <th>County</th>
+                  <th>Severe Days</th>
+                  <th>Housing Units</th>
+                  <th class="text-right">Max Stone</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="font-bold text-cyan">Arapahoe</td>
+                  <td>42</td>
+                  <td>274,102</td>
+                  <td class="text-right text-fuchsia font-bold">3.40″</td>
+                </tr>
+                <tr>
+                  <td class="font-bold text-cyan">Denver</td>
+                  <td>38</td>
+                  <td>362,891</td>
+                  <td class="text-right text-fuchsia font-bold">3.00″</td>
+                </tr>
+                <tr>
+                  <td class="font-bold text-cyan">El Paso</td>
+                  <td>56</td>
+                  <td>301,480</td>
+                  <td class="text-right text-fuchsia font-bold">3.25″</td>
+                </tr>
+                <tr>
+                  <td class="font-bold text-cyan">Jefferson</td>
+                  <td>31</td>
+                  <td>256,920</td>
+                  <td class="text-right text-purple font-bold">2.50″</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <details class="notes" aria-label="What these numbers mean">
+            <summary>What these numbers are</summary>
+            <h2>What these numbers are</h2>
+            <dl>
+              <dt>Hail &ge; 1&Prime;</dt>
+              <dd>
+                Hail reports of an inch or more in this place, inside the selected
+                window, counted from the individual reports.
+              </dd>
+              <dt>Score</dt>
+              <dd>
+                A model of the likelihood that a residential structure in this
+                county was hit by damaging hail or wind over the selected window.
+              </dd>
+              <dt>Housing units</dt>
+              <dd>
+                Census ACS 5-year table B25001 — how many roofs are in the county.
+              </dd>
+              <dt>Expected loss / yr</dt>
+              <dd>
+                The county's modelled expected annual loss from hail and wind,
+                from the FEMA National Risk Index.
+              </dd>
+              <dt>Max hail</dt>
+              <dd>
+                The largest stone ever recorded in the county, in inches.
+              </dd>
+            </dl>
+          </details>
+        </div>
+
+        <!-- BOTTOM CONSOLE STATUS BAR -->
+        <footer class="console-footer">
+          <div class="footer-left">
+            <span>PROJECTION: EPSG:3857 · MRMS 1KM MESH</span>
+            <span class="source" id="source"></span>
+          </div>
+          <div class="footer-right">
+            <span class="system-healthy">
+              <span class="pulse-cyan" aria-hidden="true"></span> SYSTEM HEALTHY
+            </span>
+          </div>
+        </footer>
+      </aside>
 
     </main>
 
+    <!-- INLINE CONTROLLER GLUE FOR TABS & MOCKUP INTERACTIONS -->
+    <script>
+      // Tab switcher controller for side console
+      window.switchTab = function(tabId) {
+        const tabs = ['storms', 'knock', 'dossier', 'macro'];
+        tabs.forEach(function(t) {
+          const btn = document.getElementById('tab-' + t);
+          const content = document.getElementById('content-' + t);
+          const isActive = t === tabId;
+          if (btn) {
+            btn.classList.toggle('active', isActive);
+            btn.setAttribute('aria-selected', String(isActive));
+          }
+          if (content) {
+            content.classList.toggle('hidden', !isActive);
+            content.hidden = !isActive;
+            content.setAttribute('aria-hidden', String(!isActive));
+          }
+        });
+      };
+
+      // Hook tab buttons
+      document.addEventListener('DOMContentLoaded', function() {
+        const tabList = document.querySelector('.console-tabs');
+        if (tabList) {
+          tabList.addEventListener('click', function(e) {
+            const btn = e.target.closest('.console-tab');
+            if (btn && btn.id) {
+              const tabId = btn.id.replace('tab-', '');
+              window.switchTab(tabId);
+            }
+          });
+        }
+
+        // Min Stone pill selector interaction
+        const stoneGroup = document.getElementById('minStonePills');
+        if (stoneGroup) {
+          stoneGroup.addEventListener('click', function(e) {
+            const btn = e.target.closest('.stone-pill');
+            if (!btn) return;
+            stoneGroup.querySelectorAll('.stone-pill').forEach(function(b) {
+              b.classList.remove('active');
+            });
+            btn.classList.add('active');
+            const min = Number(btn.dataset.min);
+            const sel = document.getElementById('minHail');
+            if (sel) {
+              const map = { 0: '0', 0.75: '10', 1.0: '15', 1.5: '25', 2.0: '40', 2.5: '50' };
+              sel.value = map[min] || '0';
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          });
+        }
+
+        // State more button popover toggle
+        const moreBtn = document.querySelector('[data-chip-id="state:more"]') || document.getElementById('stateMoreBtn');
+        const stateMenu = document.getElementById('stateMenu');
+        if (moreBtn && stateMenu) {
+          moreBtn.addEventListener('click', function() {
+            stateMenu.hidden = !stateMenu.hidden;
+          });
+        }
+
+        // Storm cards click simulation
+        const cardsList = document.getElementById('stormCardsList');
+        if (cardsList) {
+          cardsList.addEventListener('click', function(e) {
+            const card = e.target.closest('.storm-card');
+            if (!card) return;
+            cardsList.querySelectorAll('.storm-card').forEach(function(c) {
+              c.classList.remove('active');
+            });
+            card.classList.add('active');
+          });
+        }
+      });
+
+      // Quick helper for status change styling in mockup knock table
+      window.updateKnockStatus = function(selectEl) {
+        if (!selectEl) return;
+        const val = selectEl.value;
+        selectEl.classList.remove('select-cyan', 'select-emerald', 'select-amber');
+        if (val === 'Inspect Set') selectEl.classList.add('select-cyan');
+        else if (val === 'Claim Filed') selectEl.classList.add('select-emerald');
+        else if (val === 'Knocked') selectEl.classList.add('select-amber');
+      };
+    </script>
+
+    <!-- Main Module Application -->
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>

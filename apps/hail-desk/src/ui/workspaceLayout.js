@@ -222,7 +222,7 @@ export function createWorkspaceLayout(options = {}) {
 
     // If `#sideConsole` is a parent aside element containing the tab bodies,
     // collapse it entirely when entering full-screen map mode ('map').
-    if (sideConsoleParent && sideConsoleParent !== panels.console) {
+    if (sideConsoleParent) {
       const isSideConsoleActive = currentMode !== 'map';
       setPanelVisibility(sideConsoleParent, isSideConsoleActive);
     }
@@ -270,6 +270,7 @@ export function createWorkspaceLayout(options = {}) {
         `#mode-${m}, [data-mode="${m}"], [data-mode-target="${m}"]`,
       );
       btns.forEach((btn) => {
+        if (btn === container) return;
         if (typeof btn.addEventListener === 'function') {
           const handler = (evt) => {
             evt?.preventDefault?.();

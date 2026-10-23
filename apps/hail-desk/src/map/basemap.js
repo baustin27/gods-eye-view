@@ -25,6 +25,9 @@ import { viewportPixel } from './viewport.js';
 export const ESRI_WORLD_IMAGERY =
   'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 
+export const CARTO_DARK_MATTER =
+  'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
+
 /** The credit the service requires. */
 export const ESRI_ATTRIBUTION =
   'Powered by Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community';
@@ -85,15 +88,26 @@ export function createTileCache(limit = 240) {
  * @param {{z: number, x: number, y: number}} tile
  * @param {object} [options]
  * @param {typeof Image} [options.ImageImpl]
+ * @param {'satellite'|'road'} [options.mode]
  * @returns {Promise<HTMLImageElement|null>} null when the tile is not there
  */
-export function loadBasemapTile(tile, { ImageImpl = globalThis.Image } = {}) {
-  const url = ESRI_WORLD_IMAGERY.replace(
-    '{z}',
-    String(tile.z),
-  )
-    .replace('{y}', String(tile.y))
-    .replace('{x}', String(tile.x));
+export function loadBasemapTile(
+  tile,
+  { ImageImpl = globalThis.Image, mode = 'satellite' } = {},
+) {
+  if (typeof ImageImpl !== 'function') return Promise.resolve(null);
+  const isRoad = mode === 'road';
+  const template = isRoad ? CARTO_DARK_MATTER : ESRI_WORLD_IMAGERY;
+  const url = isRoad
+    ? template
+        .replace('{z}', String(tile.z))
+        .replace('{x}', String(tile.x))
+        .replace('{y}', String(tile.y))
+    : template
+        .replace('{z}', String(tile.z))
+        .replace('{y}', String(tile.y))
+        .replace('{x}', String(tile.x));
+
   return new Promise((resolve) => {
     const image = new ImageImpl();
     // BEFORE the src. See the file's note: this is what keeps the canvas
@@ -111,6 +125,7 @@ export function loadBasemapTile(tile, { ImageImpl = globalThis.Image } = {}) {
  *
  * @param {object} [options]
  * @param {typeof Image} [options.ImageImpl]
+ * @param {Function} [options.onTile]
  */
 export function createBasemap({ ImageImpl = globalThis.Image, onTile } = {}) {
   const cache = createTileCache();
@@ -125,11 +140,56 @@ export function createBasemap({ ImageImpl = globalThis.Image, onTile } = {}) {
    *
    * @param {CanvasRenderingContext2D} ctx
    * @param {object} viewport
-   @param {import('./viewport.js').visibleTiles} tiles
+   * @param {import('./viewport.js').visibleTiles} tiles
+   * @param {'satellite'|'road'} [mode='satellite']
    */
-  function draw(ctx, viewport, tiles) {
+  function draw(ctx, viewport, tiles, mode = 'satellite') {
+    // Before drawing tiles, draw a subtle dark slate canvas background (#090d16)
+    // with a crisp 48px tactical grid (rgba(30, 41, 59, 0.45)) and major coordinate
+    // crosshairs so the map canvas looks like a tactical radar screen instead of a
+    // black void.
+    ctx.save();
+    ctx.fillStyle = '#090d16';
+    ctx.fillRect(0, 0, viewport.width, viewport.height);
+    ctx.strokeStyle = 'rgba(30, 41, 59, 0.45)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const gridSize = 48;
+    for (let x = 0; x <= viewport.width; x += gridSize) {
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, viewport.height);
+    }
+    for (let y = 0; y <= viewport.height; y += gridSize) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(viewport.width, y);
+    }
+    ctx.stroke();
+
+    // Major coordinate crosshairs at viewport center
+    const cx = Math.round(viewport.width / 2);
+    const cy = Math.round(viewport.height / 2);
+    ctx.strokeStyle = 'rgba(51, 65, 85, 0.65)';
+    ctx.beginPath();
+    ctx.moveTo(cx - 16, cy);
+    ctx.lineTo(cx + 16, cy);
+    ctx.moveTo(cx, cy - 16);
+    ctx.lineTo(cx, cy + 16);
+    ctx.stroke();
+    ctx.restore();
+
+    // WHY SATELLITE ONLY FOR RASTER TILES. CartoDB's public dark-matter server
+    // now stamps "API KEY REQUIRED carto.com/basemaps/apikey" across tiles when
+    // fetched without a key. In 'road' mode, we do NOT draw watermarked raster tiles;
+    // instead, the clean #090d16 tactical radar grid, state/city boundaries,
+    // census tracts, street vectors, and radar swaths render cleanly without
+    // third-party watermarks. Satellite mode uses ESRI_WORLD_IMAGERY which requires
+    // no key and has no watermark.
+    if (mode !== 'satellite') {
+      return;
+    }
+
     const size = 256;
-    for (const tile of tiles) {
+    for (const tile of tiles || []) {
       const key = `${tile.z}/${tile.x}/${tile.y}`;
       const image = cache.get(key);
       if (!image) {
@@ -140,7 +200,7 @@ export function createBasemap({ ImageImpl = globalThis.Image, onTile } = {}) {
         if (!pending.has(key)) {
           pending.set(
             key,
-            loadBasemapTile(tile, { ImageImpl }).then((loaded) => {
+            loadBasemapTile(tile, { ImageImpl, mode: 'satellite' }).then((loaded) => {
               if (loaded) cache.set(key, loaded);
               else cache.fail(key);
               pending.delete(key);
