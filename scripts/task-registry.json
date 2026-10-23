@@ -826,6 +826,28 @@
         "apps/hail-desk/src/map/isolation.test.mjs"
       ],
       "gate": "the desk-control toggle clips imagery, hail and overlays to the state's polygons, follows state changes, survives a shared link, and ALL clears it"
+    },
+    {
+      "id": "HD2.0",
+      "title": "Hail Desk 2.0 rebuild with reactive store, native vector layer engine, omnibar, knock list, and loss dossier",
+      "status": "done",
+      "commit": "65238dad",
+      "files": [
+        "apps/hail-desk/index.html",
+        "apps/hail-desk/styles.css",
+        "apps/hail-desk/src/main.js",
+        "apps/hail-desk/src/core/store.js",
+        "apps/hail-desk/src/core/urlCodec.js",
+        "apps/hail-desk/src/core/dataLoader.js",
+        "apps/hail-desk/src/map/maplibreData.js",
+        "apps/hail-desk/src/map/maplibreEngine.js",
+        "apps/hail-desk/src/ui/workspaceLayout.js",
+        "apps/hail-desk/src/ui/omnibar.js",
+        "apps/hail-desk/src/ui/knockList.js",
+        "apps/hail-desk/src/ui/lossDossier.js",
+        "apps/hail-desk/src/ui/stormTimeline.js"
+      ],
+      "gate": "reactive store coordinates 4-mode layout, omnibar classifies queries, knock list manages canvassing pipeline with CSV export, and loss dossier computes insurance filing status"
     }
   ]
 }
